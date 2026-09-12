@@ -21,7 +21,7 @@ def _run_config(enabled_providers, claim_processor_provider, **overrides) -> Run
         max_output_tokens_grouping=1024,
         max_output_tokens_judge=1024,
         quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
-        overall_timeout_seconds=5.0,
+        round_dispatch_timeout_seconds=5.0,
         claim_processor_provider=claim_processor_provider,
         judge_provider="anthropic",
         editor_provider="anthropic",

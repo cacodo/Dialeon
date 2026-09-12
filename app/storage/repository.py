@@ -88,26 +88,54 @@ def _new_id() -> str:
 
 
 def _run_config_from_json(data: dict) -> RunConfig:
-    """Reconstrói `RunConfig` a partir do JSON persistido -- Etapa 17A.2
-    adicionou `max_output_tokens_grouping`/`max_output_tokens_judge`
-    (campos obrigatórios, sem default) a `RunConfig`, então um run
-    persistido ANTES desta etapa não tem essas chaves no blob salvo.
+    """Reconstrói `RunConfig` a partir do JSON persistido -- nunca muta o
+    dict recebido (sempre trabalha sobre uma cópia), porque este blob
+    pode ser reusado/inspecionado pelo chamador depois.
 
-    Backfill honesto, não um default arbitrário inventado agora: antes
-    da Etapa 17A.2, agrupamento e Judge de fato usavam
-    `max_output_tokens_per_call` (o único teto que existia) -- então
-    reconstruir um run antigo com `max_output_tokens_grouping`/
+    Backfill 1 (Etapa 17A.2) -- adicionou `max_output_tokens_grouping`/
+    `max_output_tokens_judge` (campos obrigatórios, sem default) a
+    `RunConfig`, então um run persistido ANTES desta etapa não tem essas
+    chaves no blob salvo. Backfill honesto, não um default arbitrário
+    inventado agora: antes da Etapa 17A.2, agrupamento e Judge de fato
+    usavam `max_output_tokens_per_call` (o único teto que existia) --
+    então reconstruir um run antigo com `max_output_tokens_grouping`/
     `max_output_tokens_judge` iguais ao `max_output_tokens_per_call`
     DAQUELE MESMO run reflete exatamente o que aconteceu de verdade
     naquela execução, nunca o novo default global (8192) de runs
     futuros, que não tem relação com o que essa execução histórica
     realmente usou. Um blob que já tem as chaves (run nativo da Etapa
-    17A.2 em diante) nunca é alterado por este backfill."""
-    if "max_output_tokens_grouping" in data and "max_output_tokens_judge" in data:
-        return RunConfig(**data)
+    17A.2 em diante) nunca é alterado por este backfill.
+
+    Backfill 2 (clarificação de contrato de execução, pós-run real) --
+    `RunConfig.overall_timeout_seconds` foi renomeado pra
+    `round_dispatch_timeout_seconds` (o nome antigo dava a entender um
+    prazo pra execução INTEIRA do Council; na verdade sempre foi só o
+    dispatch paralelo de UMA rodada, reiniciado a cada rodada -- ver
+    app/orchestrator/config.py). Um blob persistido ANTES dessa
+    renomeação só tem a chave antiga -- RENOMEIA a chave (nunca
+    reinterpreta/recalcula o VALOR, que continua o mesmo número
+    exatamente como foi registrado naquela execução).
+
+    Correção independente de revisão -- a chave legada precisa ser
+    removida INCONDICIONALMENTE, nunca só quando a canônica está
+    ausente: `RunConfig` usa `extra="forbid"`, então um blob com AS DUAS
+    chaves (produzido, por exemplo, por uma leitura+escrita
+    intermediária durante a janela de transição) fazia
+    `overall_timeout_seconds` sobreviver na cópia e a reconstrução
+    falhava com `extra_forbidden`, mesmo quando a canônica já estava
+    presente e correta. A canônica é sempre AUTORITATIVA quando as duas
+    existem (nunca um erro de conflito, nunca uma tentativa de
+    reconciliar valores diferentes) -- a legada é descartada nesse
+    caso, nunca lida. Um blob que só tem a chave nova (run nativo desta
+    renomeação em diante, sem a legada) nunca é alterado por este
+    backfill."""
     data = dict(data)
-    data.setdefault("max_output_tokens_grouping", data["max_output_tokens_per_call"])
-    data.setdefault("max_output_tokens_judge", data["max_output_tokens_per_call"])
+    if not ("max_output_tokens_grouping" in data and "max_output_tokens_judge" in data):
+        data.setdefault("max_output_tokens_grouping", data["max_output_tokens_per_call"])
+        data.setdefault("max_output_tokens_judge", data["max_output_tokens_per_call"])
+    legacy_round_dispatch_timeout = data.pop("overall_timeout_seconds", None)
+    if "round_dispatch_timeout_seconds" not in data and legacy_round_dispatch_timeout is not None:
+        data["round_dispatch_timeout_seconds"] = legacy_round_dispatch_timeout
     return RunConfig(**data)
 
 

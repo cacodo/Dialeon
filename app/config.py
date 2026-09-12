@@ -17,6 +17,7 @@ operacionalmente). Cada composition root (`app/bootstrap.py`,
 próprio tratamento de erro -- nunca um singleton global reaproveitado.
 """
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -120,12 +121,32 @@ class Settings(BaseSettings):
     provider_timeout_seconds: int = 60
     provider_max_retries: int = 2
 
-    # --- Timeout global de uma execução da Fase 1 (Etapa 4) ---
+    # --- Timeout de dispatch de UMA rodada de providers em paralelo ---
+    # Renomeado de `orchestrator_overall_timeout_seconds` (clarificação de
+    # contrato de execução, pós-run real): o nome antigo dava a entender
+    # um prazo pra EXECUÇÃO INTEIRA do Council (extração, agrupamento,
+    # Source Analysis, Judge, Editor incluídos) -- não é isso. Cada
+    # RODADA de dispatch paralelo (rodada inicial, rodada de crítica)
+    # aplica este mesmo valor de forma INDEPENDENTE (reinicia por
+    # rodada, nunca um orçamento compartilhado/decrescente) -- ver
+    # `app/orchestrator/orchestrator.py::Orchestrator._execute_all`.
     # Salvaguarda ADICIONAL ao timeout por provider (que já existe em
-    # provider_timeout_seconds e é responsabilidade do LLMProvider). Este
-    # limita a execução paralela inteira — se estourar, o Orchestrator
-    # cancela explicitamente as tasks ainda pendentes.
-    orchestrator_overall_timeout_seconds: float = 120.0
+    # provider_timeout_seconds e é responsabilidade do LLMProvider). Se
+    # estourar, o Orchestrator cancela explicitamente as tasks ainda
+    # pendentes DAQUELA rodada.
+    #
+    # Compatibilidade: aceita a variável de ambiente legada
+    # ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS como alias de entrada (um
+    # .env já em uso não pode silenciosamente parar de funcionar) --
+    # ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS é a canônica; se as
+    # duas estiverem definidas, a canônica vence (ordem em AliasChoices).
+    orchestrator_round_dispatch_timeout_seconds: float = Field(
+        default=120.0,
+        validation_alias=AliasChoices(
+            "ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS",
+            "ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS",
+        ),
+    )
 
     # --- App ---
     log_level: str = "INFO"

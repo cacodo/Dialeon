@@ -377,7 +377,7 @@ class RunConfigPublic(BaseModel):
     nunca segredo (Decision Delta secao 12). Etapa 11 patch final:
     inclui todos os campos não-secretos que alteram materialmente o
     comportamento da execução (max_output_tokens_per_call,
-    overall_timeout_seconds, quorum completo) -- antes omitidos,
+    round_dispatch_timeout_seconds, quorum completo) -- antes omitidos,
     perdendo capacidade de explicar decisões históricas via audit."""
 
     model_config = _CONFIG
@@ -401,7 +401,11 @@ class RunConfigPublic(BaseModel):
     # agrupamento/Judge específico truncou ou não.
     max_output_tokens_grouping: int
     max_output_tokens_judge: int
-    overall_timeout_seconds: float
+    # Renomeado de overall_timeout_seconds (clarificação de contrato de
+    # execução) -- limita o dispatch paralelo de UMA rodada, reinicia a
+    # cada rodada, nunca a execução inteira do Council. Ver
+    # RunConfig.round_dispatch_timeout_seconds.
+    round_dispatch_timeout_seconds: float
     quorum: QuorumPublic
 
 

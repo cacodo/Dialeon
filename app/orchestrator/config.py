@@ -92,10 +92,23 @@ class RunConfig(BaseModel):
     providers participam — o "3" nunca é hardcoded em lugar nenhum do
     Orchestrator; é sempre `len(enabled_providers)`.
 
-    `overall_timeout_seconds` é a salvaguarda ADICIONAL ao timeout por
-    provider (que já existe dentro de cada LLMProvider e não muda aqui).
-    Se estourar, o Orchestrator cancela explicitamente as tasks
-    pendentes — ver Orchestrator.run().
+    `round_dispatch_timeout_seconds` (renomeado de `overall_timeout_seconds`
+    -- clarificação de contrato, pós-run real onde a duração total
+    excedeu o valor configurado) limita o DISPATCH PARALELO DE UMA
+    RODADA -- a janela em que `Orchestrator._execute_all()` aguarda
+    todas as respostas de UMA rodada (a rodada inicial da Fase 1, OU a
+    rodada de crítica do Debate Engine). NÃO é um prazo pra execução
+    inteira do Council: reinicia de forma INDEPENDENTE a cada rodada
+    (mesmo valor aplicado de novo, nunca um orçamento compartilhado ou
+    decrescente entre rodadas) e não cobre NENHUMA das fases fora do
+    dispatch de rodada -- extração de claims, agrupamento, Source
+    Analysis, Judge, Editor rodam depois/entre rodadas e usam só o
+    timeout por chamada de `provider_timeout_seconds`
+    (`app/config.py`), nunca este campo. Se estourar, o Orchestrator
+    cancela explicitamente as tasks pendentes DAQUELA rodada — ver
+    `Orchestrator._execute_all()`. Um verdadeiro prazo fim-a-fim pra
+    execução inteira do Council permanece fora de escopo (não
+    implementado nesta correção).
 
     Dois conceitos de "tokens", deliberadamente com nomes distintos pra
     nunca serem confundidos (correção pós-Etapa-4, revisão item 1):
@@ -162,7 +175,7 @@ class RunConfig(BaseModel):
     max_output_tokens_grouping: int = Field(gt=0)
     max_output_tokens_judge: int = Field(gt=0)
     quorum: QuorumPolicy
-    overall_timeout_seconds: float = Field(gt=0)
+    round_dispatch_timeout_seconds: float = Field(gt=0)
     # Provider que realiza extração de claims E agrupamento semântico
     # (Etapa 5). Não precisa pertencer a enabled_providers — pode ser um
     # provider dedicado, só processando, nunca respondendo à pergunta
@@ -231,7 +244,7 @@ class RunConfig(BaseModel):
             max_output_tokens_grouping=settings.default_max_output_tokens_grouping,
             max_output_tokens_judge=settings.default_max_output_tokens_judge,
             quorum=QuorumPolicy.from_settings(settings),
-            overall_timeout_seconds=settings.orchestrator_overall_timeout_seconds,
+            round_dispatch_timeout_seconds=settings.orchestrator_round_dispatch_timeout_seconds,
             claim_processor_provider=settings.default_claim_processor_provider,
             judge_provider=settings.default_judge_provider,
             editor_provider=settings.default_editor_provider,

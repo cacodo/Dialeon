@@ -4,10 +4,12 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.models.domain import ClaimSupport
 from app.storage.records import CompletedRunRecord, QuorumFailureRecord
+from app.storage.repository import _run_config_from_json
 from tests.storage.fixtures import (
     claim,
     error_model_response,
@@ -438,6 +440,248 @@ async def test_legacy_quorum_failure_run_config_json_backfills_from_general(engi
     assert isinstance(loaded, QuorumFailureRecord)
     assert loaded.run_config.max_output_tokens_grouping == 3000
     assert loaded.run_config.max_output_tokens_judge == 3000
+
+
+# ---------------------------------------------------------------------------
+# Clarificação de contrato de execução (pós-run real) -- compatibilidade
+# com run_config_json persistido ANTES do rename de
+# overall_timeout_seconds para round_dispatch_timeout_seconds.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_run_config_json_with_old_timeout_key_name_is_readable(engine, repo):
+    """Um run salvo ANTES da renomeação tem a chave antiga
+    `overall_timeout_seconds` (nunca `round_dispatch_timeout_seconds`)
+    no blob persistido -- a reconstrução precisa RENOMEAR a chave (nunca
+    reinterpretar/recalcular o VALOR, que continua exatamente o número
+    registrado naquela execução)."""
+    result = full_council_run_result(run_config=run_config(round_dispatch_timeout_seconds=77.0))
+    await repo.save_success(result)
+
+    async with engine.begin() as conn:
+        raw = (
+            await conn.execute(
+                text("SELECT run_config_json FROM council_runs WHERE id = :id"),
+                {"id": result.id},
+            )
+        ).scalar_one()
+        data = json.loads(raw)
+        assert "round_dispatch_timeout_seconds" in data  # save normal já grava a chave nova
+        data["overall_timeout_seconds"] = data.pop("round_dispatch_timeout_seconds")
+        await conn.execute(
+            text("UPDATE council_runs SET run_config_json = :json WHERE id = :id"),
+            {"json": json.dumps(data), "id": result.id},
+        )
+
+    loaded = await repo.get_run(result.id)
+
+    assert isinstance(loaded, CompletedRunRecord)
+    rc = loaded.council_run_result.run_config
+    assert rc.round_dispatch_timeout_seconds == 77.0  # valor preservado, só a chave mudou
+    assert not hasattr(rc, "overall_timeout_seconds")
+
+
+@pytest.mark.asyncio
+async def test_native_run_config_json_with_new_timeout_key_is_never_overwritten_by_backfill(
+    engine, repo
+):
+    """Um blob que JÁ tem a chave nova (run nativo desta renomeação em
+    diante) nunca é alterado pelo backfill de rename -- ele só age
+    quando a chave nova está genuinamente ausente E a antiga presente."""
+    result = full_council_run_result(run_config=run_config(round_dispatch_timeout_seconds=33.0))
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+
+    rc = loaded.council_run_result.run_config
+    assert rc.round_dispatch_timeout_seconds == 33.0
+
+
+@pytest.mark.asyncio
+async def test_legacy_quorum_failure_run_config_json_with_old_timeout_key_is_readable(
+    engine, repo
+):
+    """Mesmo backfill de rename, aplicado ao registro de falha de
+    quórum (tabela separada, mesma forma de blob JSON)."""
+    exc = quorum_failure_exception()
+    rc = run_config(round_dispatch_timeout_seconds=15.0)
+    failure_id = await repo.save_quorum_failure(
+        exc, run_config=rc, started_at=now(), failed_at=now()
+    )
+
+    async with engine.begin() as conn:
+        raw = (
+            await conn.execute(
+                text("SELECT run_config_json FROM quorum_failures WHERE id = :id"),
+                {"id": failure_id},
+            )
+        ).scalar_one()
+        data = json.loads(raw)
+        data["overall_timeout_seconds"] = data.pop("round_dispatch_timeout_seconds")
+        await conn.execute(
+            text("UPDATE quorum_failures SET run_config_json = :json WHERE id = :id"),
+            {"json": json.dumps(data), "id": failure_id},
+        )
+
+    loaded = await repo.get_run(failure_id)
+
+    assert isinstance(loaded, QuorumFailureRecord)
+    assert loaded.run_config.round_dispatch_timeout_seconds == 15.0
+
+
+# ---------------------------------------------------------------------------
+# Correção independente de revisão -- _run_config_from_json() falhava com
+# extra_forbidden quando o blob tinha AS DUAS chaves (legada +
+# canônica): a legada só era removida quando a canônica estava AUSENTE.
+# A canônica precisa ser autoritativa sempre que as duas existirem,
+# nunca um erro de conflito.
+# ---------------------------------------------------------------------------
+
+
+def test_run_config_from_json_legacy_key_only_renames_to_canonical():
+    """1 -- unitário, direto na função: só a chave legada presente."""
+    data = _minimal_run_config_json(overall_timeout_seconds=55.0)
+    rc = _run_config_from_json(data)
+    assert rc.round_dispatch_timeout_seconds == 55.0
+
+
+def test_run_config_from_json_canonical_key_only_loads_unchanged():
+    """2 -- unitário, direto na função: só a chave canônica presente."""
+    data = _minimal_run_config_json(round_dispatch_timeout_seconds=88.0)
+    rc = _run_config_from_json(data)
+    assert rc.round_dispatch_timeout_seconds == 88.0
+
+
+def test_run_config_from_json_both_keys_equal_values_canonical_wins():
+    """3 -- as duas chaves presentes, mesmo valor -- carrega com
+    sucesso (antes desta correção: ValidationError extra_forbidden,
+    mesmo os dois valores sendo idênticos)."""
+    data = _minimal_run_config_json(
+        round_dispatch_timeout_seconds=120.0, overall_timeout_seconds=120.0
+    )
+    rc = _run_config_from_json(data)
+    assert rc.round_dispatch_timeout_seconds == 120.0
+
+
+def test_run_config_from_json_both_keys_conflicting_values_canonical_wins():
+    """4 -- as duas chaves presentes, valores DIFERENTES -- carrega com
+    sucesso usando a canônica; a legada nunca chega a
+    RunConfig/validação, nunca um erro de conflito."""
+    data = _minimal_run_config_json(
+        round_dispatch_timeout_seconds=120.0, overall_timeout_seconds=999.0
+    )
+    rc = _run_config_from_json(data)
+    assert rc.round_dispatch_timeout_seconds == 120.0
+
+
+def test_run_config_from_json_does_not_mutate_source_dict_with_both_keys():
+    """5 -- o dict original (que pode ser reusado/inspecionado pelo
+    chamador) permanece intacto, com as DUAS chaves originais, mesmo
+    quando a legada é descartada na reconstrução."""
+    data = _minimal_run_config_json(
+        round_dispatch_timeout_seconds=120.0, overall_timeout_seconds=999.0
+    )
+    original = dict(data)
+
+    _run_config_from_json(data)
+
+    assert data == original
+    assert data["round_dispatch_timeout_seconds"] == 120.0
+    assert data["overall_timeout_seconds"] == 999.0
+
+
+def test_run_config_from_json_neither_key_still_fails_as_before():
+    """8 -- comportamento preservado: sem NENHUMA das duas chaves,
+    `round_dispatch_timeout_seconds` continua um campo obrigatório sem
+    default -- nenhum valor é inventado durante a reconstrução
+    histórica."""
+    data = _minimal_run_config_json()
+    with pytest.raises(ValidationError):
+        _run_config_from_json(data)
+
+
+@pytest.mark.asyncio
+async def test_successful_run_reconstruction_uses_repaired_both_keys_behavior(engine, repo):
+    """6 -- integração fim-a-fim: um run de SUCESSO persistido com as
+    duas chaves no blob (equivalente a uma leitura+escrita intermediária
+    durante a janela de transição) volta a carregar corretamente pelo
+    caminho real do repositório, não só pela função isolada."""
+    result = full_council_run_result(run_config=run_config(round_dispatch_timeout_seconds=42.0))
+    await repo.save_success(result)
+
+    async with engine.begin() as conn:
+        raw = (
+            await conn.execute(
+                text("SELECT run_config_json FROM council_runs WHERE id = :id"),
+                {"id": result.id},
+            )
+        ).scalar_one()
+        data = json.loads(raw)
+        data["overall_timeout_seconds"] = 777.0  # legada conflitante, adicionada de propósito
+        await conn.execute(
+            text("UPDATE council_runs SET run_config_json = :json WHERE id = :id"),
+            {"json": json.dumps(data), "id": result.id},
+        )
+
+    loaded = await repo.get_run(result.id)
+
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.council_run_result.run_config.round_dispatch_timeout_seconds == 42.0
+
+
+@pytest.mark.asyncio
+async def test_quorum_failure_reconstruction_uses_repaired_both_keys_behavior(engine, repo):
+    """7 -- mesma prova de integração, agora pro registro de falha de
+    quórum (tabela separada, mesmo `_run_config_from_json` compartilhado
+    -- nenhuma lógica de normalização duplicada)."""
+    exc = quorum_failure_exception()
+    rc = run_config(round_dispatch_timeout_seconds=24.0)
+    failure_id = await repo.save_quorum_failure(
+        exc, run_config=rc, started_at=now(), failed_at=now()
+    )
+
+    async with engine.begin() as conn:
+        raw = (
+            await conn.execute(
+                text("SELECT run_config_json FROM quorum_failures WHERE id = :id"),
+                {"id": failure_id},
+            )
+        ).scalar_one()
+        data = json.loads(raw)
+        data["overall_timeout_seconds"] = 888.0  # legada conflitante, adicionada de propósito
+        await conn.execute(
+            text("UPDATE quorum_failures SET run_config_json = :json WHERE id = :id"),
+            {"json": json.dumps(data), "id": failure_id},
+        )
+
+    loaded = await repo.get_run(failure_id)
+
+    assert isinstance(loaded, QuorumFailureRecord)
+    assert loaded.run_config.round_dispatch_timeout_seconds == 24.0
+
+
+def _minimal_run_config_json(**timeout_keys) -> dict:
+    """Blob mínimo válido de RunConfig, exceto pelas chaves de timeout
+    (legada/canônica) que o chamador injeta explicitamente -- reusado
+    pelos testes unitários de `_run_config_from_json` acima, que testam
+    a normalização isoladamente, sem precisar de banco."""
+    return {
+        "question": "pergunta",
+        "enabled_providers": ["openai"],
+        "max_cost_usd": 1.0,
+        "max_total_tokens": 50_000,
+        "max_output_tokens_per_call": 1024,
+        "max_output_tokens_grouping": 1024,
+        "max_output_tokens_judge": 1024,
+        "quorum": {"min_for_debate": 1, "min_to_return": 1},
+        "claim_processor_provider": "anthropic",
+        "judge_provider": "anthropic",
+        "editor_provider": "anthropic",
+        "source_analyzer_provider": "anthropic",
+        "source_text": None,
+        **timeout_keys,
+    }
 
 
 # ---------------------------------------------------------------------------

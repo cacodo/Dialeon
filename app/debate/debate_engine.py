@@ -128,7 +128,7 @@ class DebateEngine:
         round2_round_result = await self._orchestrator.run_round(
             critique_requests,
             round_number=_CRITIQUE_ROUND_NUMBER,
-            overall_timeout_seconds=run_config.overall_timeout_seconds,
+            round_dispatch_timeout_seconds=run_config.round_dispatch_timeout_seconds,
         )
         critique_result = CritiqueResult(round_result=round2_round_result)
 

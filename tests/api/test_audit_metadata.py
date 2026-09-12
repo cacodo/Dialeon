@@ -136,7 +136,7 @@ def test_audit_run_config_includes_full_execution_relevant_fields():
             max_output_tokens_per_call=2048,
             max_output_tokens_grouping=4096,
             max_output_tokens_judge=6144,
-            overall_timeout_seconds=42.0,
+            round_dispatch_timeout_seconds=42.0,
         )
     )
 
@@ -151,7 +151,7 @@ def test_audit_run_config_includes_full_execution_relevant_fields():
     # diferentes do geral, precisam ficar auditáveis também.
     assert config["max_output_tokens_grouping"] == 4096
     assert config["max_output_tokens_judge"] == 6144
-    assert config["overall_timeout_seconds"] == 42.0
+    assert config["round_dispatch_timeout_seconds"] == 42.0
     assert config["quorum"]["min_for_debate"] == result.run_config.quorum.min_for_debate
     assert config["quorum"]["min_to_return"] == result.run_config.quorum.min_to_return
 
@@ -181,7 +181,7 @@ def test_run_config_values_come_from_persisted_config_not_current_settings():
 
 def test_quorum_failure_audit_has_full_historical_config():
     exc = quorum_failure_exception()
-    rc = run_config(max_output_tokens_per_call=777, overall_timeout_seconds=13.0)
+    rc = run_config(max_output_tokens_per_call=777, round_dispatch_timeout_seconds=13.0)
 
     app = create_app(settings=_settings(), components_factory=make_components_factory())
     with TestClient(app) as client:
@@ -190,7 +190,7 @@ def test_quorum_failure_audit_has_full_historical_config():
 
     config = resp.json()["config"]
     assert config["max_output_tokens_per_call"] == 777
-    assert config["overall_timeout_seconds"] == 13.0
+    assert config["round_dispatch_timeout_seconds"] == 13.0
     assert config["quorum"]["min_for_debate"] == rc.quorum.min_for_debate
     assert config["quorum"]["min_to_return"] == rc.quorum.min_to_return
 

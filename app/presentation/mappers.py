@@ -258,7 +258,7 @@ def run_config_public(rc: RunConfig) -> RunConfigPublic:
         max_output_tokens_per_call=rc.max_output_tokens_per_call,
         max_output_tokens_grouping=rc.max_output_tokens_grouping,
         max_output_tokens_judge=rc.max_output_tokens_judge,
-        overall_timeout_seconds=rc.overall_timeout_seconds,
+        round_dispatch_timeout_seconds=rc.round_dispatch_timeout_seconds,
         quorum=QuorumPublic(
             min_for_debate=rc.quorum.min_for_debate, min_to_return=rc.quorum.min_to_return
         ),

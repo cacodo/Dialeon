@@ -3,7 +3,7 @@ Orchestrator — Etapa 4, refatorado na Etapa 5.
 
 `run_round()` é a primitiva pobre de execução paralela: dado um
 `CompletionRequest` por provider, executa em paralelo, aplica timeout
-global/cancelamento/cleanup, normaliza pra `ModelResponse`, contabiliza
+de dispatch da rodada/cancelamento/cleanup, normaliza pra `ModelResponse`, contabiliza
 respostas/tokens/custo. NÃO aplica quórum, NÃO aplica budget, NÃO sabe o
 que é Claim, crítica ou Debate Engine — é reusada, sem alteração, tanto
 pela Fase 1 (`run()`) quanto pela rodada de crítica do Debate Engine.
@@ -66,7 +66,7 @@ class Orchestrator:
         round_result = await self.run_round(
             requests,
             round_number=_PHASE_1_ROUND_NUMBER,
-            overall_timeout_seconds=run_config.overall_timeout_seconds,
+            round_dispatch_timeout_seconds=run_config.round_dispatch_timeout_seconds,
         )
 
         return _apply_quorum_and_budget(round_result, run_config)
@@ -75,7 +75,7 @@ class Orchestrator:
         self,
         requests: dict[str, CompletionRequest],
         round_number: int,
-        overall_timeout_seconds: float,
+        round_dispatch_timeout_seconds: float,
     ) -> RoundResult:
         unknown = set(requests) - set(self._providers)
         if unknown:
@@ -83,7 +83,7 @@ class Orchestrator:
                 f"requests contém provider(s) desconhecido(s): {sorted(unknown)}"
             )
 
-        provider_responses = await self._execute_all(requests, overall_timeout_seconds)
+        provider_responses = await self._execute_all(requests, round_dispatch_timeout_seconds)
 
         model_responses = [
             _to_model_response(response, round_number)
@@ -109,7 +109,7 @@ class Orchestrator:
     async def _execute_all(
         self,
         requests: dict[str, CompletionRequest],
-        overall_timeout_seconds: float,
+        round_dispatch_timeout_seconds: float,
     ) -> dict[str, ProviderResponse]:
         start = time.monotonic()
         tasks: dict[str, asyncio.Task] = {
@@ -118,7 +118,7 @@ class Orchestrator:
         }
 
         try:
-            await asyncio.wait(tasks.values(), timeout=overall_timeout_seconds)
+            await asyncio.wait(tasks.values(), timeout=round_dispatch_timeout_seconds)
         finally:
             pending = [t for t in tasks.values() if not t.done()]
             for task in pending:
@@ -134,7 +134,7 @@ class Orchestrator:
             request = requests[name]
             if task.cancelled():
                 results[name] = _timeout_response(
-                    name, provider, request, overall_timeout_seconds, elapsed_ms
+                    name, provider, request, round_dispatch_timeout_seconds, elapsed_ms
                 )
             elif task.exception() is not None:
                 results[name] = _unknown_error_response(
@@ -169,11 +169,11 @@ def _timeout_response(
     provider_name: str,
     provider: LLMProvider,
     request: CompletionRequest,
-    overall_timeout_seconds: float,
+    round_dispatch_timeout_seconds: float,
     elapsed_ms: int,
 ) -> ProviderResponse:
     # Etapa 13: mesmo caminho defensivo não previsto no Evidence Pack
-    # original — a task foi cancelada pelo timeout GLOBAL da rodada,
+    # original — a task foi cancelada pelo timeout de DISPATCH da rodada,
     # antes mesmo de LLMProvider.complete() conseguir devolver um
     # ProviderResponse próprio (que resolveria requested_model
     # internamente). Resolvido aqui com a mesma regra
@@ -199,11 +199,11 @@ def _timeout_response(
         error=ProviderErrorInfo(
             type=ProviderErrorType.TIMEOUT,
             message=(
-                f"{provider_name}: execução cancelada pelo timeout global "
-                f"da rodada ({overall_timeout_seconds}s) antes de concluir. "
+                f"{provider_name}: execução cancelada pelo timeout de dispatch "
+                f"da rodada ({round_dispatch_timeout_seconds}s) antes de concluir. "
                 "Distinto do timeout por provider (já tratado internamente "
                 "por LLMProvider) — esta é a salvaguarda de execução da "
-                "rodada inteira."
+                "rodada inteira (não da execução do Council inteira)."
             ),
             retryable=False,
         ),

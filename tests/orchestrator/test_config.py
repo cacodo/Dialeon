@@ -71,7 +71,7 @@ def _run_config(**overrides) -> RunConfig:
         max_output_tokens_grouping=1024,
         max_output_tokens_judge=1024,
         quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
-        overall_timeout_seconds=120.0,
+        round_dispatch_timeout_seconds=120.0,
         claim_processor_provider="anthropic",
         judge_provider="anthropic",
         editor_provider="anthropic",
@@ -141,7 +141,7 @@ def test_run_config_from_settings_builds_quorum_from_same_source():
         default_max_output_tokens_judge=6144,
         quorum_min_for_debate=2,
         quorum_min_to_return=1,
-        orchestrator_overall_timeout_seconds=90.0,
+        orchestrator_round_dispatch_timeout_seconds=90.0,
         default_claim_processor_provider="gemini",
         default_judge_provider="openai",
         default_editor_provider="gemini",
@@ -156,10 +156,55 @@ def test_run_config_from_settings_builds_quorum_from_same_source():
     assert config.max_output_tokens_judge == 6144
     assert config.quorum.min_for_debate == 2
     assert config.quorum.min_to_return == 1
-    assert config.overall_timeout_seconds == 90.0
+    assert config.round_dispatch_timeout_seconds == 90.0
     assert config.claim_processor_provider == "gemini"
     assert config.judge_provider == "openai"
     assert config.editor_provider == "gemini"
+
+
+# ---------------------------------------------------------------------------
+# Clarificação de contrato de execução (pós-run real): renomeado de
+# `overall_timeout_seconds`/`ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS` --
+# compatibilidade de entrada preservada onde já é uso real (variável de
+# ambiente/.env), nunca reinterpretando o VALOR, só aceitando o nome
+# antigo como alias de leitura.
+# ---------------------------------------------------------------------------
+
+
+def test_run_config_rejects_non_positive_round_dispatch_timeout_seconds():
+    with pytest.raises(ValidationError):
+        _run_config(round_dispatch_timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        _run_config(round_dispatch_timeout_seconds=-5.0)
+
+
+def test_settings_reads_round_dispatch_timeout_seconds_from_canonical_env_var(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS", "42.0")
+    settings = Settings(_env_file=None)
+    assert settings.orchestrator_round_dispatch_timeout_seconds == 42.0
+
+
+def test_settings_still_reads_legacy_env_var_name_as_compatibility_alias(monkeypatch):
+    """Um .env já em produção com ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS
+    não pode silenciosamente parar de funcionar -- essa é a variável de
+    ambiente real, não só um nome de campo Python interno."""
+    monkeypatch.setenv("ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS", "77.0")
+    settings = Settings(_env_file=None)
+    assert settings.orchestrator_round_dispatch_timeout_seconds == 77.0
+
+
+def test_settings_canonical_env_var_wins_when_both_are_set(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS", "11.0")
+    monkeypatch.setenv("ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS", "22.0")
+    settings = Settings(_env_file=None)
+    assert settings.orchestrator_round_dispatch_timeout_seconds == 22.0
+
+
+def test_settings_default_unchanged_when_neither_env_var_is_set(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.orchestrator_round_dispatch_timeout_seconds == 120.0
 
 
 def test_run_config_max_total_tokens_and_max_output_tokens_per_call_are_independent():
@@ -235,7 +280,7 @@ def test_run_config_rejects_missing_max_output_tokens_grouping():
         max_output_tokens_per_call=1024,
         max_output_tokens_judge=1024,
         quorum=QuorumPolicy(min_for_debate=1, min_to_return=1),
-        overall_timeout_seconds=60.0,
+        round_dispatch_timeout_seconds=60.0,
         claim_processor_provider="anthropic",
         judge_provider="anthropic",
         editor_provider="anthropic",

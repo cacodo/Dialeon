@@ -199,7 +199,7 @@ export interface RunConfigPublic {
   max_cost_usd: number
   max_total_tokens: number
   max_output_tokens_per_call: number
-  overall_timeout_seconds: number
+  round_dispatch_timeout_seconds: number
   quorum: QuorumPublic
 }
 

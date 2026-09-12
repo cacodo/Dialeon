@@ -106,7 +106,7 @@ class ModelResponse(BaseModel):
     latency_ms: int = Field(ge=0)
     attempts: int = Field(ge=0)
     # attempts=0 é o único caso especial: uma execução cancelada pelo
-    # timeout global do Orchestrator (Etapa 4) antes de qualquer
+    # timeout de dispatch de rodada do Orchestrator (Etapa 4) antes de qualquer
     # resultado do LLMProvider chegar — não sabemos quantas tentativas
     # internas de retry já tinham ocorrido no momento do cancelamento,
     # então 0 significa "nenhuma tentativa CONCLUÍDA observável", não

@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from app.models.provider_models import ProviderErrorType
+from app.models.provider_models import CompletionRequest, Message, ProviderErrorType
 from app.orchestrator.config import QuorumPolicy, RunConfig
 from app.orchestrator.orchestrator import Orchestrator
 from tests.orchestrator.fakes import StubProvider, error_response, success_response
@@ -21,7 +21,7 @@ def _run_config(enabled_providers, **overrides) -> RunConfig:
         max_output_tokens_grouping=1024,
         max_output_tokens_judge=1024,
         quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
-        overall_timeout_seconds=5.0,
+        round_dispatch_timeout_seconds=5.0,
         claim_processor_provider="anthropic",
         judge_provider="anthropic",
         editor_provider="anthropic",
@@ -80,12 +80,12 @@ async def test_one_slow_provider_does_not_block_the_fast_ones():
 
 
 # ---------------------------------------------------------------------------
-# Timeout global e cleanup
+# Timeout de dispatch da rodada e cleanup
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_global_timeout_cancels_slow_provider_and_returns_partial_result():
+async def test_round_dispatch_timeout_cancels_slow_provider_and_returns_partial_result():
     providers = {
         "openai": StubProvider("openai", delay=0.0, response=success_response("openai")),
         "anthropic": StubProvider("anthropic", delay=0.0, response=success_response("anthropic")),
@@ -93,7 +93,7 @@ async def test_global_timeout_cancels_slow_provider_and_returns_partial_result()
     }
     orchestrator = Orchestrator(providers)
     run_config = _run_config(
-        ["openai", "anthropic", "gemini"], overall_timeout_seconds=0.1
+        ["openai", "anthropic", "gemini"], round_dispatch_timeout_seconds=0.1
     )
 
     result = await orchestrator.run(run_config)
@@ -106,14 +106,14 @@ async def test_global_timeout_cancels_slow_provider_and_returns_partial_result()
 
 
 @pytest.mark.asyncio
-async def test_global_timeout_leaves_no_orphan_tasks():
+async def test_round_dispatch_timeout_leaves_no_orphan_tasks():
     """Depois que run() retorna, nenhuma task do provider cancelado deve
     continuar viva — prova o cleanup no finally."""
     providers = {
         "slow": StubProvider("slow", delay=10.0, response=success_response("slow")),
     }
     orchestrator = Orchestrator(providers)
-    run_config = _run_config(["slow"], overall_timeout_seconds=0.1, max_total_tokens=1_000_000)
+    run_config = _run_config(["slow"], round_dispatch_timeout_seconds=0.1, max_total_tokens=1_000_000)
 
     tasks_before = asyncio.all_tasks()
     try:
@@ -126,12 +126,12 @@ async def test_global_timeout_leaves_no_orphan_tasks():
     tasks_after = asyncio.all_tasks()
 
     leaked = {t for t in tasks_after if t not in tasks_before and not t.done()}
-    assert not leaked, f"tasks vazadas após timeout global: {leaked}"
+    assert not leaked, f"tasks vazadas após timeout de dispatch da rodada: {leaked}"
 
 
 @pytest.mark.asyncio
-async def test_global_timeout_does_not_affect_providers_that_finish_in_time():
-    """Timeout global só afeta quem realmente estourou — providers que
+async def test_round_dispatch_timeout_does_not_affect_providers_that_finish_in_time():
+    """Timeout de dispatch da rodada só afeta quem realmente estourou — providers que
     terminam dentro do prazo têm resultado normal, sem qualquer marca de
     erro relacionada a timeout."""
     providers = {
@@ -139,12 +139,75 @@ async def test_global_timeout_does_not_affect_providers_that_finish_in_time():
     }
     orchestrator = Orchestrator(providers)
     result = await orchestrator.run(
-        _run_config(["openai"], overall_timeout_seconds=5.0)
+        _run_config(["openai"], round_dispatch_timeout_seconds=5.0)
     )
 
     response = result.responses[0]
     assert response.status == "success"
     assert response.error is None
+
+
+# ---------------------------------------------------------------------------
+# Clarificação de contrato de execução (pós-run real) --
+# round_dispatch_timeout_seconds NÃO é um prazo pra execução inteira do
+# Council: bounda só o dispatch paralelo de UMA rodada, reiniciado de
+# forma independente a cada chamada de run_round().
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_round_dispatch_timeout_seconds_restarts_independently_each_round():
+    """Prova direta de que NÃO virou um prazo cumulativo/compartilhado:
+    duas rodadas de 0.15s cada, com timeout=0.25s por rodada. Se fosse
+    um orçamento compartilhado pra execução inteira, a SEGUNDA chamada
+    estouraria (0.15+0.15=0.30s > 0.25s); como cada `run_round()` aplica
+    o mesmo valor de forma independente, as duas sucedem."""
+    timeout = 0.25
+    delay = 0.15
+    provider = StubProvider("openai", delay=delay, response=success_response("openai"))
+    orchestrator = Orchestrator({"openai": provider})
+    request = CompletionRequest(
+        messages=[Message(role="user", content="pergunta")], max_tokens=100
+    )
+
+    round1 = await orchestrator.run_round(
+        {"openai": request}, round_number=1, round_dispatch_timeout_seconds=timeout
+    )
+    round2 = await orchestrator.run_round(
+        {"openai": request}, round_number=2, round_dispatch_timeout_seconds=timeout
+    )
+
+    assert round1.successful_count == 1
+    assert round2.successful_count == 1
+    assert provider.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_round_dispatch_timeout_seconds_does_not_bound_anything_after_run_round_returns():
+    """Complementa o teste acima pelo lado negativo: uma vez que
+    `run_round()` retorna, nenhum relógio de `round_dispatch_timeout_seconds`
+    continua correndo em segundo plano -- trabalho feito PELO CHAMADOR
+    depois (extração/agrupamento/Source Analysis/Judge/Editor, todos
+    fora do Orchestrator) nunca é observado nem limitado por este
+    valor. Simula isso com um `asyncio.sleep` explícito depois do
+    `run_round()`, maior que o timeout configurado -- não há nenhum
+    mecanismo aqui que possa cancelar ou marcar essa espera."""
+    timeout = 0.1
+    provider = StubProvider("openai", delay=0.0, response=success_response("openai"))
+    orchestrator = Orchestrator({"openai": provider})
+    request = CompletionRequest(
+        messages=[Message(role="user", content="pergunta")], max_tokens=100
+    )
+
+    round_result = await orchestrator.run_round(
+        {"openai": request}, round_number=1, round_dispatch_timeout_seconds=timeout
+    )
+    assert round_result.successful_count == 1
+
+    # trabalho "pós-rodada" que dura mais que o timeout de dispatch --
+    # nada no Orchestrator observa isso, muito menos cancela
+    await asyncio.sleep(timeout * 2)
+    assert True  # chegar aqui sem exceção/cancelamento já é a prova
 
 
 # ---------------------------------------------------------------------------

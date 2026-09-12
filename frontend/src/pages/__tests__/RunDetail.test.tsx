@@ -63,7 +63,7 @@ const completedRun = {
     max_cost_usd: 1,
     max_total_tokens: 1000,
     max_output_tokens_per_call: 100,
-    overall_timeout_seconds: 30,
+    round_dispatch_timeout_seconds: 30,
     quorum: { min_for_debate: 1, min_to_return: 1 },
   },
 }
@@ -93,7 +93,7 @@ const quorumRun = {
     max_cost_usd: 1,
     max_total_tokens: 1000,
     max_output_tokens_per_call: 100,
-    overall_timeout_seconds: 30,
+    round_dispatch_timeout_seconds: 30,
     quorum: { min_for_debate: 2, min_to_return: 2 },
   },
 }
