@@ -68,11 +68,45 @@ usuário explicitamente pode ter pedido pra diferenciar (ver caso real:
 claim sobre ano de fundação, Judge diz "indeterminável pelo debate",
 Source Analysis diz "a fonte contradiz" -- as duas coexistem no texto
 final, nenhuma reescreve a outra).
+
+Bounded contextual opening (patch de legibilidade pós-diagnóstico de run
+real) -- `EditorPlan.opening_style="contextual"` antepunha a `question`
+ORIGINAL inteira, verbatim, sem nenhum limite (`RunConfig.question` só
+valida `min_length=1`, ver app/orchestrator/config.py -- nenhum teto de
+tamanho, nenhuma normalização de whitespace). Pra uma pergunta curta de
+uma linha isso é perfeitamente legível; pra uma pergunta longa, um
+documento de requisitos colado, ou um prompt multi-linha/com bullets, a
+abertura passava a dominar `answer_text` inteiro -- um problema de
+LEGIBILIDADE de apresentação, nunca epistêmico (`question` nunca
+influencia claim/veredito, só é ecoada de volta pro usuário como
+enquadramento).
+
+A correção fica inteiramente em `_bounded_question_excerpt` abaixo,
+puramente determinística, sem nenhuma autoridade nova pra LLM nenhuma
+(`EditorPlan` continua com exatamente os mesmos dois enums finitos;
+`build_editor_request`/o prompt do Editor não mudam, ver
+app/editor/context.py) -- a LLM Editor escolhe `opening_style`, nunca o
+CONTEÚDO do enquadramento, exatamente como antes. Deliberadamente NÃO é
+um resumo semântico (nenhum heurístico "entende" a pergunta pra
+sintetizar do que ela trata -- isso reintroduziria exatamente o tipo de
+autoridade interpretativa que a Etapa 17B removeu da LLM, só que agora
+via heurística de aplicação em vez de LLM): é achatamento de whitespace
+(inclusive newlines -- resolve o caso multi-linha/bullets) seguido de
+corte por tamanho de caractere com reticência visível quando algo é
+omitido -- nunca um corte silencioso que pareça a pergunta inteira.
+
+Isso NÃO toca em segurança de terminal: nenhum escaping de controle é
+introduzido aqui (isso seguiria pertencendo só a
+app/cli/output.py::human_run_result, ver app/text_safety.py) -- este
+patch é sobre TAMANHO/achatamento de whitespace do excerto, uma
+preocupação de legibilidade de apresentação, ortogonal a caracteres de
+controle/terminal.
 """
 
 from __future__ import annotations
 
 import json
+import unicodedata
 from typing import Literal
 
 from pydantic import ValidationError
@@ -129,6 +163,21 @@ _OPENING_DIRECT = "Resultado da avaliação do debate:"
 _OPENING_CONTEXTUAL_TEMPLATE = (
     'Em resposta à pergunta "{question}", segue o resultado da avaliação do debate:'
 )
+
+# Bounded contextual opening -- ver docstring do módulo. 100 caracteres
+# mantém a abertura como uma frase curta/legível (ordem de grandeza de um
+# título/assunto, não de um parágrafo colado inteiro) -- é um teto de
+# APRESENTAÇÃO desta única frase, deliberadamente independente de
+# `MAX_SOURCE_TEXT_CHARACTERS` (app/orchestrator/config.py, 20_000), que
+# bounda armazenamento/prompt de `source_text`, um problema de tamanho
+# completamente diferente (documento inteiro vs. uma cláusula de abertura).
+_CONTEXTUAL_OPENING_QUESTION_MAX_CHARS = 100
+# Reticência única (U+2026), não "...": um caractere textual normal (não
+# controle/formatação), sinaliza omissão sem exigir nenhum escaping
+# terminal-específico (ortogonal a `terminal_safe_text`, ver
+# app/text_safety.py).
+_CONTEXTUAL_OPENING_TRUNCATION_MARKER = "…"
+_CONTEXTUAL_OPENING_EMPTY_QUESTION_PLACEHOLDER = "(pergunta vazia)"
 
 _CLOSING_LIMITATIONS_LEAD_IN = (
     "Antes de considerar esta resposta, observe especificamente as seguintes "
@@ -432,6 +481,65 @@ def _render_source_relation_suffix(relation: ValidSourceRelation) -> str | None:
     return suffix
 
 
+def _bounded_question_excerpt(question: str) -> str:
+    """Excerto determinístico de `question` pra abertura "contextual" --
+    NUNCA a pergunta inteira quando ela é longa/multi-linha/estruturada
+    (ver "Bounded contextual opening" na docstring do módulo). Duas
+    operações puramente sintáticas, nenhuma delas tenta entender do que a
+    pergunta trata:
+
+    1. `question.split()` colapsa qualquer run de whitespace -- espaço,
+       tab, e newline (Python trata `\\n`/`\\r` como whitespace pra
+       `.split()`) -- num único espaço, descartando bordas. É assim que
+       uma pergunta multi-linha ou uma lista de bullets vira uma única
+       linha ANTES de qualquer corte por tamanho -- sem inspecionar
+       estrutura (sem tratamento especial de bullets/parágrafos, sem
+       decidir que uma linha é "mais importante" que outra).
+    2. Se o resultado colapsado já cabe no teto
+       (`_CONTEXTUAL_OPENING_QUESTION_MAX_CHARS`), é devolvido intacto --
+       uma pergunta curta comum (o caso mais frequente) nunca é afetada
+       por este patch, byte-a-byte igual ao comportamento anterior.
+       Caso contrário, corta exatamente nesse tanto de caracteres
+       (code points Unicode -- nunca bytes, nunca depende de encoding) e
+       acrescenta `_CONTEXTUAL_OPENING_TRUNCATION_MARKER`, sinalizando
+       explicitamente que algo foi omitido -- nunca um corte silencioso
+       que possa ser lido como a pergunta inteira.
+
+    Não corta em fronteira de palavra de propósito -- a regra mais simples
+    permanece igualmente determinística, e uma palavra cortada ao meio
+    antes da reticência é uma degradação cosmética aceitável (não
+    ambígua sobre o fato de que houve corte); evita introduzir qualquer
+    lógica adicional de "encontrar o espaço mais próximo" pra este patch
+    de legibilidade.
+
+    Um único cuidado de fronteira: se o corte caísse bem entre um
+    caractere-base e uma marca combinante que o modifica (ex.: acento em
+    forma NFD decomposta), o `while` abaixo recua o corte pra excluir
+    também a base -- evita devolver um caractere base "nu" (sem seu
+    acento) logo antes da reticência. Isso NÃO é um framework de
+    normalização Unicode -- é uma checagem de um caractere por vez com
+    `unicodedata.combining`, já suficiente porque só precisa evitar essa
+    única fronteira, nunca reprocessar o texto inteiro.
+
+    Pergunta vazia/só-espaço (não deveria alcançar aqui em uso normal --
+    `CreateRunRequest` já rejeita isso na borda da API antes de
+    `RunConfig` existir, ver app/presentation/schemas.py -- mas
+    `RunConfig` é diretamente construível com `question=" "`, que passa
+    em `min_length=1` sem passar por aquele validador, ver
+    app/orchestrator/config.py): devolve um placeholder fixo neutro em
+    vez de uma abertura com aspas vazias ('""') que pareceria um bug de
+    apresentação."""
+    collapsed = " ".join(question.split())
+    if not collapsed:
+        return _CONTEXTUAL_OPENING_EMPTY_QUESTION_PLACEHOLDER
+    if len(collapsed) <= _CONTEXTUAL_OPENING_QUESTION_MAX_CHARS:
+        return collapsed
+    cut_len = _CONTEXTUAL_OPENING_QUESTION_MAX_CHARS
+    while cut_len > 0 and unicodedata.combining(collapsed[cut_len]):
+        cut_len -= 1
+    return collapsed[:cut_len].rstrip() + _CONTEXTUAL_OPENING_TRUNCATION_MARKER
+
+
 def _render_final_answer_text(
     question: str,
     verdict: JudgeVerdict,
@@ -477,7 +585,7 @@ def _render_final_answer_text(
         lines.append(line)
 
     opening = (
-        _OPENING_CONTEXTUAL_TEMPLATE.format(question=question)
+        _OPENING_CONTEXTUAL_TEMPLATE.format(question=_bounded_question_excerpt(question))
         if plan.opening_style == "contextual"
         else _OPENING_DIRECT
     )

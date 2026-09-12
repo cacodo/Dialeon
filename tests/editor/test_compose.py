@@ -4,7 +4,14 @@ import json
 
 import pytest
 
-from app.editor.compose import Editor
+from app.editor.compose import (
+    _CONTEXTUAL_OPENING_QUESTION_MAX_CHARS,
+    _CONTEXTUAL_OPENING_TRUNCATION_MARKER,
+    Editor,
+    _bounded_question_excerpt,
+    _render_final_answer_text,
+)
+from app.editor.schemas import EditorPlan
 from app.models.domain import ClaimAssessment
 from app.models.provider_models import TokenUsage
 from app.orchestrator.config import QuorumPolicy, RunConfig
@@ -1069,3 +1076,266 @@ async def test_editor_plan_is_unaffected_by_source_analysis_presence():
     assert result.attempts[0].parse_status == "malformed"
     assert result.attempts[1].parse_status == "accepted"
     assert "a fonte definitivamente contradiz isso" not in result.final_answer.answer_text
+
+
+# ---------------------------------------------------------------------------
+# Bounded contextual opening (readability patch) -- `opening_style="contextual"`
+# não reproduz mais `question` sem limite; ver "Bounded contextual opening" na
+# docstring de app/editor/compose.py.
+# ---------------------------------------------------------------------------
+
+
+def test_short_question_direct_opening_unchanged():
+    """1 -- "direct" nunca inclui a pergunta; o patch de bounded excerpt
+    não tem nenhum efeito neste caminho (opening_style="direct" não
+    invoca `_bounded_question_excerpt`)."""
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    plan = EditorPlan(opening_style="direct", closing_style="concise")
+
+    text = _render_final_answer_text("Qual a capital do Brasil?", v, [c1], plan, {})
+
+    assert text.startswith("Resultado da avaliação do debate:")
+    assert "Qual a capital do Brasil?" not in text
+
+
+def test_short_question_contextual_opening_stays_readable_and_unchanged():
+    """2 -- pergunta curta (<= teto) continua reproduzida integralmente,
+    sem reticência -- o caso mais comum não é afetado pelo patch."""
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    plan = EditorPlan(opening_style="contextual", closing_style="concise")
+
+    text = _render_final_answer_text("Qual a capital do Brasil?", v, [c1], plan, {})
+
+    assert 'Em resposta à pergunta "Qual a capital do Brasil?", segue' in text
+    assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER not in text
+
+
+def test_long_single_line_question_is_bounded_in_contextual_opening():
+    """3 -- pergunta longa de uma linha só nunca é reproduzida inteira;
+    o excerto embutido respeita o teto de caracteres."""
+    long_question = "Qual é a explicação detalhada para este fenômeno específico? " * 10
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    plan = EditorPlan(opening_style="contextual", closing_style="concise")
+
+    text = _render_final_answer_text(long_question, v, [c1], plan, {})
+    opening_line = text.splitlines()[0]
+
+    assert long_question not in text
+    assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER in opening_line
+    quoted = opening_line.split('"')[1]
+    assert len(quoted) <= _CONTEXTUAL_OPENING_QUESTION_MAX_CHARS + len(
+        _CONTEXTUAL_OPENING_TRUNCATION_MARKER
+    )
+
+
+def test_long_multiline_question_does_not_dump_all_lines():
+    """4 -- prompt multi-linha não faz a abertura despejar todas as
+    linhas; o achatamento de whitespace colapsa tudo numa única linha
+    ANTES do corte por tamanho."""
+    multiline_question = "\n".join(
+        f"Linha {i} com algum conteúdo de contexto adicional aqui." for i in range(20)
+    )
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    plan = EditorPlan(opening_style="contextual", closing_style="concise")
+
+    text = _render_final_answer_text(multiline_question, v, [c1], plan, {})
+    opening_line = text.splitlines()[0]
+
+    assert "Linha 19" not in text
+    assert len(opening_line) < len(multiline_question)
+    assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER in opening_line
+
+
+def test_structured_requirements_prompt_is_not_echoed_wholesale():
+    """5 -- regressão representativa de um prompt longo estilo
+    "documento de requisitos" colado pelo usuário (o caso real que
+    motivou este patch): bullets/requisitos não aparecem na abertura."""
+    requirements_question = (
+        "Preciso de uma análise dos seguintes requisitos de sistema antes de "
+        "prosseguirmos com a implementação:\n"
+        "- O sistema deve suportar múltiplos usuários simultâneos sem degradação\n"
+        "- Deve haver autenticação via OAuth2 com refresh tokens\n"
+        "- Os dados sensíveis devem ser criptografados em repouso e em trânsito\n"
+        "- É necessário suporte a auditoria completa de todas as ações de usuário\n"
+        "- O sistema precisa expor uma API REST totalmente documentada em OpenAPI\n"
+        "Qual dessas exigências é mais crítica para a primeira entrega?"
+    )
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    plan = EditorPlan(opening_style="contextual", closing_style="concise")
+
+    text = _render_final_answer_text(requirements_question, v, [c1], plan, {})
+    opening_line = text.splitlines()[0]
+
+    assert requirements_question not in text
+    # o último bullet/pergunta final, bem além do teto, nunca sobrevive
+    assert "OpenAPI" not in text
+    assert "primeira entrega" not in text
+    assert len(opening_line) < len(requirements_question)
+    assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER in opening_line
+
+
+def test_bounded_excerpt_is_deterministic_for_identical_input():
+    """6 -- mesma entrada produz sempre a mesma saída (nenhuma
+    aleatoriedade/estado externo)."""
+    question = ("Uma pergunta razoavelmente longa, repetida várias vezes. " * 5) + "\nSegunda linha."
+
+    assert _bounded_question_excerpt(question) == _bounded_question_excerpt(question)
+
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    plan = EditorPlan(opening_style="contextual", closing_style="concise")
+    text_a = _render_final_answer_text(question, v, [c1], plan, {})
+    text_b = _render_final_answer_text(question, v, [c1], plan, {})
+    assert text_a == text_b
+
+
+def test_truncation_is_visibly_indicated_when_question_is_cut():
+    """7 -- quando algo é omitido, a reticência sinaliza isso
+    explicitamente; nunca um corte silencioso."""
+    long_question = "x" * 500
+    excerpt = _bounded_question_excerpt(long_question)
+
+    assert excerpt.endswith(_CONTEXTUAL_OPENING_TRUNCATION_MARKER)
+    assert len(excerpt) < len(long_question)
+
+
+def test_short_question_excerpt_has_no_truncation_marker():
+    """7 (complemento) -- pergunta que já cabe no teto nunca ganha uma
+    reticência que sugeriria (falsamente) que algo foi omitido."""
+    short_question = "pergunta curta e direta"
+    assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER not in _bounded_question_excerpt(short_question)
+
+
+def test_bounded_excerpt_never_orphans_a_combining_mark_at_the_cut():
+    """8 -- Unicode canônico permanece válido mesmo quando o corte cairia,
+    sem o recuo de fronteira, bem no meio de uma sequência
+    base+marca-combinante (acento em forma NFD decomposta): a base é
+    sempre mantida junto com sua marca, ou as duas são descartadas
+    juntas -- nunca uma base "nua" (sem seu acento) sozinha bem antes da
+    reticência. Um prefixo de 1 caractere não-combinante desalinha
+    deliberadamente a paridade de `_CONTEXTUAL_OPENING_QUESTION_MAX_CHARS`
+    (100, par) em relação ao período do padrão (2), garantindo que o
+    corte NATURAL caia no meio de um par base+marca -- exercitando o
+    recuo em vez de só um cenário onde o corte já cairia numa fronteira
+    limpa por coincidência."""
+    base_plus_combining = "e\u0301"  # "é" decomposto (NFD): "e" + combining acute
+    long_question = "z" + base_plus_combining * 80
+
+    excerpt = _bounded_question_excerpt(long_question)
+
+    assert excerpt.endswith(_CONTEXTUAL_OPENING_TRUNCATION_MARKER)
+    kept = excerpt[: -len(_CONTEXTUAL_OPENING_TRUNCATION_MARKER)]
+    # nenhuma base "e" sobrevive sem sua marca combinante correspondente
+    # (nem o inverso) -- sempre em pares completos, nunca separados pelo
+    # corte.
+    assert kept.count("e") == kept.count("\u0301")
+    excerpt.encode("utf-8")  # nunca levanta -- sequência Unicode bem formada
+
+
+def test_bounded_excerpt_preserves_accented_characters_when_untruncated():
+    """8 (complemento) -- acentuação/pontuação normal em português
+    continua intacta quando a pergunta cabe no teto (sem nenhuma
+    transformação além do achatamento de whitespace)."""
+    question = "Qual é a situação econômica atual da região?"
+    assert _bounded_question_excerpt(question) == question
+
+
+@pytest.mark.asyncio
+async def test_bounded_opening_coexists_with_source_relation_rendering_unchanged():
+    """9 -- Source Analysis/SourceRelation continuam renderizados
+    exatamente como antes (linha adicional após a avaliação do Judge)
+    mesmo quando a abertura contextual precisa truncar uma pergunta
+    longa -- os dois patches são inteiramente ortogonais."""
+    long_question = "Isto é uma pergunta bem longa sobre um tópico qualquer. " * 10
+    c1 = raw_claim("Claim única.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="fundamentação")])
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(v)
+    sa = source_analysis_result([source_relation(c1.id, "supports", excerpt="trecho relevante")])
+
+    payload = _plan_payload("contextual", "concise")
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(question=long_question),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+        source_analysis_result=sa,
+    )
+
+    assert long_question not in result.final_answer.answer_text
+    assert "Relação com a fonte fornecida: a fonte apoia esta afirmação." in (
+        result.final_answer.answer_text
+    )
+    assert 'Trecho da fonte: "trecho relevante"' in result.final_answer.answer_text
+
+
+@pytest.mark.asyncio
+async def test_bounded_opening_leaves_judge_verdict_rendering_unchanged():
+    """10 -- rótulo de veredito, explicação do Judge e limitações
+    continuam byte-fiéis, na mesma ordem, mesmo com uma pergunta longa
+    forçando o truncamento da abertura."""
+    long_question = "Uma pergunta longa o bastante para exigir truncamento na abertura. " * 8
+    c1 = raw_claim("Primeira claim.", "resp-1", provider="openai")
+    c2 = raw_claim("Segunda claim.", "resp-2", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="rejected", explanation="motivo específico 1"),
+            ClaimAssessment(claim_id=c2.id, verdict="conflicting", explanation="motivo específico 2"),
+        ],
+        debate_limitations=["limitação registrada X"],
+    )
+    dr = debate_result([c1, c2], [model_response("openai")])
+    jr = judge_result(v)
+
+    payload = _plan_payload("contextual", "limitations_focused")
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(question=long_question),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+
+    text = result.final_answer.answer_text
+    pos_c1 = text.index("Primeira claim.")
+    pos_c2 = text.index("Segunda claim.")
+    assert pos_c1 < pos_c2
+    assert "rejeitada pelo juiz com base no debate disponível" in text
+    assert "motivo específico 1" in text
+    assert "com posições conflitantes, não resolvida" in text
+    assert "motivo específico 2" in text
+    assert "limitação registrada X" in text
+
+
+@pytest.mark.asyncio
+async def test_fallback_path_never_truncates_because_it_never_uses_contextual_opening():
+    """11 -- `_DEFAULT_PLAN` (usado em QUALQUER fallback -- transporte/
+    parse/budget) é sempre `opening_style="direct"`; uma pergunta longa
+    no caminho de fallback não aciona nenhum truncamento porque a
+    pergunta nunca entra na abertura nesse caminho -- comportamento de
+    fallback inalterado por este patch."""
+    long_question = "Uma pergunta bem longa que não deveria aparecer em lugar nenhum. " * 10
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="bem fundamentada")])
+    big_response = model_response("openai", usage=TokenUsage(input_tokens=7000, output_tokens=0))
+    dr = debate_result([c1], [big_response])
+    jr = judge_result(v)
+    editor = Editor({})  # provider nunca é consultado -- budget já fechado
+
+    result = await editor.compose(
+        dr, jr, _run_config(question=long_question, max_total_tokens=7000),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert result.final_answer.status == "deterministic_from_verdict"
+    assert result.final_answer.answer_text.startswith("Resultado da avaliação do debate:")
+    assert long_question not in result.final_answer.answer_text
+    assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER not in result.final_answer.answer_text
