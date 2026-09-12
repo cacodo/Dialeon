@@ -1,0 +1,338 @@
+"""
+Testes de compatibilidade de banco legado — Etapa 17A (B3).
+
+Simula um banco Stage-16 genuíno: cria o schema atual via `init_db()`
+normal, depois APAGA a coluna `had_uncertain_prior_attempts` das 5
+tabelas manualmente (SQLite 3.35+ suporta `DROP COLUMN`) -- reproduz
+fielmente "um banco criado antes da Etapa 17A", sem depender de nenhum
+snapshot de schema congelado.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+
+from app.storage.database import create_engine, init_db
+
+_TABLES_AND_ATTEMPTS_COLUMN = [
+    ("model_responses", "attempts"),
+    ("claim_processing_attempts", "transport_attempts"),
+    ("source_analysis_attempts", "transport_attempts"),
+    ("judge_attempts", "transport_attempts"),
+    ("editor_attempts", "transport_attempts"),
+]
+
+
+async def _make_legacy_db(db_path: str) -> None:
+    """Cria o schema atual e remove a coluna nova das 5 tabelas,
+    simulando fielmente um banco criado antes da Etapa 17A."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN had_uncertain_prior_attempts")
+    conn.commit()
+    conn.close()
+
+
+def _seed_council_run(conn: sqlite3.Connection, run_id: str = "run1") -> None:
+    conn.execute(
+        "INSERT INTO council_runs (id, status, started_at, completed_at, run_config_json, "
+        "claim_processor_provider, debate_cumulative_budget_exceeded, "
+        "initial_insufficient_data_for_consensus, initial_budget_exceeded, judge_provider, "
+        "judge_cumulative_budget_exceeded, editor_provider, editor_cumulative_budget_exceeded) "
+        f"VALUES ('{run_id}','completed','2026-01-01','2026-01-01','{{}}','anthropic',0,0,0,"
+        "'anthropic',0,'anthropic',0)"
+    )
+
+
+def _insert_model_response(
+    conn: sqlite3.Connection, id_: str, status: str, attempts: int, position: int = 0
+) -> None:
+    conn.execute(
+        "INSERT INTO model_responses (id, council_run_id, round_number, position, provider, "
+        "requested_model, model, status, usage_present, latency_ms, attempts, created_at) "
+        f"VALUES ('{id_}','run1',1,{position},'openai','gpt-5.5','gpt-5.5','{status}',0,100,"
+        f"{attempts},'2026-01-01 00:00:00')"
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_database_gets_column_added(tmp_path):
+    db_path = str(tmp_path / "legacy.db")
+    await _make_legacy_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    columns_before = {c[1] for c in conn.execute("PRAGMA table_info(model_responses)")}
+    assert "had_uncertain_prior_attempts" not in columns_before
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns_after = {c[1] for c in conn.execute("PRAGMA table_info(model_responses)")}
+    assert "had_uncertain_prior_attempts" in columns_after
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_backfill_derives_from_attempts_for_success_and_error(tmp_path):
+    """attempts=1 => False; attempts>1 => True -- pra sucesso E erro,
+    exatamente a mesma regra (o bit descreve incerteza de tentativa
+    ANTERIOR, independente do desfecho final)."""
+    db_path = str(tmp_path / "legacy.db")
+    await _make_legacy_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn)
+    _insert_model_response(conn, "mr_success_1", "success", attempts=1, position=0)
+    _insert_model_response(conn, "mr_success_2", "success", attempts=2, position=1)
+    _insert_model_response(conn, "mr_error_1", "error", attempts=1, position=2)
+    _insert_model_response(conn, "mr_error_3", "error", attempts=3, position=3)
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    rows = dict(
+        conn.execute(
+            "SELECT id, had_uncertain_prior_attempts FROM model_responses"
+        ).fetchall()
+    )
+    conn.close()
+
+    assert rows["mr_success_1"] == 0
+    assert rows["mr_success_2"] == 1
+    assert rows["mr_error_1"] == 0
+    assert rows["mr_error_3"] == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_upgrade_preserves_existing_rows(tmp_path):
+    db_path = str(tmp_path / "legacy.db")
+    await _make_legacy_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn)
+    _insert_model_response(conn, "mr1", "success", attempts=1)
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM model_responses").fetchone()[0]
+    conn.close()
+    assert count == 1  # nenhuma linha perdida
+
+
+@pytest.mark.asyncio
+async def test_native_stage17a_value_is_never_recomputed_on_reinit(tmp_path):
+    """Uma vez que a coluna existe (banco já upgradado, ou nascido sob a
+    Etapa 17A), `init_db()` NUNCA mais recalcula/sobrescreve o valor --
+    ele passa a ser autoritativo."""
+    db_path = str(tmp_path / "legacy.db")
+    await _make_legacy_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn)
+    _insert_model_response(conn, "mr1", "success", attempts=1)  # backfill produziria False
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)  # upgrade + backfill roda aqui, mr1 vira False
+    await engine.dispose()
+
+    # Simula um valor NATIVO real da Etapa 17A sendo escrito depois --
+    # legítimo mesmo com attempts=1 (o bit tem fonte de verdade própria
+    # a partir daqui, não é mais derivado de attempts).
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE model_responses SET had_uncertain_prior_attempts = 1 WHERE id = 'mr1'"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)  # rodar de novo -- não deve recalcular nada
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    value = conn.execute(
+        "SELECT had_uncertain_prior_attempts FROM model_responses WHERE id = 'mr1'"
+    ).fetchone()[0]
+    conn.close()
+    assert value == 1  # continua True -- NUNCA voltou a ser recalculado como False
+
+
+@pytest.mark.asyncio
+async def test_init_db_repeated_is_safe_and_idempotent(tmp_path):
+    db_path = str(tmp_path / "legacy.db")
+    await _make_legacy_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn)
+    _insert_model_response(conn, "mr1", "success", attempts=2)
+    conn.commit()
+    conn.close()
+
+    for _ in range(3):
+        engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+        await init_db(engine)
+        await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    value = conn.execute(
+        "SELECT had_uncertain_prior_attempts FROM model_responses WHERE id = 'mr1'"
+    ).fetchone()[0]
+    count = conn.execute("SELECT COUNT(*) FROM model_responses").fetchone()[0]
+    conn.close()
+    assert value == 1
+    assert count == 1  # nenhuma duplicação
+
+
+@pytest.mark.asyncio
+async def test_fresh_stage17a_database_does_not_run_legacy_backfill_path(tmp_path):
+    """Um banco que nasce já sob a Etapa 17A tem a coluna desde a
+    criação -- o branch de upgrade/backfill nunca é exercitado (a
+    checagem de coluna existente já pula tudo)."""
+    db_path = str(tmp_path / "fresh.db")
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns = {c[1] for c in conn.execute("PRAGMA table_info(model_responses)")}
+    conn.close()
+    assert "had_uncertain_prior_attempts" in columns
+
+
+@pytest.mark.asyncio
+async def test_all_five_tables_upgraded_consistently(tmp_path):
+    db_path = str(tmp_path / "legacy.db")
+    await _make_legacy_db(db_path)
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "had_uncertain_prior_attempts" in columns, table
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Etapa 17A.1 (Objetivo B) — upgrade de banco Stage-17A (tem
+# had_uncertain_prior_attempts, ainda não tem provider_finish_reason)
+# ---------------------------------------------------------------------------
+
+
+async def _make_stage17a_db(db_path: str) -> None:
+    """Cria o schema ATUAL (Etapa 17A.1) e remove só a coluna
+    `provider_finish_reason` das 5 tabelas -- simula fielmente um banco
+    já upgradado pela Etapa 17A (tem `had_uncertain_prior_attempts`),
+    mas criado antes da Etapa 17A.1."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_finish_reason")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_stage17a_database_gets_finish_reason_column_added(tmp_path):
+    db_path = str(tmp_path / "stage17a.db")
+    await _make_stage17a_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    columns_before = {c[1] for c in conn.execute("PRAGMA table_info(model_responses)")}
+    assert "had_uncertain_prior_attempts" in columns_before  # já tinha essa
+    assert "provider_finish_reason" not in columns_before  # ainda não tinha essa
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns_after = {c[1] for c in conn.execute("PRAGMA table_info(model_responses)")}
+    assert "provider_finish_reason" in columns_after
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_stage17a_upgrade_does_not_touch_had_uncertain_prior_attempts(tmp_path):
+    """As duas colunas são upgrades INDEPENDENTES -- adicionar
+    provider_finish_reason nunca deveria recalcular/tocar
+    had_uncertain_prior_attempts (que já era autoritativo nesse banco)."""
+    db_path = str(tmp_path / "stage17a.db")
+    await _make_stage17a_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn)
+    conn.execute(
+        "INSERT INTO model_responses (id, council_run_id, round_number, position, provider, "
+        "requested_model, model, status, usage_present, latency_ms, attempts, "
+        "had_uncertain_prior_attempts, created_at) "
+        "VALUES ('mr1','run1',1,0,'openai','gpt-5.5','gpt-5.5','success',0,100,1,"
+        "1,'2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT had_uncertain_prior_attempts, provider_finish_reason FROM model_responses "
+        "WHERE id = 'mr1'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == 1  # continua True -- nunca recalculado pra False (attempts=1 sugeriria False)
+    assert row[1] is None  # coluna nova, sem informação derivável -- NULL honesto
+
+
+@pytest.mark.asyncio
+async def test_both_legacy_upgrades_together_from_true_stage16_database(tmp_path):
+    """Cenário mais antigo possível: banco Stage-16 puro (nenhuma das
+    duas colunas), upgradado direto pra Etapa 17A.1 numa única chamada
+    de init_db()."""
+    db_path = str(tmp_path / "legacy.db")
+    await _make_legacy_db(db_path)  # já remove had_uncertain_prior_attempts também
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_finish_reason")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "had_uncertain_prior_attempts" in columns, table
+        assert "provider_finish_reason" in columns, table
+    conn.close()

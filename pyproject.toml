@@ -1,0 +1,42 @@
+[project]
+name = "llm-council"
+version = "0.1.0"
+description = "Sistema de debate multi-LLM com juiz, para chegar a respostas com alto grau de consenso auditável."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "streamlit>=1.37",
+    # SDKs oficiais dos 3 providers do MVP (Etapa 2 — Provider Layer)
+    "openai>=1.55",
+    "anthropic>=0.40",
+    "google-genai>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+dialeon = "app.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: faz chamadas reais às APIs dos providers; requer API keys configuradas e NÃO roda por padrão",
+]
+# Por padrão, pytest NUNCA roda testes de integração (evita gasto/consumo de
+# créditos sem intenção explícita). Para rodá-los: pytest -m integration
+addopts = "-m 'not integration'"

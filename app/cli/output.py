@@ -1,0 +1,240 @@
+"""
+Formatação de saída da CLI -- Etapa 14 (T19A.1).
+
+Duas responsabilidades bem separadas:
+
+- `emit_json(schema)`: serializa um schema Pydantic já existente
+  (`app.presentation.schemas`/`app.presentation.mappers` -- camada
+  neutra compartilhada com a API, ver docstring de `commands.py`).
+  `model_dump(mode="json")` já preserva `None` como `null` corretamente
+  -- nenhuma transformação adicional necessária (Unknown != 0/false).
+- `emit_json_error(code, message, details)`: mesmo formato de erro já
+  usado pela API (`ErrorResponse`), pra scripts tratarem os dois de
+  forma idêntica.
+- Funções `human_*`: texto simples pro terminal, nunca reconstruído a
+  partir do JSON -- lidas diretamente dos mesmos objetos de domínio/
+  schema. `_fmt` nunca transforma `None` em `0`/`False`/string vazia.
+
+stdout é reservado pro resultado (humano ou `--json`); stderr é só pra
+mensagens de erro -- ver `main.py`.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from typing import Any
+
+from pydantic import BaseModel
+
+from app.presentation.schemas import CompletedRunResponse, QuorumFailureRunResponse
+from app.text_safety import terminal_safe_text
+
+# Patch de seguranca de terminal -- terminal_safe_text mora em
+# app/text_safety.py (nao aqui) porque e um utilitario neutro de topo,
+# no mesmo espirito de app/structured_output.py. app/editor/compose.py
+# NAO usa terminal_safe_text -- e codigo de dominio, terminal-agnostico
+# de proposito (ver docstring de app/text_safety.py); toda neutralizacao
+# de terminal acontece exclusivamente nas funcoes human_* deste modulo,
+# no unico lugar que de fato escreve num terminal real.
+
+
+def emit_json(schema: BaseModel) -> None:
+    print(schema.model_dump_json())
+
+
+def emit_json_error(code: str, message: str, details: dict[str, Any] | None = None) -> None:
+    body: dict[str, Any] = {"error": {"code": code, "message": message}}
+    if details is not None:
+        body["error"]["details"] = details
+    print(json.dumps(body, ensure_ascii=False), file=sys.stderr)
+
+
+def print_error(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def _fmt(value: Any, *, unit: str = "") -> str:
+    """Nunca transforma None em 0/false/"" -- sempre um rótulo explícito
+    de desconhecido, que é o que None realmente significa nestes
+    contratos (custo/token não observável, não zero)."""
+    if value is None:
+        return "desconhecido"
+    return f"{value}{unit}"
+
+
+def human_run_result(run: CompletedRunResponse) -> str:
+    """Patch de segurança de terminal (FinalAnswer da CLI, round 2) --
+    `run.final_answer.answer_text`/`limitations`/`editor_model` podem
+    conter texto NÃO CONFIÁVEL: `answer_text` mistura template autorado
+    pela aplicação com `Claim.text`/`ClaimAssessment.explanation`
+    (via o renderizador determinístico de app/editor/compose.py) e
+    excerpt de fonte, já achatados numa única string -- a proveniência
+    de cada `\\n` dentro dela se perde antes de chegar aqui, então
+    NENHUM `\\n` pode ser tratado como "seguro" só por já estar em
+    `answer_text` (ver docstring de `terminal_safe_text`); `limitations`
+    é texto livre do Judge; `editor_model` é metadado REPORTADO PELO
+    PROVIDER (nunca gerado pela aplicação). Byte-fiéis no domínio/API/
+    persistência/frontend (nunca mutados aqui: `run`/`run.final_answer`
+    permanecem intocados, só as STRINGS impressas passam por
+    `terminal_safe_text`, sempre em modo estrito). Este é o único
+    ponto que de fato escreve num terminal real nesta função -- é aqui,
+    e só aqui, que a neutralização acontece."""
+    lines = [
+        "status: concluída",
+        f"run_id: {run.id}",
+        f"status_da_resposta: {run.final_answer.status}",
+        f"editor_model: {terminal_safe_text(_fmt(run.final_answer.editor_model))}",
+        f"confiança_do_juiz: {_fmt(run.final_answer.judge_confidence)}",
+        "",
+        terminal_safe_text(run.final_answer.answer_text),
+    ]
+    if run.final_answer.limitations:
+        lines.append("")
+        lines.append("limitações:")
+        lines.extend(f"  - {terminal_safe_text(item)}" for item in run.final_answer.limitations)
+    lines.append("")
+    lines.append(
+        f"custo estimado: {run.accounting.estimated_cost_usd:.6f} USD "
+        f"(contabilidade completa: {'não' if run.accounting.has_unknown_accounting_components else 'sim'})"
+    )
+    return "\n".join(lines)
+
+
+def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
+    return "\n".join(
+        [
+            "status: quórum insuficiente",
+            f"run_id: {run.id}",
+            f"respostas bem-sucedidas: {run.successful_count}/{run.total_providers} "
+            f"(mínimo pra retornar: {run.min_to_return})",
+            "Nenhuma resposta final foi composta -- o quórum mínimo não foi atingido.",
+        ]
+    )
+
+
+def human_run_summary_list(runs: list) -> str:
+    if not runs:
+        return "Nenhuma execução ainda."
+    lines = []
+    for run in runs:
+        status = "concluída" if run.status == "completed" else "quórum insuficiente"
+        lines.append(f"{run.id}  {status:20s}  {run.started_at.isoformat()}")
+    return "\n".join(lines)
+
+
+def human_providers_list(providers: list[str]) -> str:
+    if not providers:
+        return "Nenhum provider disponível."
+    return "\n".join(providers)
+
+
+_SOURCE_ANALYSIS_SKIPPED_LABELS: dict[str, str] = {
+    "no_claims_to_analyze": "não havia claims para analisar",
+    "budget_exhausted_before_source_analysis": "o orçamento se esgotou antes da análise de fonte",
+    "source_analysis_transport_failed": "houve uma falha de comunicação durante a análise de fonte",
+    "source_analysis_output_invalid": "a saída da análise de fonte não pôde ser interpretada corretamente",
+}
+
+# Etapa 16 (patch de visibilidade humana) -- rótulos de RELAÇÃO com a
+# fonte, nunca de verdade externa: "apoia"/"contradiz" descrevem o que a
+# análise encontrou entre a claim e o texto da fonte fornecida, nunca se
+# a claim é verdadeira/falsa/provada (ver app/source_analysis/models.py
+# -- SOURCE RELATION != TRUTH VERDICT, mesma disciplina de
+# app/editor/compose.py::_VERDICT_LABELS pro Judge).
+_SOURCE_RELATION_LABELS: dict[str, str] = {
+    "supports": "segundo a análise, a fonte apoia esta claim",
+    "contradicts": "segundo a análise, a fonte contradiz esta claim",
+    "unresolved": "a análise não conseguiu determinar a relação com a fonte",
+}
+
+_SOURCE_REJECTED_REASON_LABELS: dict[str, str] = {
+    "omitted_by_model": "a análise não endereçou esta claim",
+    "duplicate_claim_id": "a análise devolveu mais de uma entrada para a mesma claim (descartada)",
+    "invalid_entry": "a entrada da análise não pôde ser validada",
+}
+
+
+def _human_source_analysis_lines(source_analysis: Any) -> list[str]:
+    """Etapa 16 (patch de visibilidade humana) -- `source_analysis`
+    permanece AUDIT-ONLY: estas linhas só COMUNICAM o que já foi
+    computado/persistido, nunca influenciam veredito/resposta final.
+    Compacto por design (mesma disciplina de `human_run_audit`) -- lista
+    cada relação/entrada rejeitada uma vez, sem reproduzir o JSON
+    inteiro (`attempts`, `excerpt_start`/`excerpt_end`, `raw_entry`
+    seguem só em `--json`).
+
+    Patch de segurança de terminal -- `relation.excerpt` é o ÚNICO
+    campo de texto livre NÃO CONFIÁVEL impresso neste bloco (fatiado do
+    `source_text` fornecido pelo usuário/fonte externa) e por isso o
+    único que passa por `terminal_safe_text()` (app/text_safety.py)
+    antes de virar linha de terminal. `relation.claim_id`/
+    `entry.claim_id` NUNCA são texto
+    livre -- ou apontam pra um id de claim real já conhecido pela
+    aplicação (`uuid4()`, nunca ecoado de LLM) ou são `None`/
+    "desconhecida" (ver app/source_analysis/models.py:
+    `RejectedSourceEntry.claim_id` nunca fabrica uma FK falsa a partir
+    de texto suspeito). `relation.relation`/`entry.reason`/
+    `source_analysis.skipped_reason` são sempre um `Literal[...]`
+    Pydantic de valores fixos conhecidos, nunca string arbitrária --
+    não precisam de sanitização, só os rótulos fixos já usados acima."""
+    if source_analysis is None:
+        return ["análise_de_fonte: nenhuma fonte foi fornecida nesta execução"]
+
+    if source_analysis.skipped_reason is not None:
+        reason_label = _SOURCE_ANALYSIS_SKIPPED_LABELS.get(
+            source_analysis.skipped_reason, source_analysis.skipped_reason
+        )
+        return [f"análise_de_fonte: não concluída -- {reason_label}"]
+
+    relations = [r for r in source_analysis.claim_results if r.kind == "relation"]
+    rejected = [r for r in source_analysis.claim_results if r.kind == "rejected"]
+    supports = sum(1 for r in relations if r.relation == "supports")
+    contradicts = sum(1 for r in relations if r.relation == "contradicts")
+    unresolved = sum(1 for r in relations if r.relation == "unresolved")
+
+    lines = [
+        f"análise_de_fonte: concluída -- relações: {len(relations)} "
+        f"(apoia: {supports}, contradiz: {contradicts}, não determinada: {unresolved}); "
+        f"entradas rejeitadas: {len(rejected)}"
+    ]
+    for relation in relations:
+        label = _SOURCE_RELATION_LABELS.get(relation.relation, relation.relation)
+        lines.append(f"  - claim {relation.claim_id}: {label}")
+        if relation.excerpt is not None:
+            lines.append(f'      trecho da fonte: "{terminal_safe_text(relation.excerpt)}"')
+    for entry in rejected:
+        reason_label = _SOURCE_REJECTED_REASON_LABELS.get(entry.reason, entry.reason)
+        claim_ref = entry.claim_id if entry.claim_id is not None else "desconhecida"
+        lines.append(f"  - entrada rejeitada (claim {claim_ref}): {reason_label}")
+    return lines
+
+
+def human_run_audit(audit: Any) -> str:
+    """Resumo compacto -- não uma réplica exaustiva de toda a árvore de
+    auditoria (isso é o que `--json` é para). Mostra só o que já é
+    imediatamente útil de ler no terminal; o resto está no JSON."""
+    if audit.status == "completed":
+        lines = [
+            "status: concluída",
+            f"run_id: {audit.id}",
+            f"claims: {len(audit.claims)}",
+            f"claim_processing_attempts: {len(audit.claim_processing_attempts)}",
+            f"judge_verdict: {'presente' if audit.judge_verdict is not None else 'ausente'}",
+            f"judge_attempts: {len(audit.judge_attempts)}",
+            f"editor_attempts: {len(audit.editor_attempts)}",
+            f"resposta_final_status: {audit.final_answer.status}",
+            f"custo_estimado_usd: {audit.accounting.estimated_cost_usd:.6f}",
+            f"contabilidade_completa: {'não' if audit.accounting.has_unknown_accounting_components else 'sim'}",
+        ]
+        lines.extend(_human_source_analysis_lines(audit.source_analysis))
+        return "\n".join(lines)
+
+    return "\n".join(
+        [
+            "status: quórum insuficiente",
+            f"run_id: {audit.id}",
+            f"respostas bem-sucedidas: {audit.successful_count}/{audit.total_providers} "
+            f"(mínimo pra retornar: {audit.min_to_return})",
+        ]
+    )

@@ -1,0 +1,82 @@
+"""
+Contratos estruturados de I/O para as chamadas de extração e agrupamento de
+claims (claim processor, Etapa 5).
+
+Deliberadamente NÃO são `Claim` de domínio (app/models/domain.py) — são o
+que a LLM tem permissão de produzir. A aplicação é quem converte isso em
+`Claim` de verdade, depois de validar (ver app/debate/claim_extraction.py).
+Nenhum destes schemas tem campo de id de `Claim` que a LLM poderia inventar
+— `member_claim_ids`/`revises_claim_id` são REFERÊNCIAS a ids que a
+aplicação já gerou e forneceu como contexto, nunca ids novos criados pela
+LLM.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+_IO_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class ExtractedClaimDraft(BaseModel):
+    """Uma claim que a LLM identificou na resposta que está sendo
+    processada. `revises_claim_id`, quando presente, é uma REFERÊNCIA a um
+    id de claim do round anterior que esta claim corrige/contesta —
+    sempre `None` no round 1 (não há claim anterior possível); no round 2+
+    só pode referenciar um id que a aplicação explicitamente colocou no
+    contexto daquela chamada de extração. A aplicação valida essa
+    referência antes de converter em `Claim.parent_claim_id` — nunca aceita
+    sem checar.
+
+    `proposed_numeric_assertion` (Etapa 15) -- DELIBERADAMENTE `Any`, não
+    o schema estrito (`ArithmeticAssertion`, app/debate/numeric_verification.py).
+    Esta validação (`ExtractedClaimDraft`/`ClaimExtractionOutput`) é
+    ATÔMICA sobre a lista inteira de claims da resposta — se este campo
+    fosse estrito aqui, uma proposta numérica malformada de UMA claim
+    derrubaria a extração de TODAS as outras claims válidas da mesma
+    resposta (Repo Evidence Pack, Issue A). A validação estrita acontece
+    SEPARADA, depois que a Claim já foi construída, em
+    `numeric_verification.build_verification_attempt` — falha lá vira
+    `invalid_proposal` (auditoria), nunca invalida a extração."""
+
+    model_config = _IO_CONFIG
+
+    text: str = Field(min_length=1)
+    revises_claim_id: str | None = None
+    proposed_numeric_assertion: Any = None
+
+
+class ClaimExtractionOutput(BaseModel):
+    """Resultado de uma chamada de extração — pode legitimamente conter 0
+    claims (a resposta processada não afirmou nada extraível)."""
+
+    model_config = _IO_CONFIG
+
+    claims: list[ExtractedClaimDraft] = Field(default_factory=list)
+
+
+class ClaimGroupProposal(BaseModel):
+    """Um grupo de claims brutas que a LLM considera semanticamente
+    equivalentes. `member_claim_ids` exige no mínimo 2: um "grupo" de 1
+    membro não funde nada — claims que não têm equivalente ficam em
+    `ClaimGroupingOutput.ungrouped_claim_ids`, não aqui."""
+
+    model_config = _IO_CONFIG
+
+    member_claim_ids: list[str] = Field(min_length=2)
+    canonical_text: str = Field(min_length=1)
+
+
+class ClaimGroupingOutput(BaseModel):
+    """Resultado de uma chamada de agrupamento. A aplicação valida, depois
+    de parsear isto, que a união de `groups` + `ungrouped_claim_ids` é
+    EXATAMENTE igual ao conjunto de claims brutas dadas como entrada — sem
+    sobra, sem falta, sem duplicata entre grupos (ver
+    app/debate/claim_extraction.py:_validate_grouping_references)."""
+
+    model_config = _IO_CONFIG
+
+    groups: list[ClaimGroupProposal] = Field(default_factory=list)
+    ungrouped_claim_ids: list[str] = Field(default_factory=list)
