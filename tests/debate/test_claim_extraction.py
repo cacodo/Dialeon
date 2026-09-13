@@ -707,3 +707,350 @@ async def test_malformed_output_without_truncation_signal_still_retries():
     assert claims == []
     assert len(attempts) == 2
     assert attempts[1].parse_status == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# Calibração de granularidade de extração (investigação de "claim
+# amplification" upstream) -- SOMENTE contratos de CONTEÚDO DO PROMPT.
+#
+# Por que não há teste comportamental "este texto produz N claims": a
+# extração real (decidir se uma sentença composta vira 1 ou 2 claims) é
+# julgamento do modelo, nunca aplicado por filtragem determinística
+# depois (mesma disciplina já estabelecida por
+# test_round_2_prompt_instructs_against_pure_agreement_restatement,
+# cujo docstring documenta exatamente esse mesmo motivo). Um
+# ScriptedProvider só prova que a aplicação processa corretamente
+# QUALQUER JSON que o "modelo" (roteirizado) devolva -- nunca que um
+# modelo real faria a mesma escolha de granularidade. Por isso todo
+# teste abaixo verifica o TEXTO do prompt enviado, nunca a contagem de
+# claims resultante de uma chamada real.
+# ---------------------------------------------------------------------------
+
+
+async def _sent_system_prompt(round_number: int, known_claims: list[Claim] | None) -> str:
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", '{"claims": []}')])
+    await extract_claims(
+        _response(round_number=round_number),
+        round_number=round_number,
+        total_models_in_round=2,
+        extractor=provider,
+        max_output_tokens_per_call=1024,
+        known_claims=known_claims,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,
+    )
+    return provider.received_requests[0].system_prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_states_independently_judgeable_proposition_principle():
+    """9 -- o prompt precisa comunicar o critério central: uma claim por
+    proposição avaliável de forma independente sem perder o sentido
+    essencial."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "proposição" in prompt
+    assert "independente" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_rejects_mechanical_clause_splitting():
+    """9 -- o prompt precisa deixar explícito que NÃO é pra criar uma
+    claim por oração/cláusula gramatical automaticamente."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "cláusula" in prompt or "oração" in prompt
+    assert "automaticamente" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_requires_qualifier_preservation():
+    """9/3 -- o prompt precisa instruir explicitamente a preservação de
+    qualificadores essenciais (incerteza/condição/frequência), com
+    exemplos concretos, e proibir removê-los pra criar uma afirmação
+    categórica."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "qualificador" in prompt
+    assert "provavelmente" in prompt
+    assert "categórica" in prompt or "categorica" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_allows_causal_relations_as_claims():
+    """9/Correção da investigação -- o prompt NÃO pode declarar relações
+    causais como não-claims; precisa dizer explicitamente que uma
+    relação causal PODE ser, ela mesma, uma claim legítima e
+    independentemente avaliável."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "causal" in prompt
+    assert "legítima" in prompt or "legitima" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_preserves_hedging_and_disagreement():
+    """9 -- o prompt precisa instruir a preservação de incerteza,
+    contrastes e discordâncias genuínas, nunca apagá-las ou fundi-las
+    numa afirmação mais forte."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "incerteza" in prompt
+    assert "discordâncias" in prompt or "discordancias" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_forbids_positive_negative_restatement_duplication():
+    """9 -- o prompt precisa proibir criar uma segunda claim só por
+    reformular a mesma proposição de forma positiva/negativa ou
+    equivalente (o caso 'resultado é 42, não 40')."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "positiva" in prompt and "negativa" in prompt
+    assert "reforça" in prompt or "reforçada" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_forbids_isolating_dependent_explanatory_fragments():
+    """9 -- o prompt precisa proibir transformar um fragmento
+    explicativo em claim própria quando ele não pode ser avaliado
+    sozinho, desconectado da afirmação da qual depende."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "fragmento explicativo" in prompt
+    assert "desconectado" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_keeps_independent_propositions_separate_in_one_sentence():
+    """9 -- o prompt precisa deixar explícito que proposições
+    genuinamente independentes na MESMA frase não devem ser fundidas."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "mesma frase" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_has_no_numerical_claim_count_target():
+    """4/9 -- o prompt precisa dizer explicitamente que NÃO existe meta
+    numérica de claims, e que uma resposta com várias proposições
+    independentes deve gerar várias claims -- nunca uma instrução
+    POSITIVA pra minimizar/preferir poucas claims (a palavra "minimizar"
+    pode aparecer dentro da própria NEGAÇÃO -- "nem significa minimizar"
+    -- por isso a checagem é pela frase negada completa, não pela
+    ausência bruta da palavra)."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "meta numérica" in prompt or "meta numerica" in prompt
+    assert "nem significa minimizar" in prompt
+    assert "prefira poucas" not in prompt
+    assert "no máximo" not in prompt
+    assert "no maximo" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_worked_examples_present():
+    """5 -- os 3 exemplos calibrados (SQLite+FastAPI; superaquecimento
+    provável com causa; 42 não 40) precisam estar presentes
+    verbatim o bastante pra serem localizáveis."""
+    prompt = await _sent_system_prompt(1, None)
+    assert "SQLite" in prompt and "FastAPI" in prompt
+    assert "superaqueceu" in prompt.lower() or "superaquecimento" in prompt.lower()
+    assert "42" in prompt and "40" in prompt
+
+
+@pytest.mark.asyncio
+def _categorical_and_unqualified(
+    text: str, categorical_phrase: str, qualifier: str = "provavelmente"
+) -> bool:
+    """Helper de TESTE (nunca lógica de produção -- só existe aqui, pra
+    tornar as checagens de escopo de qualificador precisas e legíveis,
+    ver docstring de test_causal_example_preserves_qualifier_scope_faithfully).
+
+    Confirma que `categorical_phrase` aparece em `text` como cláusula
+    categórica intacta, sem `qualifier` prefixado nem inserido dentro
+    dela. Rejeita as duas formas de mutação adversarial que uma
+    checagem positiva ingênua deixaria passar:
+
+    1. PREFIXO -- '{qualifier} {categorical_phrase}' (ex.: 'provavelmente
+       o dispositivo superaqueceu'): a substring categórica original
+       ainda aparece CONTÍGUA dentro do texto mutado, então só checar
+       `categorical_phrase in text` não pegaria isso -- por isso a
+       checagem negativa explícita do prefixo.
+    2. INSERÇÃO NO MEIO -- ex.: 'o fluxo de ar provavelmente estava
+       bloqueado': quebra a contiguidade da frase categórica original
+       (a substring exata some), então a própria checagem positiva de
+       contiguidade já falha nesse caso, sem precisar de regra
+       adicional."""
+    if categorical_phrase not in text:
+        return False
+    if f"{qualifier} {categorical_phrase}" in text:
+        return False
+    return True
+
+
+_EXPECTED_CAUSAL_EXAMPLE_SOURCE = (
+    "O dispositivo superaqueceu e o fluxo de ar estava bloqueado; o "
+    "bloqueio do fluxo de ar provavelmente causou o superaquecimento"
+)
+
+
+@pytest.mark.asyncio
+async def test_causal_example_preserves_qualifier_scope_faithfully():
+    """Correção pós-revisão independente (3ª rodada, endurecimento de
+    contrato de teste -- achado MEDIUM) -- as versões anteriores deste
+    teste usavam âncoras de substring fracas o bastante pra continuar
+    passando sob mutações que reintroduzem exatamente o defeito original
+    de escopo de qualificador, só que numa posição diferente (ex.:
+    'Provavelmente o dispositivo superaqueceu e...', ou 'o fluxo de ar
+    provavelmente estava bloqueado'). Este teste protege a distribuição
+    de certeza COMPLETA das três proposições, na FONTE e na
+    DECOMPOSIÇÃO, separadamente.
+
+    FONTE (isolada entre aspas simples logo após "(b) '", nunca o
+    exemplo inteiro nem o prompt inteiro -- não é um snapshot do
+    prompt): verificada por IGUALDADE EXATA contra o texto fixo
+    esperado. Isto é deliberado e permitido -- o exemplo (b) é uma
+    frase-fonte FIXA, não prosa livre; qualquer mutação de posição do
+    qualificador (prefixo no evento, inserção no meio da cláusula do
+    fluxo de ar, ou remoção do qualificador da causal) produz uma
+    string DIFERENTE da esperada e falha aqui imediatamente, sem
+    precisar enumerar cada mutação possível uma a uma.
+
+    DECOMPOSIÇÃO (o comentário após a fonte, cuja prosa ao redor das
+    cláusulas fixas pode variar -- nunca checada por igualdade exata):
+    usa `_categorical_and_unqualified` pra confirmar que as duas
+    proposições categóricas (superaquecimento, bloqueio de ar) aparecem
+    intactas, sem 'provavelmente' nem como prefixo nem inserido no
+    meio, e que 'provavelmente causou' (a cláusula causal qualificada)
+    está presente.
+
+    Este teste FALHA contra TODAS as variantes inseguras conhecidas:
+    (A) 'O dispositivo provavelmente superaqueceu porque...' (hedge
+        direto no evento); (B) 'O dispositivo superaqueceu, provavelmente
+        porque...' (hedge ainda ambíguo sobre o bloqueio de ar); (C)
+        'Provavelmente o dispositivo superaqueceu e...' (qualificador
+        prefixado no início, escopo sobre a frase inteira); (D) 'o
+        fluxo de ar provavelmente estava bloqueado' (qualificador
+        inserido dentro da 2a proposição categórica) -- as quatro
+        produzem uma frase-fonte diferente da esperada, então a
+        igualdade exata já rejeita todas. (E)/(F) as mesmas duas
+        últimas mutações aplicadas à DECOMPOSIÇÃO em vez da fonte são
+        rejeitadas por `_categorical_and_unqualified` (verificado
+        isoladamente antes deste teste, com texto extraído
+        programaticamente da produção -- ver histórico de revisão).
+
+    Nenhuma dessas checagens prova comportamento de um provider real --
+    só que o TEXTO do prompt (produzido deterministicamente por esta
+    função) continua exatamente como o exemplo pretende ensinar."""
+    prompt = await _sent_system_prompt(1, None)
+    start = prompt.index("(b)")
+    end = prompt.index("(c)")
+    example_b = prompt[start:end]
+
+    # isola só a frase-fonte citada, entre as aspas simples logo após "(b) '"
+    source_marker = "(b) '"
+    source_start = example_b.index(source_marker) + len(source_marker)
+    source_end = example_b.index("'", source_start)
+    source_sentence = example_b[source_start:source_end]
+    decomposition = example_b[source_end:].lower()
+
+    # FONTE -- igualdade exata: rejeita mutações A-D de uma vez, sem
+    # depender de enumerar cada uma delas como uma âncora separada.
+    assert source_sentence == _EXPECTED_CAUSAL_EXAMPLE_SOURCE
+
+    # DECOMPOSIÇÃO -- as duas proposições categóricas, intactas, sem
+    # 'provavelmente' prefixado nem inserido no meio (rejeita mutações
+    # E/F).
+    assert _categorical_and_unqualified(decomposition, "o dispositivo superaqueceu")
+    assert _categorical_and_unqualified(decomposition, "o fluxo de ar estava bloqueado")
+
+    # DECOMPOSIÇÃO -- a cláusula causal qualificada está presente,
+    # explicitamente.
+    assert "provavelmente causou o superaquecimento" in decomposition
+
+    # instrução explícita contra as duas direções da falha (mantida das
+    # revisões anteriores)
+    assert "mova" in decomposition and "qualificador" in decomposition
+    assert "categórica" in decomposition or "categorica" in decomposition
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_applies_to_round_1():
+    """6 -- a calibração de granularidade está presente no round 1
+    (sem known_claims), confirmando que faz parte do prompt BASE
+    compartilhado, não de um bloco exclusivo de round 2."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "critério de granularidade" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_applies_to_round_2():
+    """6 -- a MESMA calibração de granularidade também chega ao round 2
+    -- não é substituída nem omitida quando known_claims está presente."""
+    old_claim = _old_claim("claim-antiga-1", "X é verdadeiro.")
+    prompt = (await _sent_system_prompt(2, [old_claim])).lower()
+    assert "critério de granularidade" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_coexists_with_round_2_restatement_and_revision_guidance():
+    """6/10 -- a calibração de granularidade convive com (nunca
+    substitui) as regras já existentes de round 2: supressão de mera
+    reafirmação e distinção revisão-vs-contestação continuam presentes,
+    inalteradas em significado, no MESMO prompt que já carrega a nova
+    orientação de granularidade."""
+    old_claim = _old_claim("claim-antiga-1", "X é verdadeiro.")
+    prompt = (await _sent_system_prompt(2, [old_claim])).lower()
+
+    # granularidade presente
+    assert "critério de granularidade" in prompt
+    # supressão de reafirmação presente e inalterada (mesmas âncoras já
+    # usadas por test_round_2_prompt_instructs_against_pure_agreement_restatement)
+    assert "concordo com a claim" in prompt
+    assert "concordância" in prompt or "reafirmação" in prompt
+    # distinção revisão-vs-contestação presente e inalterada (mesmas
+    # âncoras já usadas por test_prompt_distinguishes_revision_from_mere_contestation)
+    assert any(word in prompt for word in ("corrige", "revisa", "substitui"))
+    assert "discord" in prompt or "contesta" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_never_instructs_minimizing_claims():
+    """4 -- checagem negativa direta: nenhuma variação de "minimize"/
+    "reduza"/"prefira menos" aparece em nenhum dos dois rounds."""
+    for round_number, known in ((1, None), (2, [_old_claim("c1", "Y.")])):
+        prompt = (await _sent_system_prompt(round_number, known)).lower()
+        for forbidden in ("minimize", "reduza a quantidade", "prefira menos", "prefira poucas"):
+            assert forbidden not in prompt
+
+
+@pytest.mark.asyncio
+async def test_scripted_output_with_many_independent_claims_is_processed_without_alteration():
+    """Complemento -- prova que a APLICAÇÃO (nunca o julgamento de
+    granularidade em si, ver docstring da seção) processa corretamente
+    uma extração com VÁRIAS claims independentes já roteirizadas, sem
+    fundir/descartar nenhuma -- confirma que nada na aplicação impõe uma
+    contagem máxima ou mínima por resposta."""
+    payload = json.dumps(
+        {
+            "claims": [
+                {"text": "A escola começou com 240 alunos.", "revises_claim_id": None},
+                {"text": "30 alunos saíram.", "revises_claim_id": None},
+                {"text": "54 alunos entraram.", "revises_claim_id": None},
+                {"text": "A escola terminou com 264 alunos.", "revises_claim_id": None},
+            ]
+        }
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+
+    claims, attempts, _verifications = await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,
+    )
+
+    assert len(claims) == 4
+    assert attempts[0].parse_status == "accepted"
+    assert {c.text for c in claims} == {
+        "A escola começou com 240 alunos.",
+        "30 alunos saíram.",
+        "54 alunos entraram.",
+        "A escola terminou com 264 alunos.",
+    }
