@@ -5,10 +5,14 @@ import json
 import pytest
 
 from app.editor.compose import (
+    _BUCKET_A_HEADING,
+    _BUCKET_B_HEADING,
     _CONTEXTUAL_OPENING_QUESTION_MAX_CHARS,
     _CONTEXTUAL_OPENING_TRUNCATION_MARKER,
+    _VERDICT_TO_BUCKET,
     Editor,
     _bounded_question_excerpt,
+    _bucket_for_verdict,
     _render_final_answer_text,
 )
 from app.editor.schemas import EditorPlan
@@ -104,14 +108,25 @@ async def test_llm_planned_full_flow():
 
 
 @pytest.mark.asyncio
-async def test_claim_order_always_follows_verdict_assessments_order():
-    """EditorPlan não tem NENHUMA referência a claim -- não há mais como
-    testar "a LLM devolve em ordem invertida", porque não existe ordem
-    nenhuma vinda da LLM pra inverter. Este teste prova a propriedade
-    mais forte que substitui aquele caso: a ordem é SEMPRE
-    verdict.claim_assessments, incondicionalmente."""
-    c1 = raw_claim("Primeira claim.", "resp-1", provider="openai")
-    c2 = raw_claim("Segunda claim.", "resp-2", provider="openai")
+async def test_within_bucket_order_follows_verdict_assessments_order():
+    """Invariante REAL pós-bucketing (hardening pós-revisão independente
+    -- o nome/docstring anteriores deste teste afirmavam que a ordem de
+    `answer_text` é SEMPRE `verdict.claim_assessments`, "incondicionalmente";
+    isso deixou de ser globalmente verdadeiro quando a apresentação
+    passou a particionar por bucket de veredito, ver
+    "Deterministic verdict-bucket final answer" em app/editor/compose.py
+    -- a ordem do Judge só é garantida DENTRO de cada bucket, não entre
+    buckets diferentes). `EditorPlan` continua sem NENHUMA referência a
+    claim -- não há como a LLM Editor reordenar nada; a ordem dentro do
+    bucket vem inteiramente de `verdict.claim_assessments`.
+
+    Sentinelas deliberadamente EM ORDEM REVERSA-LEXICAL ("Zulu"/"Alpha")
+    -- um sort acidental por texto/claim_id faria este teste FALHAR
+    (diferente dos nomes "Primeira"/"Segunda" usados antes, que já
+    coincidiam com a ordem lexical e não teriam detectado essa
+    regressão)."""
+    c1 = raw_claim("Zulu claim.", "resp-1", provider="openai")
+    c2 = raw_claim("Alpha claim.", "resp-2", provider="openai")
     v = verdict(
         [
             ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok1"),
@@ -132,9 +147,9 @@ async def test_claim_order_always_follows_verdict_assessments_order():
         prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
     )
 
-    pos_primeira = result.final_answer.answer_text.index("Primeira claim.")
-    pos_segunda = result.final_answer.answer_text.index("Segunda claim.")
-    assert pos_primeira < pos_segunda
+    pos_zulu = result.final_answer.answer_text.index("Zulu claim.")
+    pos_alpha = result.final_answer.answer_text.index("Alpha claim.")
+    assert pos_zulu < pos_alpha
 
 
 # ---------------------------------------------------------------------------
@@ -1339,3 +1354,453 @@ async def test_fallback_path_never_truncates_because_it_never_uses_contextual_op
     assert result.final_answer.answer_text.startswith("Resultado da avaliação do debate:")
     assert long_question not in result.final_answer.answer_text
     assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER not in result.final_answer.answer_text
+
+
+# ---------------------------------------------------------------------------
+# Deterministic verdict-bucket final answer -- particiona
+# `ClaimAssessment.verdict` em 2 seções fixas (BUCKET A: supported/
+# partially_supported; BUCKET B: conflicting/unresolved/rejected). Ver
+# "Deterministic verdict-bucket final answer" na docstring de
+# app/editor/compose.py. Este patch resolve SOMENTE a apresentação plana
+# indiferenciada -- não resolve quantidade de claims, agrupamento
+# semântico, nem relevância pra pergunta (fora de escopo, ver docstring).
+# ---------------------------------------------------------------------------
+
+
+def _plan(opening_style: str = "direct", closing_style: str = "concise") -> EditorPlan:
+    return EditorPlan(opening_style=opening_style, closing_style=closing_style)
+
+
+def test_all_five_current_verdicts_map_to_the_same_bucket_as_before():
+    """Hardening pós-revisão independente (item 1/3) -- prova que a
+    mapeação EXAUSTIVA (`_VERDICT_TO_BUCKET`) cobre exatamente os 5
+    valores de `ClaimAssessment.verdict` (app/judge/schemas.py) e produz
+    o MESMO bucket de antes desta hardening, pra cada um -- regressão de
+    comportamento, não só de existência da chave."""
+    assert _bucket_for_verdict("supported") == "a"
+    assert _bucket_for_verdict("partially_supported") == "a"
+    assert _bucket_for_verdict("conflicting") == "b"
+    assert _bucket_for_verdict("unresolved") == "b"
+    assert _bucket_for_verdict("rejected") == "b"
+    # a mapeação em si cobre EXATAMENTE esses 5 valores -- nem mais, nem
+    # menos (prova a exaustividade, não só os 5 casos testados acima).
+    assert set(_VERDICT_TO_BUCKET) == {
+        "supported",
+        "partially_supported",
+        "conflicting",
+        "unresolved",
+        "rejected",
+    }
+
+
+def test_unknown_verdict_fails_explicitly_instead_of_falling_into_bucket_b():
+    """Hardening pós-revisão independente (item 1/3) -- um veredito fora
+    dos 5 valores mapeados (estruturalmente impossível hoje via
+    `ClaimAssessment` real, cujo `verdict` é um `Literal` fechado
+    validado pelo Judge antes de chegar aqui -- por isso este teste
+    exercita `_bucket_for_verdict` diretamente, conforme autorizado pela
+    hardening request, ao invés de tentar construir um `ClaimAssessment`
+    inválido) precisa FALHAR explicitamente -- nunca degradar
+    silenciosamente pra BUCKET B. Isso torna schema drift futuro no
+    Judge (um sexto valor de verdict) impossível de passar despercebido
+    por este renderizador."""
+    with pytest.raises(ValueError, match="made_up_future_verdict"):
+        _bucket_for_verdict("made_up_future_verdict")
+
+
+def test_single_supported_claim_only_bucket_a_heading_appears():
+    """11.1 -- só o cabeçalho do bucket A aparece; nenhum cabeçalho vazio
+    de bucket B."""
+    c1 = raw_claim("Uma claim sustentada.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+
+    text = _render_final_answer_text("pergunta", v, [c1], _plan(), {})
+
+    assert _BUCKET_A_HEADING in text
+    assert _BUCKET_B_HEADING not in text
+
+
+def test_single_rejected_claim_only_bucket_b_heading_appears():
+    """11.2 -- só o cabeçalho do bucket B aparece; nenhum cabeçalho vazio
+    de bucket A."""
+    c1 = raw_claim("Uma claim rejeitada.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="rejected", explanation="motivo")])
+
+    text = _render_final_answer_text("pergunta", v, [c1], _plan(), {})
+
+    assert _BUCKET_B_HEADING in text
+    assert _BUCKET_A_HEADING not in text
+
+
+def test_supported_and_partially_supported_share_bucket_a_in_order():
+    """11.3 -- supported + partially_supported caem no MESMO bucket A,
+    preservando a ordem relativa em que o Judge as listou.
+
+    Sentinelas reverse-lexical ("Zulu"/"Alpha", hardening pós-revisão
+    independente) -- um sort acidental por texto/claim_id faria este
+    teste FALHAR, ao invés de coincidir com a ordem esperada."""
+    c1 = raw_claim("Zulu sustentada.", "resp-1", provider="openai")
+    c2 = raw_claim("Alpha parcial.", "resp-2", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok1"),
+            ClaimAssessment(claim_id=c2.id, verdict="partially_supported", explanation="ok2"),
+        ]
+    )
+
+    text = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), {})
+
+    assert _BUCKET_B_HEADING not in text
+    pos_heading = text.index(_BUCKET_A_HEADING)
+    pos_c1 = text.index("Zulu sustentada.")
+    pos_c2 = text.index("Alpha parcial.")
+    assert pos_heading < pos_c1 < pos_c2
+
+
+def test_conflicting_unresolved_rejected_share_bucket_b_in_order():
+    """11.4 -- conflicting + unresolved + rejected caem no MESMO bucket
+    B, preservando a ordem relativa em que o Judge as listou.
+
+    Sentinelas estritamente reverse-lexical ("Zulu" > "Mike" > "Alpha",
+    hardening pós-revisão independente) -- um sort ascendente acidental
+    por texto/claim_id produziria Alpha/Mike/Zulu, diferente da ordem
+    esperada, e faria este teste FALHAR."""
+    c1 = raw_claim("Zulu conflitante.", "resp-1", provider="openai")
+    c2 = raw_claim("Mike não resolvida.", "resp-2", provider="openai")
+    c3 = raw_claim("Alpha rejeitada.", "resp-3", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="conflicting", explanation="ok1"),
+            ClaimAssessment(claim_id=c2.id, verdict="unresolved", explanation="ok2"),
+            ClaimAssessment(claim_id=c3.id, verdict="rejected", explanation="ok3"),
+        ]
+    )
+
+    text = _render_final_answer_text("pergunta", v, [c1, c2, c3], _plan(), {})
+
+    assert _BUCKET_A_HEADING not in text
+    pos_heading = text.index(_BUCKET_B_HEADING)
+    pos_c1 = text.index("Zulu conflitante.")
+    pos_c2 = text.index("Mike não resolvida.")
+    pos_c3 = text.index("Alpha rejeitada.")
+    assert pos_heading < pos_c1 < pos_c2 < pos_c3
+
+
+def test_mixed_verdicts_bucket_a_before_bucket_b_each_claim_once():
+    """11.5 -- bucket A aparece inteiro antes do bucket B; cada claim
+    aparece exatamente uma vez no total."""
+    c1 = raw_claim("Sustentada.", "resp-1", provider="openai")
+    c2 = raw_claim("Rejeitada.", "resp-2", provider="openai")
+    c3 = raw_claim("Parcial.", "resp-3", provider="openai")
+    c4 = raw_claim("Conflitante.", "resp-4", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok1"),
+            ClaimAssessment(claim_id=c2.id, verdict="rejected", explanation="ok2"),
+            ClaimAssessment(claim_id=c3.id, verdict="partially_supported", explanation="ok3"),
+            ClaimAssessment(claim_id=c4.id, verdict="conflicting", explanation="ok4"),
+        ]
+    )
+
+    text = _render_final_answer_text("pergunta", v, [c1, c2, c3, c4], _plan(), {})
+
+    pos_a_heading = text.index(_BUCKET_A_HEADING)
+    pos_b_heading = text.index(_BUCKET_B_HEADING)
+    assert pos_a_heading < pos_b_heading
+    # bucket A: Sustentada + Parcial, ambas antes do cabeçalho B
+    assert text.index("Sustentada.") < pos_b_heading
+    assert text.index("Parcial.") < pos_b_heading
+    # bucket B: Rejeitada + Conflitante, ambas depois do cabeçalho B
+    assert text.index("Rejeitada.") > pos_b_heading
+    assert text.index("Conflitante.") > pos_b_heading
+    # cada claim aparece exatamente uma vez
+    for claim_text in ("Sustentada.", "Rejeitada.", "Parcial.", "Conflitante."):
+        assert text.count(claim_text) == 1
+
+
+def test_interleaved_judge_order_preserved_within_each_bucket():
+    """11.6 -- a ordem original do Judge, mesmo INTERCALADA entre
+    veredictos de buckets diferentes, é preservada dentro de cada bucket
+    -- nunca reordenada globalmente por claim_id/texto/etc.
+
+    Sentinelas reverse-lexical dentro de cada bucket ("Zulu" antes de
+    "Alpha", hardening pós-revisão independente) -- um sort ascendente
+    acidental por texto dentro do bucket faria este teste FALHAR, ao
+    invés de coincidir com a ordem esperada."""
+    c_a1 = raw_claim("A-Zulu.", "resp-1", provider="openai")
+    c_b1 = raw_claim("B-Zulu.", "resp-2", provider="openai")
+    c_a2 = raw_claim("A-Alpha.", "resp-3", provider="openai")
+    c_b2 = raw_claim("B-Alpha.", "resp-4", provider="openai")
+    # ordem do Judge: A, B, A, B intercalados -- de propósito, pra provar
+    # que o particionamento não depende da ordem de entrada ser agrupada.
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c_a1.id, verdict="supported", explanation="ok"),
+            ClaimAssessment(claim_id=c_b1.id, verdict="rejected", explanation="ok"),
+            ClaimAssessment(claim_id=c_a2.id, verdict="partially_supported", explanation="ok"),
+            ClaimAssessment(claim_id=c_b2.id, verdict="unresolved", explanation="ok"),
+        ]
+    )
+
+    text = _render_final_answer_text(
+        "pergunta", v, [c_a1, c_b1, c_a2, c_b2], _plan(), {}
+    )
+
+    # dentro do bucket A: A-Zulu antes de A-Alpha (ordem do Judge, nunca
+    # ordem lexical -- que colocaria A-Alpha primeiro)
+    assert text.index("A-Zulu.") < text.index("A-Alpha.")
+    # dentro do bucket B: B-Zulu antes de B-Alpha (ordem do Judge)
+    assert text.index("B-Zulu.") < text.index("B-Alpha.")
+    # nunca ordenado globalmente por texto -- aqui os dois buckets são
+    # seções distintas, não uma lista global.
+    assert text.index(_BUCKET_A_HEADING) < text.index("A-Zulu.")
+    assert text.index(_BUCKET_B_HEADING) < text.index("B-Zulu.")
+
+
+def test_verdict_labels_and_explanations_unchanged_inside_claim_blocks():
+    """11.7 -- rótulo/explicação dentro de cada bloco de claim continuam
+    exatamente os mesmos de antes do bucketing."""
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict(
+        [ClaimAssessment(claim_id=c1.id, verdict="conflicting", explanation="motivo específico")]
+    )
+
+    text = _render_final_answer_text("pergunta", v, [c1], _plan(), {})
+
+    assert "Avaliação: com posições conflitantes, não resolvida. motivo específico" in text
+
+
+@pytest.mark.asyncio
+async def test_bucketed_answer_preserves_supports_relation_on_correct_claim():
+    """11.8 -- SourceRelation supports permanece anexada ao bloco da
+    claim correta, mesmo com o particionamento em buckets."""
+    c1 = raw_claim("Claim com fonte.", "resp-1", provider="openai")
+    c2 = raw_claim("Claim sem fonte.", "resp-2", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok1"),
+            ClaimAssessment(claim_id=c2.id, verdict="rejected", explanation="ok2"),
+        ]
+    )
+    dr = debate_result([c1, c2], [model_response("openai")])
+    jr = judge_result(v)
+    sa = source_analysis_result([source_relation(c1.id, "supports", excerpt="trecho de apoio")])
+
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", _plan_payload())])
+    editor = Editor({"anthropic": provider})
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+        source_analysis_result=sa,
+    )
+
+    text = result.final_answer.answer_text
+    pos_c1 = text.index("Claim com fonte.")
+    pos_relation = text.index('Trecho da fonte: "trecho de apoio"')
+    pos_c2 = text.index("Claim sem fonte.")
+    # a relação aparece DEPOIS do bloco de c1 e ANTES do bloco de c2
+    # (c1 está no bucket A, c2 no bucket B, em seções separadas)
+    assert pos_c1 < pos_relation < pos_c2
+    assert "Relação com a fonte fornecida: a fonte apoia esta afirmação." in text
+
+
+@pytest.mark.asyncio
+async def test_bucketed_answer_preserves_contradicts_relation_on_correct_claim():
+    """11.9 -- SourceRelation contradicts permanece anexada ao bloco da
+    claim correta e não migra pro outro bucket por causa da relação."""
+    c1 = raw_claim("Claim contradita pela fonte.", "resp-1", provider="openai")
+    c2 = raw_claim("Outra claim.", "resp-2", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="unresolved", explanation="ok1"),
+            ClaimAssessment(claim_id=c2.id, verdict="supported", explanation="ok2"),
+        ]
+    )
+    dr = debate_result([c1, c2], [model_response("openai")])
+    jr = judge_result(v)
+    sa = source_analysis_result(
+        [source_relation(c1.id, "contradicts", excerpt="trecho contrário")]
+    )
+
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", _plan_payload())])
+    editor = Editor({"anthropic": provider})
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+        source_analysis_result=sa,
+    )
+
+    text = result.final_answer.answer_text
+    # c1 (unresolved -> bucket B) continua carregando a relação de
+    # contradição, mesmo que c2 (supported -> bucket A) seja renderizada
+    # numa seção ANTES dela -- a relação nunca "migra" de claim.
+    pos_c1 = text.index("Claim contradita pela fonte.")
+    pos_relation = text.index('Trecho da fonte: "trecho contrário"')
+    assert pos_c1 < pos_relation
+    assert text.index(_BUCKET_B_HEADING) < pos_c1
+    assert "Relação com a fonte fornecida: a fonte contradiz esta afirmação." in text
+    # c2 (bucket A, renderizada ANTES de c1 nesta configuração de
+    # veredictos) nunca ganha a relação de c1 -- a relação aparece
+    # exatamente uma vez no texto inteiro, presa ao bloco de c1.
+    assert text.count("Trecho da fonte") == 1
+    assert text.count("Relação com a fonte fornecida") == 1
+
+
+def test_direct_opening_unchanged_by_bucketing():
+    """11.10 -- abertura "direct" continua igual; só a organização das
+    seções de claim muda."""
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+
+    text = _render_final_answer_text("pergunta", v, [c1], _plan("direct"), {})
+
+    assert text.startswith("Resultado da avaliação do debate:")
+    assert _BUCKET_A_HEADING in text
+
+
+def test_contextual_opening_bounded_behavior_preserved_with_buckets():
+    """11.11 -- comportamento de bounded-opening (slice anterior)
+    continua intacto: pergunta longa ainda é truncada na abertura, agora
+    seguida pelas seções de bucket."""
+    long_question = "Uma pergunta bem longa que precisa ser truncada na abertura. " * 10
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="rejected", explanation="ok")])
+
+    text = _render_final_answer_text(long_question, v, [c1], _plan("contextual"), {})
+    opening_line = text.splitlines()[0]
+
+    assert long_question not in text
+    assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER in opening_line
+    assert _BUCKET_B_HEADING in text
+
+
+def test_limitation_closing_unchanged_by_bucketing():
+    """11.12 -- fechamento de limitações continua igual, independente do
+    número de buckets renderizados."""
+    c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
+    v = verdict(
+        [ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")],
+        debate_limitations=["cobertura parcial do debate"],
+    )
+
+    concise_text = _render_final_answer_text("pergunta", v, [c1], _plan("direct", "concise"), {})
+    focused_text = _render_final_answer_text(
+        "pergunta", v, [c1], _plan("direct", "limitations_focused"), {}
+    )
+
+    assert "Limitações do debate:\n- cobertura parcial do debate" in concise_text
+    assert (
+        "Antes de considerar esta resposta, observe especificamente as seguintes "
+        "limitações do debate:\n- cobertura parcial do debate" in focused_text
+    )
+
+
+@pytest.mark.asyncio
+async def test_success_and_fallback_produce_same_bucket_structure():
+    """11.13 -- o mesmo veredito produz a MESMA estrutura de buckets no
+    caminho de sucesso (plano da LLM) e no caminho de fallback
+    determinístico -- mesma disciplina de
+    `test_success_with_default_plan_values_matches_fallback_rendering`,
+    agora cobrindo bucketing."""
+    c1 = raw_claim("Sustentada.", "resp-1", provider="openai")
+    c2 = raw_claim("Rejeitada.", "resp-2", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok1"),
+            ClaimAssessment(claim_id=c2.id, verdict="rejected", explanation="ok2"),
+        ]
+    )
+    dr = debate_result([c1, c2], [model_response("openai")])
+    jr = judge_result(v)
+
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", _plan_payload())])
+    editor = Editor({"anthropic": provider})
+    success_result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+
+    big_response = model_response("openai", usage=TokenUsage(input_tokens=7000, output_tokens=0))
+    dr_fallback = debate_result([c1, c2], [big_response])
+    editor_no_provider = Editor({})
+    fallback_result = await editor_no_provider.compose(
+        dr_fallback, jr, _run_config(max_total_tokens=7000),
+        prior_input_tokens=dr_fallback.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr_fallback.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr_fallback.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert success_result.final_answer.answer_text == fallback_result.final_answer.answer_text
+    assert _BUCKET_A_HEADING in success_result.final_answer.answer_text
+    assert _BUCKET_B_HEADING in success_result.final_answer.answer_text
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_fallback_never_invents_buckets():
+    """11.14 -- sem veredito, não existe `ClaimAssessment.verdict` pra
+    particionar -- o fallback continua listando as claims brutas como
+    lista simples, SEM nenhum cabeçalho de bucket inventado."""
+    c1 = raw_claim("Claim levantada mas não avaliada.", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(None, verdict_unavailable_reason="no_claims_to_judge")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+
+    text = result.final_answer.answer_text
+    assert result.final_answer.status == "deterministic_no_verdict"
+    assert _BUCKET_A_HEADING not in text
+    assert _BUCKET_B_HEADING not in text
+    assert "Claim levantada mas não avaliada." in text
+
+
+def test_bucketed_rendering_is_deterministic_for_identical_input():
+    """11.15 -- mesma entrada produz `answer_text` byte-idêntico."""
+    c1 = raw_claim("Sustentada.", "resp-1", provider="openai")
+    c2 = raw_claim("Rejeitada.", "resp-2", provider="openai")
+    v = verdict(
+        [
+            ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok1"),
+            ClaimAssessment(claim_id=c2.id, verdict="rejected", explanation="ok2"),
+        ]
+    )
+
+    text_a = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), {})
+    text_b = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), {})
+
+    assert text_a == text_b
+
+
+def test_claim_block_count_matches_assessment_count_regardless_of_bucketing():
+    """11.16 -- número de blocos de claim renderizados ("- ...") é
+    exatamente `len(verdict.claim_assessments)`, independente de quantos
+    buckets acabam populados."""
+    c1 = raw_claim("Primeira.", "resp-1", provider="openai")
+    c2 = raw_claim("Segunda.", "resp-2", provider="openai")
+    c3 = raw_claim("Terceira.", "resp-3", provider="openai")
+    assessments = [
+        ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok1"),
+        ClaimAssessment(claim_id=c2.id, verdict="rejected", explanation="ok2"),
+        ClaimAssessment(claim_id=c3.id, verdict="conflicting", explanation="ok3"),
+    ]
+    v = verdict(assessments)
+
+    text = _render_final_answer_text("pergunta", v, [c1, c2, c3], _plan(), {})
+
+    claim_block_count = sum(
+        1 for line in text.splitlines() if line.startswith("- ")
+    )
+    assert claim_block_count == len(assessments)
+
+
+def test_bucket_headings_never_imply_truth_or_importance():
+    """11.17 -- os cabeçalhos fixos nunca contêm termos que sugiram
+    verdade/importância além do próprio veredito do Judge."""
+    forbidden_terms = ["principal", "confirmado", "confirmada", "correto", "correta", "verdadeiro", "verdadeira"]
+    for heading in (_BUCKET_A_HEADING, _BUCKET_B_HEADING):
+        lowered = heading.lower()
+        for term in forbidden_terms:
+            assert term not in lowered

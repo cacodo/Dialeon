@@ -101,7 +101,75 @@ app/cli/output.py::human_run_result, ver app/text_safety.py) -- este
 patch é sobre TAMANHO/achatamento de whitespace do excerto, uma
 preocupação de legibilidade de apresentação, ortogonal a caracteres de
 controle/terminal.
-"""
+
+Deterministic verdict-bucket final answer (patch de legibilidade
+pós-investigação de "claim amplification") -- antes deste patch, TODA
+`ClaimAssessment` virava uma linha solta, na ordem bruta em que o Judge
+LLM listou `claim_assessments` em seu JSON, sem nenhuma organização
+visual -- um debate com 17 claims avaliadas virava 17 blocos de texto
+indistinguíveis entre si, misturando conclusões sustentadas com
+ressalvas/conflitos/rejeições sem nenhuma separação.
+
+Escopo estrito do que este patch resolve -- e do que NÃO resolve:
+resolve SOMENTE a apresentação plana e indiferenciada de um conjunto de
+avaliações que o Judge já produziu. NÃO resolve, e não tenta resolver,
+NENHUM dos seguintes (investigação de "claim amplification", fora de
+escopo aqui por decisão explícita): quantidade excessiva de claims
+extraídas (`app/debate/claim_extraction.py::extract_claims`),
+agrupamento insuficiente de claims semanticamente próximas
+(`extract_claims::group_claims`), ou relevância de uma claim específica
+para a pergunta do usuário -- não existe, e este patch não introduz,
+NENHUM sinal de saliência/relevância/importância no domínio (ver
+app/models/domain.py: `Claim`/`ClaimAssessment` não têm nenhum campo
+desse tipo). Uma claim narrow-mas-correta continua tão presente e tão
+"correta" quanto antes -- só passa a aparecer ao lado de outras do MESMO
+tipo de veredito, nunca reordenada/filtrada por importância percebida.
+
+Mecanismo -- `_bucket_for_verdict` particiona `ClaimAssessment.verdict`
+(um Literal de 5 valores fechado, já validado pelo Judge, ver
+app/judge/schemas.py) em exatamente 2 grupos FIXOS, nunca decididos por
+conteúdo/similaridade/texto: BUCKET A (`supported`,
+`partially_supported`) e BUCKET B (`conflicting`, `unresolved`,
+`rejected`). Isso é uma projeção determinística e total de um campo que
+já existe -- não deriva, infere, nem reinterpreta veredito nenhum
+(`EDITOR != SECOND JUDGE` continua valendo: nenhuma decisão nova é
+tomada sobre o CONTEÚDO da claim, só sobre em qual das 2 seções fixas
+ela é impressa, a partir do rótulo que o Judge já atribuiu). A ORDEM
+dentro de cada bucket continua sendo exatamente a ordem em que o Judge
+listou `claim_assessments` -- este patch nunca ordena por claim_id,
+texto, supporting_model_ratio, nem qualquer outra chave; só particiona,
+preservando ordem relativa. `supporting_model_ratio`/`Claim.status`
+(consenso entre modelos) NUNCA são consultados aqui -- consenso não é
+usado como proxy de bucket, exatamente porque CONSENSUS != TRUTH (e, por
+extensão, CONSENSUS != RELEVANCE) -- só `ClaimAssessment.verdict`, o
+único campo que este patch olha. O mapeamento (`_VERDICT_TO_BUCKET`) é
+EXAUSTIVO, não um `if/else` com fallback -- um veredito fora dos 5
+valores mapeados faz `_bucket_for_verdict` levantar `ValueError`, nunca
+cair silenciosamente em BUCKET B (hardening pós-revisão independente:
+schema drift futuro no Judge precisa ser uma decisão explícita aqui,
+nunca um acidente de apresentação).
+
+Os cabeçalhos de seção (`_BUCKET_A_HEADING`/`_BUCKET_B_HEADING`) são
+templates FIXOS desta função, no mesmo espírito de
+`_OPENING_DIRECT`/`_CLOSING_LIMITATIONS_LEAD_IN` -- nunca escritos ou
+escolhidos pela LLM Editor (`EditorPlan` continua com exatamente os
+mesmos dois enums finitos, sem nenhum campo novo). Redação deliberadamente
+neutra quanto a categoria epistêmica, nunca quanto a importância: descrevem
+"o Judge considerou isto sustentado" / "o Judge não deu isto por
+estabelecido" -- nunca "principal"/"secundário", "confirmado"/"correto",
+"mais relevante". Um cabeçalho de bucket VAZIO nunca é impresso (ver
+`_render_final_answer_text`) -- não existe frase fixa alternativa tipo
+"nenhuma conclusão sustentada" (isso sugeriria uma leitura sobre o
+CONTEÚDO do debate que este patch não tem autoridade pra fazer; contraste
+com `_CLOSING_LIMITATIONS_NONE_REGISTERED`, que é sobre limitações, um
+campo à parte, com sua própria semântica de fallback pré-existente e
+inalterada).
+
+O fallback sem veredito (`Editor._no_verdict_result`) continua
+INALTERADO por este patch -- ele nunca teve `ClaimAssessment.verdict`
+nenhum pra particionar (o Judge nunca chegou a rodar), então continua
+listando as claims brutas levantadas como uma lista simples, sem buckets
+inventados sobre dado que não existe."""
 
 from __future__ import annotations
 
@@ -137,6 +205,71 @@ _VERDICT_LABELS: dict[str, str] = {
     "conflicting": "com posições conflitantes, não resolvida",
     "unresolved": "sem informação suficiente para decidir",
 }
+
+# Deterministic verdict-bucket final answer -- ver docstring do módulo.
+# Partição FIXA e TOTAL de `ClaimAssessment.verdict` (Literal fechado de 5
+# valores, app/judge/schemas.py) em exatamente 2 grupos -- nunca 3+, nunca
+# decidido por conteúdo. BUCKET A = veredito que o Judge considerou
+# sustentado (mesmo que parcialmente); BUCKET B = o Judge não deu por
+# estabelecido (rejeitado, conflitante, ou insuficiente pra decidir --
+# tratados como uma ÚNICA categoria de apresentação aqui, sem hierarquia
+# entre eles; a distinção ENTRE os três continua inteiramente visível no
+# rótulo por claim, via `_VERDICT_LABELS`, nunca perdida). Isso NÃO é uma
+# escala de confiança/importância.
+#
+# EXAUSTIVO de propósito -- mapeia os 5 valores um a um, nunca um
+# `if/else` com fallback implícito: um SEXTO valor de `verdict` (schema
+# do Judge estendido no futuro sem que este renderizador seja
+# atualizado) precisa ser uma decisão explícita de bucket ANTES de
+# qualquer texto ser gerado, nunca um acidente de "cai em B por não bater
+# com A" -- ver `_bucket_for_verdict` abaixo, que falha ao invés de
+# degradar quando a chave não existe aqui. Deliberadamente MAIS estrito
+# que `_VERDICT_LABELS.get(..., assessment.verdict)` acima (que é só um
+# RÓTULO de exibição, nunca decide entre 2 seções fixas -- um rótulo
+# desconhecido exibido verbatim não tem o mesmo risco de "silenciosamente
+# incorreto" que um veredito novo caindo na seção errada teria).
+_VERDICT_TO_BUCKET: dict[str, Literal["a", "b"]] = {
+    "supported": "a",
+    "partially_supported": "a",
+    "conflicting": "b",
+    "unresolved": "b",
+    "rejected": "b",
+}
+
+# Cabeçalhos FIXOS desta função (nunca escritos/escolhidos pela LLM
+# Editor) -- redigidos pra descrever a CATEGORIA epistêmica do Judge,
+# nunca importância/prioridade/verdade/certeza além do próprio veredito.
+# "sustentadas pelo debate" ecoa deliberadamente o vocabulário já usado
+# em `_VERDICT_LABELS["supported"]` ("sustentada pelo debate") -- mesma
+# terminologia, nunca um sinônimo novo que pudesse ler como uma
+# afirmação mais forte. "não estabelecidos" descreve com precisão as 3
+# categorias de BUCKET B sem promover nenhuma leitura de falsidade: uma
+# claim rejeitada não foi "provada falsa" (ver `_VERDICT_LABELS`), uma
+# conflitante não foi resolvida, uma insuficiente não foi decidida --
+# "não estabelecido" é o denominador comum verdadeiro das três, sem
+# inventar uma palavra mais forte que nenhuma delas sozinha sustentaria.
+_BUCKET_A_HEADING = "Conclusões sustentadas pelo debate:"
+_BUCKET_B_HEADING = "Pontos não estabelecidos pelo debate:"
+
+
+def _bucket_for_verdict(verdict_value: str) -> Literal["a", "b"]:
+    """Lookup EXAUSTIVO em `_VERDICT_TO_BUCKET` -- nunca um fallback
+    implícito. Um `verdict_value` fora dos 5 mapeados (estruturalmente
+    impossível hoje: `ClaimAssessment.verdict` é um `Literal` fechado
+    validado pelo Judge antes de chegar aqui, ver app/judge/schemas.py/
+    app/models/domain.py) levanta `ValueError` ao invés de cair
+    silenciosamente em BUCKET B -- fail-closed: nenhum `FinalAnswer` é
+    produzido a partir de um veredito que este renderizador não sabe
+    onde colocar."""
+    try:
+        return _VERDICT_TO_BUCKET[verdict_value]
+    except KeyError:
+        raise ValueError(
+            "veredito sem bucket de apresentação definido: "
+            f"{verdict_value!r} -- _VERDICT_TO_BUCKET precisa ser "
+            "atualizado explicitamente antes que este veredito possa "
+            "ser renderizado"
+        ) from None
 
 _JUDGE_REASON_LABELS: dict[str, str] = {
     "budget_exhausted_before_judge": "o orçamento se esgotou antes da avaliação final",
@@ -558,20 +691,32 @@ def _render_final_answer_text(
     função, só selecionado (nunca escrito) pelos dois enums finitos do
     plano.
 
-    Ordem sempre = `verdict.claim_assessments` (ordem do próprio Judge,
-    nunca controlável pela LLM -- `EditorPlan` nem tem campo de
-    referência a claim). Toda avaliação do Judge aparece exatamente uma
-    vez -- não há como o plano omitir ou reordenar uma claim, porque o
-    plano não sabe que claims existem.
+    Ordem: `verdict.claim_assessments` é sempre percorrido uma única vez,
+    na ordem do próprio Judge (nunca controlável pela LLM -- `EditorPlan`
+    nem tem campo de referência a claim) -- cada avaliação é ANEXADA ao
+    bucket A ou B (`_bucket_for_verdict`, projeção FIXA e determinística
+    de `assessment.verdict`, ver docstring do módulo, "Deterministic
+    verdict-bucket final answer") -- nunca reordenada, nunca filtrada:
+    a ordem RELATIVA dentro de cada bucket é exatamente a ordem em que o
+    Judge listou aquelas avaliações. Toda avaliação do Judge aparece
+    exatamente uma vez, em exatamente um bucket -- não há como o plano
+    omitir/reordenar/duplicar uma claim, porque o plano não sabe que
+    claims (nem buckets) existem. Um bucket vazio nunca imprime seu
+    cabeçalho (nenhuma frase "nenhuma conclusão sustentada" inventada) --
+    ver `_BUCKET_A_HEADING`/`_BUCKET_B_HEADING`.
 
     `source_relations_by_claim_id` (patch de apresentação com fonte):
     quando existe uma relação válida pra `assessment.claim_id`, uma
     linha ADICIONAL (`_render_source_relation_suffix`) é anexada
     DEPOIS da linha "Avaliação: ..." do Judge -- nunca a substitui,
     nunca muda `label`/`assessment.explanation`. As duas coexistem
-    sempre que ambas existem (SOURCE RELATION != JUDGE VERDICT)."""
+    sempre que ambas existem (SOURCE RELATION != JUDGE VERDICT). A
+    relação viaja PRESA ao bloco da claim -- nunca ao bucket -- então
+    nunca muda de claim nem desaparece por causa do particionamento
+    (o bucket de uma claim é decidido SÓ por `assessment.verdict`,
+    nunca pela presença/ausência de uma relação de fonte)."""
     claims_by_id = {c.id: c for c in current_claims}
-    lines = []
+    bucket_lines: dict[Literal["a", "b"], list[str]] = {"a": [], "b": []}
     for assessment in verdict.claim_assessments:
         claim = claims_by_id.get(assessment.claim_id)
         claim_text = claim.text if claim is not None else "(claim não encontrada)"
@@ -582,14 +727,20 @@ def _render_final_answer_text(
             relation_suffix = _render_source_relation_suffix(relation)
             if relation_suffix is not None:
                 line += relation_suffix
-        lines.append(line)
+        bucket_lines[_bucket_for_verdict(assessment.verdict)].append(line)
+
+    sections = []
+    if bucket_lines["a"]:
+        sections.append(_BUCKET_A_HEADING + "\n" + "\n".join(bucket_lines["a"]))
+    if bucket_lines["b"]:
+        sections.append(_BUCKET_B_HEADING + "\n" + "\n".join(bucket_lines["b"]))
 
     opening = (
         _OPENING_CONTEXTUAL_TEMPLATE.format(question=_bounded_question_excerpt(question))
         if plan.opening_style == "contextual"
         else _OPENING_DIRECT
     )
-    answer_text = opening + "\n" + "\n".join(lines)
+    answer_text = opening + "\n\n" + "\n\n".join(sections)
 
     limitation_lines = (
         "\n".join(f"- {lim}" for lim in verdict.debate_limitations)
