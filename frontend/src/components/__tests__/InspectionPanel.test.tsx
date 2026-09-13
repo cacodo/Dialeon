@@ -43,6 +43,8 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       max_cost_usd: 1,
       max_total_tokens: 100000,
       max_output_tokens_per_call: 1024,
+      max_output_tokens_grouping: 1024,
+      max_output_tokens_judge: 1024,
       round_dispatch_timeout_seconds: 60,
       quorum: { min_for_debate: 1, min_to_return: 1 },
     },
