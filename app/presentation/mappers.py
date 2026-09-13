@@ -135,7 +135,9 @@ def claim_public(claim: Claim) -> ClaimPublic:
             )
             for s in claim.supporting_model_response_ids
         ],
+        supporting_models=list(claim.supporting_models),
         total_models_in_round=claim.total_models_in_round,
+        support_scope_model_count=claim.support_scope_model_count,
         confidence=claim.confidence,
         created_at=claim.created_at,
     )

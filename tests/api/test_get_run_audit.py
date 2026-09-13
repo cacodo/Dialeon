@@ -45,6 +45,48 @@ def test_get_run_audit_completed_full_detail():
     assert body["final_answer"]["answer_text"] == result.final_answer.answer_text
 
 
+def test_get_run_audit_claim_supporting_models_deduplicated():
+    """Correção pós-revisão independente (HIGH 2) -- `ClaimPublic.supporting_models`
+    (nova projeção pública, ver app/presentation/schemas.py) precisa
+    chegar deduplicada por provider/model através da API real -- nunca
+    igual a `len(supporting_model_response_ids)` quando o mesmo
+    provider/model aparece mais de uma vez (ex.: mesmo modelo
+    respondendo em Round 1 e Round 2, reconciliação cross-round)."""
+    from app.models.domain import ClaimSupport
+
+    result = full_council_run_result()
+    base_claim = result.debate_result.claims[0]
+    mr1 = result.debate_result.initial_result.responses[0]
+    critique_mr = result.debate_result.critique_round.round_result.responses[0]
+    # 2 ClaimSupport com model_response_id DIFERENTES (2 responses reais
+    # -- Round 1 + Round 2, ver mr1/critique_mr) mas o MESMO provider/model
+    # -- exatamente o cenário que support_scope_model_count/reconciliação
+    # cross-round produz (mesmo modelo respondendo nas duas rodadas).
+    duplicated_support_claim = base_claim.model_copy(
+        update={
+            "id": "duplicated-support-claim-id",
+            "supporting_model_response_ids": [
+                ClaimSupport(model_response_id=mr1.id, provider="openai", model="gpt-5.5"),
+                ClaimSupport(model_response_id=critique_mr.id, provider="openai", model="gpt-5.5"),
+            ],
+        }
+    )
+    debate_result = result.debate_result.model_copy(
+        update={"claims": [base_claim, duplicated_support_claim]}
+    )
+    result = result.model_copy(update={"debate_result": debate_result})
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_success, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}/audit")
+
+    body = resp.json()
+    claim_json = next(c for c in body["claims"] if c["id"] == "duplicated-support-claim-id")
+    assert len(claim_json["supporting_model_response_ids"]) == 2  # bruto, nunca deduplicado
+    assert claim_json["supporting_models"] == ["openai/gpt-5.5"]  # deduplicado, 1 único
+
+
 def test_get_run_audit_raw_response_text_preserved():
     result = full_council_run_result()
     app = create_app(settings=_settings(), components_factory=make_components_factory())

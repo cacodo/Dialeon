@@ -54,11 +54,16 @@ async def init_db(engine: AsyncEngine) -> None:
 
     Etapa 17A.1: mesmo tratamento pra `provider_finish_reason` (Objetivo
     B) -- só que sem backfill nenhum, ver docstring de
-    `_upgrade_legacy_provider_finish_reason`."""
+    `_upgrade_legacy_provider_finish_reason`.
+
+    Cross-round claim reconciliation: mesmo tratamento pra
+    `support_scope_model_count` (tabela `claims`) -- também sem backfill,
+    ver docstring de `_upgrade_legacy_support_scope_model_count`."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_upgrade_legacy_had_uncertain_prior_attempts)
         await conn.run_sync(_upgrade_legacy_provider_finish_reason)
+        await conn.run_sync(_upgrade_legacy_support_scope_model_count)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -149,6 +154,30 @@ def _upgrade_legacy_provider_finish_reason(sync_conn) -> None:  # noqa: ANN001
             continue  # já upgradado (ou banco nasceu na Etapa 17A.1) -- nunca recalcula
 
         sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN provider_finish_reason TEXT"))
+
+
+def _upgrade_legacy_support_scope_model_count(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- cross-round claim reconciliation.
+
+    Mesma disciplina de `_upgrade_legacy_provider_finish_reason`: só
+    `ALTER TABLE` quando a coluna genuinamente não existe, nunca
+    recalcula um valor já persistido. Igual àquele caso, AQUI também não
+    há nenhum backfill a fazer -- `support_scope_model_count=NULL` é o
+    valor HONESTO pra toda claim persistida antes desta etapa (nenhuma
+    delas jamais teve um universo de suporte cross-round real a
+    registrar; inventar um número agora seria pior que deixar `NULL`).
+    SQLite usa `NULL` implicitamente pra linhas existentes quando um
+    `ALTER TABLE ADD COLUMN` não declara `DEFAULT` numa coluna nullable,
+    então nenhum `UPDATE` é necessário."""
+    inspector = sa_inspect(sync_conn)
+    table_name = "claims"
+    if table_name not in inspector.get_table_names():
+        return  # tabela nova (já nasce com a coluna via create_all())
+    existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+    if "support_scope_model_count" in existing_columns:
+        return  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
+
+    sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN support_scope_model_count INTEGER"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

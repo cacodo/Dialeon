@@ -81,7 +81,18 @@ export interface ClaimPublic {
   merged_from_claim_ids: string[]
   status: ClaimStatus
   supporting_model_response_ids: ClaimSupportPublic[]
+  // Correcao pos-revisao independente (HIGH 2) -- projecao DEDUPLICADA
+  // de "provider/model" (mesma fonte de verdade que alimenta
+  // Claim.supporting_model_ratio no backend, ver app/models/domain.py).
+  // NUNCA usar supporting_model_response_ids.length como contagem de
+  // participantes -- essa lista e bruta, nao deduplicada por design (o
+  // mesmo provider/model respondendo em 2 rodadas aparece 2 vezes ali).
+  supporting_models: string[]
   total_models_in_round: number
+  // Cross-round claim reconciliation -- null pra toda claim
+  // historica/ordinaria de rodada unica; presente so numa claim canonica
+  // de reconciliacao cross-round (ver app/models/domain.py).
+  support_scope_model_count: number | null
   confidence: number | null
   created_at: string
 }

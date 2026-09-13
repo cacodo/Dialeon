@@ -77,6 +77,47 @@ def test_lineage_merge_of_revisions_preserves_relation_types():
     assert rev_b_node["lineage"]["revised_from"][0]["id"] == old_b.id
 
 
+def test_lineage_cross_round_reconciliation_reaches_both_r1_and_r2_constituents():
+    """Cross-round claim reconciliation (11) -- uma claim canônica de
+    reconciliação funde uma claim SOBREVIVENTE do Round 1 com uma do
+    Round 2 (round_introduced diferentes entre os membros, ao contrário
+    de todo caso de merge acima, sempre dentro de uma única rodada) --
+    o contexto do Judge precisa recursar corretamente em AMBAS,
+    preservando round_introduced de cada uma. `_build_lineage_node` não
+    tem nenhum tratamento especial pra isso (é puramente baseado em id,
+    nunca olha round_introduced) -- este teste prova que o caso
+    cross-round funciona pelo MESMO mecanismo, sem precisar de nenhuma
+    lógica nova de lineage."""
+    r1_claim = raw_claim("proposição vista na rodada inicial", "resp-r1", round_introduced=1)
+    r2_claim = raw_claim(
+        "mesma proposição, reafirmada na crítica", "resp-r2", round_introduced=2
+    )
+    reconciled = canonical_claim(
+        "proposição reconciliada entre Round 1 e Round 2",
+        merged_from=[r1_claim.id, r2_claim.id],
+        supports=[_support("resp-r1", "openai"), _support("resp-r2", "anthropic")],
+        round_introduced=2,  # max(1, 2) -- ver app/debate/claim_extraction.py
+        support_scope_model_count=2,
+    )
+    claims_by_id = {c.id: c for c in [r1_claim, r2_claim, reconciled]}
+
+    node = _build_lineage_node(
+        reconciled, claims_by_id, visited={reconciled.id}, verifications_by_claim_id={}
+    )
+
+    assert node is not None
+    assert "revised_from" not in node
+    merged_ids = {m["id"] for m in node["merged_from"]}
+    assert merged_ids == {r1_claim.id, r2_claim.id}
+    r1_node = next(m for m in node["merged_from"] if m["id"] == r1_claim.id)
+    r2_node = next(m for m in node["merged_from"] if m["id"] == r2_claim.id)
+    assert r1_node["text"] == r1_claim.text
+    assert r2_node["text"] == r2_claim.text
+    # nenhum dos dois tem lineage própria (são claims brutas, independentes)
+    assert "lineage" not in r1_node
+    assert "lineage" not in r2_node
+
+
 def test_lineage_cycle_protection_does_not_infinite_loop():
     """Grafo artificialmente cíclico (2 saltos) — o domínio não impede
     isso sozinho (só impede auto-referência DIRETA), então o builder

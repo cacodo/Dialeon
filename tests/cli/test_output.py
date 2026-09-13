@@ -100,7 +100,9 @@ def _claim(**overrides) -> ClaimPublic:
         merged_from_claim_ids=[],
         status="consensus",
         supporting_model_response_ids=[],
+        supporting_models=[],
         total_models_in_round=1,
+        support_scope_model_count=None,
         confidence=None,
         created_at=_NOW,
     )

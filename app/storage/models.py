@@ -165,6 +165,14 @@ class ClaimRow(Base):
     superseded_by: Mapped[str | None]
     status: Mapped[str]
     total_models_in_round: Mapped[int]
+    # Cross-round claim reconciliation -- ver docstring de
+    # Claim.support_scope_model_count (app/models/domain.py). Nullable de
+    # propósito: `None` (comportamento histórico, toda claim que nunca
+    # precisou de um universo de suporte maior que sua própria rodada)
+    # continua reconstruindo exatamente como antes desta coluna existir --
+    # nenhuma linha antiga precisa/pode ser retroativamente preenchida
+    # (ver `_upgrade_legacy_support_scope_model_count`, app/storage/database.py).
+    support_scope_model_count: Mapped[int | None]
     confidence: Mapped[float | None]
     external_evidence_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime]
@@ -390,11 +398,21 @@ class ClaimAssessmentRow(Base):
     claim_id: Mapped[str] = mapped_column(ForeignKey("claims.id"), primary_key=True)
     verdict: Mapped[str]
     explanation: Mapped[str]
-    # Posição em JudgeVerdict.claim_assessments -- não cosmético: a
-    # aplicação monta FinalAnswer.answer_text seguindo essa ordem
-    # exatamente (ver app/editor/compose.py), nunca ordem arbitrária.
-    # claim_id não serve como chave de ordem (é só identidade, sem
-    # relação com a sequência original de avaliação do Judge).
+    # Posição em JudgeVerdict.claim_assessments -- não cosmético: esta
+    # coluna persiste a ordem exata em que o Judge avaliou (a única
+    # fonte dessa ordem; claim_id não serve como chave de ordem, é só
+    # identidade, sem relação com a sequência original de avaliação).
+    #
+    # Deterministic verdict-bucket final answer (patch de apresentação,
+    # ver app/editor/compose.py) -- `FinalAnswer.answer_text` NÃO segue
+    # mais esta ordem exatamente/globalmente: o renderizador particiona
+    # `claim_assessments` em 2 seções fixas por `verdict`
+    # (`_bucket_for_verdict`) e só preserva esta ordem de Judge DENTRO de
+    # cada seção -- uma avaliação de BUCKET B listada pelo Judge antes de
+    # uma de BUCKET A pode aparecer DEPOIS dela no texto final. Esta
+    # coluna continua sendo a ordem real/persistida do Judge -- a
+    # apresentação é quem reorganiza por veredito a partir dela, nunca o
+    # contrário.
     position: Mapped[int] = mapped_column(default=0)
 
 

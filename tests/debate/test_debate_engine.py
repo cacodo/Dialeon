@@ -64,19 +64,35 @@ async def _err_coro(provider_name: str) -> ProviderResponse:
     return _err(provider_name)
 
 
+def _ungrouped_response(provider_name: str, content: str, split_marker: str) -> ProviderResponse:
+    """Resposta padrão de agrupamento/reconciliação: devolve TODOS os ids
+    recebidos em `ungrouped_claim_ids`, sem nenhuma fusão -- merge/
+    reconciliação com fusão real já são testados à parte
+    (test_grouping.py, test_claim_extraction.py). Compartilhada entre
+    `_normal_processing_handler`/`_capturing_handler` pras duas formas de
+    chamada que compartilham o mesmo `ClaimGroupingOutput`
+    (agrupamento="CLAIMS_BRUTAS:\\n", reconciliação="CLAIMS_ATUAIS ..." --
+    ver `split_marker`)."""
+    payload = json.loads(content.split(split_marker, 1)[1])
+    ids = [c["id"] for c in payload]
+    return _ok(provider_name, json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+
+
 def _normal_processing_handler(provider_name: str, debate_text: str):
-    """Handler padrão: extração devolve 1 claim; agrupamento devolve tudo
-    em ungrouped_claim_ids (sem merge — merge já é testado à parte em
-    test_grouping.py); qualquer outra chamada é tratada como resposta de
-    debate normal (rodada inicial ou crítica)."""
+    """Handler padrão: extração devolve 1 claim; agrupamento E
+    reconciliação (cross-round) devolvem tudo em ungrouped_claim_ids (sem
+    fusão — fusão já é testada à parte em test_grouping.py/
+    test_claim_extraction.py); qualquer outra chamada é tratada como
+    resposta de debate normal (rodada inicial ou crítica)."""
 
     async def handler(call_index: int, request) -> ProviderResponse:
         content = request.messages[0].content
         if "CLAIMS_BRUTAS" in content:
-            payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
-            ids = [c["id"] for c in payload]
-            text = json.dumps({"groups": [], "ungrouped_claim_ids": ids})
-            return _ok(provider_name, text)
+            return _ungrouped_response(provider_name, content, "CLAIMS_BRUTAS:\n")
+        if "CLAIMS_ATUAIS" in content:
+            return _ungrouped_response(
+                provider_name, content, "rodada de crítica combinadas):\n"
+            )
         if "RESPOSTA_A_ANALISAR" in content:
             text = json.dumps(
                 {"claims": [{"text": f"claim de {provider_name}", "revises_claim_id": None}]}
@@ -93,18 +109,22 @@ def _make_provider(name: str, debate_text: str) -> CallableProvider:
 
 def _capturing_handler(provider_name: str, debate_text: str, captured_grouping_max_tokens: list):
     """Igual a `_normal_processing_handler`, mas guarda o `max_tokens`
-    enviado em CADA chamada de agrupamento -- pra provar que o
-    agrupamento usa `max_output_tokens_grouping`, distinto do
-    `max_output_tokens_per_call` geral usado pra extração/crítica."""
+    enviado em CADA chamada de agrupamento OU reconciliação (as duas
+    compartilham `max_output_tokens_grouping`, ver
+    app/debate/debate_engine.py) -- pra provar que essas chamadas usam
+    `max_output_tokens_grouping`, distinto do `max_output_tokens_per_call`
+    geral usado pra extração/crítica."""
 
     async def handler(call_index: int, request) -> ProviderResponse:
         content = request.messages[0].content
         if "CLAIMS_BRUTAS" in content:
             captured_grouping_max_tokens.append(request.max_tokens)
-            payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
-            ids = [c["id"] for c in payload]
-            text = json.dumps({"groups": [], "ungrouped_claim_ids": ids})
-            return _ok(provider_name, text)
+            return _ungrouped_response(provider_name, content, "CLAIMS_BRUTAS:\n")
+        if "CLAIMS_ATUAIS" in content:
+            captured_grouping_max_tokens.append(request.max_tokens)
+            return _ungrouped_response(
+                provider_name, content, "rodada de crítica combinadas):\n"
+            )
         if "RESPOSTA_A_ANALISAR" in content:
             text = json.dumps(
                 {"claims": [{"text": f"claim de {provider_name}", "revises_claim_id": None}]}
@@ -150,10 +170,14 @@ async def test_full_flow_3_of_3_runs_critique_and_produces_claims():
     assert result.critique_round is not None
     assert result.critique_round.critique_obtained is True
     assert result.critique_round.coverage_ratio == 1.0
-    # 3 claims da rodada 1 + 3 claims da rodada 2 (extração simples, sem merge)
+    # 3 claims da rodada 1 + 3 claims da rodada 2 (extração simples, sem merge) +
+    # reconciliação cross-round sem fusão (fake handler devolve tudo
+    # ungrouped) -- claims inalteradas
     assert len(result.claims) == 6
-    # 3 extrações + 1 agrupamento por rodada = 8 attempts, todos aceitos
-    assert len(result.claim_processing_attempts) == 8
+    # 3 extrações + 1 agrupamento por rodada (8) + 1 reconciliação
+    # cross-round (ambos os lados -- R1 e R2 -- têm claims atuais) = 9
+    # attempts, todos aceitos
+    assert len(result.claim_processing_attempts) == 9
     assert all(a.parse_status == "accepted" for a in result.claim_processing_attempts)
     assert all(a.provider == "anthropic" for a in result.claim_processing_attempts)
 

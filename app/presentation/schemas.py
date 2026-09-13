@@ -161,7 +161,26 @@ class ClaimPublic(BaseModel):
     merged_from_claim_ids: list[str]
     status: str
     supporting_model_response_ids: list[ClaimSupportPublic]
+    # Correção pós-revisão independente (HIGH 2) -- projeção DEDUPLICADA
+    # de "provider/model" (o mesmo `Claim.supporting_models` computed
+    # field já usado internamente, ver app/models/domain.py) -- exposta
+    # publicamente pra que o numerador de participantes exibido em
+    # QUALQUER consumidor (frontend incluído) nunca precise reimplementar
+    # a lógica de deduplicação a partir de `supporting_model_response_ids`
+    # (a lista bruta, NUNCA deduplicada -- um mesmo provider/model
+    # respondendo em 2 rodadas aparece 2 vezes ali, por design, pra
+    # preservar o histórico de auditoria completo). Uma fonte de verdade
+    # só: este campo É a mesma projeção que já alimenta
+    # `supporting_model_ratio` no domínio, nunca uma segunda
+    # implementação incompatível.
+    supporting_models: list[str]
     total_models_in_round: int
+    # Cross-round claim reconciliation -- ver Claim.support_scope_model_count
+    # (app/models/domain.py). `None` pra toda claim histórica/ordinária de
+    # rodada única (comportamento de sempre, `total_models_in_round` é o
+    # denominador); presente só numa claim canônica de reconciliação
+    # cross-round, onde carrega o universo de suporte real.
+    support_scope_model_count: int | None
     confidence: float | None
     created_at: datetime
 

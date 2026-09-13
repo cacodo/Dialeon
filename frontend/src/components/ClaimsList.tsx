@@ -4,12 +4,31 @@
 // Nunca calcula truth score nem reinterpreta supporting_model_ratio como
 // confidence (CONSENSUS != TRUTH).
 //
-// O denominador de suporte de CADA claim é claim.total_models_in_round
-// -- nunca o total da rodada inicial da execução como um todo. Uma claim
-// introduzida na crítica (ou revisada depois) pode ter um total_models_in_round
-// diferente de initial_round.total_providers; usar o total errado
-// alteraria a semântica de um dado já persistido (UI NÃO PODE ALTERAR A
-// SEMÂNTICA DO DADO PERSISTIDO).
+// O denominador de suporte de CADA claim é o denominador EFETIVO --
+// claim.support_scope_model_count quando presente (claim canônica de
+// reconciliação cross-round, cujo universo de suporte atravessa mais de
+// uma rodada), senão claim.total_models_in_round (comportamento
+// histórico, toda claim de rodada única) -- nunca o total da rodada
+// inicial da execução como um todo, e nunca total_models_in_round
+// diretamente quando support_scope_model_count existe (ver
+// Claim._effective_support_denominator, app/models/domain.py). Usar o
+// total errado alteraria a semântica de um dado já persistido (UI NÃO
+// PODE ALTERAR A SEMÂNTICA DO DADO PERSISTIDO).
+//
+// Correção pós-revisão independente (HIGH 2) -- o NUMERADOR de
+// participantes é claim.supporting_models.length (a projeção já
+// deduplicada por provider/model, exposta publicamente pela API, ver
+// app/presentation/schemas.py), NUNCA
+// claim.supporting_model_response_ids.length (a lista BRUTA de
+// ClaimSupport, nunca deduplicada por design -- o mesmo provider/model
+// respondendo em 2 rodadas aparece 2 vezes ali, preservando o histórico
+// de auditoria completo). Usar a contagem bruta como numerador podia
+// exibir "2 de 1 participantes" pra uma claim cujo único
+// provider/model único respondeu 2 vezes -- numerador > denominador,
+// uma proporção matematicamente impossível. A lista de auditoria
+// completa (supporting_model_response_ids) continua exibida abaixo, sem
+// nenhuma mudança -- só a CONTAGEM usada na proporção precisa ser a
+// deduplicada.
 
 import { useState } from 'react'
 import type { ClaimAssessmentPublic, ClaimPublic } from '../api/types'
@@ -44,7 +63,10 @@ function ClaimCard({
       {expanded && (
         <div className="claims-list__details">
           <p>
-            {formatSupportRatio(claim.supporting_model_response_ids.length, claim.total_models_in_round)}
+            {formatSupportRatio(
+              claim.supporting_models.length,
+              claim.support_scope_model_count ?? claim.total_models_in_round,
+            )}
           </p>
           <ul className="claims-list__supporters">
             {claim.supporting_model_response_ids.map((support) => (

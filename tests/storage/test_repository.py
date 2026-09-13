@@ -132,6 +132,98 @@ async def test_claim_processing_attempts_preserved(repo):
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_claim_support_scope_model_count_preserved(repo):
+    """Cross-round claim reconciliation -- Claim.support_scope_model_count
+    precisa sobreviver ao round-trip via a nova coluna nullable de
+    `claims` (ver app/storage/models.py)."""
+    result = full_council_run_result()
+    base_claim = result.debate_result.claims[0]
+    round2_claim = base_claim.model_copy(
+        update={"id": "round2-source-claim-id", "round_introduced": 2, "text": "Claim da rodada de crítica."}
+    )
+    reconciled = base_claim.model_copy(
+        update={
+            "id": "reconciled-claim-id",
+            "source_model_response_id": None,
+            "merged_from_claim_ids": [base_claim.id, round2_claim.id],
+            "round_introduced": 2,
+            "total_models_in_round": 2,
+            "support_scope_model_count": 4,
+            "text": "Claim reconciliada entre Round 1 e Round 2.",
+        }
+    )
+    debate_result = result.debate_result.model_copy(
+        update={"claims": [base_claim, round2_claim, reconciled]}
+    )
+    result = result.model_copy(update={"debate_result": debate_result})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = next(c for c in loaded.debate_result.claims if c.id == "reconciled-claim-id")
+    assert reloaded.support_scope_model_count == 4
+    assert reloaded.total_models_in_round == 2
+    # denominador efetivo pós-reload é support_scope_model_count (4), nunca total_models_in_round (2)
+    assert reloaded.supporting_model_ratio == len(reloaded.supporting_models) / 4
+
+
+@pytest.mark.asyncio
+async def test_ordinary_claim_support_scope_model_count_roundtrips_as_none(repo):
+    """Claim ordinária (nunca reconciliada) preserva
+    support_scope_model_count=None através do round-trip -- nenhum valor
+    inventado onde não existia."""
+    result = full_council_run_result()
+    await repo.save_success(result)
+
+    loaded = (await repo.get_run(result.id)).council_run_result
+    reloaded_claim = loaded.debate_result.claims[0]
+
+    assert reloaded_claim.support_scope_model_count is None
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_operation_roundtrips_through_persistence(repo):
+    """Cross-round claim reconciliation -- ClaimProcessingAttempt com
+    operation='reconciliation' precisa sobreviver ao round-trip, distinto
+    de 'grouping', e round_number=2 preservado."""
+    result = full_council_run_result()
+    original_attempt = result.debate_result.claim_processing_attempts[0]
+    reconciliation_attempt = original_attempt.model_copy(
+        update={
+            "id": "reconciliation-attempt-id",
+            "operation": "reconciliation",
+            "round_number": 2,
+            "target_model_response_id": None,
+            "target_claim_ids": ["r1-claim", "r2-claim"],
+            "raw_output_text": '{"groups": [], "ungrouped_claim_ids": ["r1-claim", "r2-claim"]}',
+        }
+    )
+    debate_result = result.debate_result.model_copy(
+        update={
+            "claim_processing_attempts": [original_attempt, reconciliation_attempt],
+        }
+    )
+    result = result.model_copy(update={"debate_result": debate_result})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = next(
+        a
+        for a in loaded.debate_result.claim_processing_attempts
+        if a.id == "reconciliation-attempt-id"
+    )
+    assert reloaded.operation == "reconciliation"
+    assert reloaded.round_number == 2
+    assert reloaded.target_claim_ids == ["r1-claim", "r2-claim"]
+    # o attempt "grouping" original continua presente e inalterado
+    other_operations = {
+        a.operation for a in loaded.debate_result.claim_processing_attempts
+    }
+    assert other_operations == {"extraction", "reconciliation"}
+
+
+@pytest.mark.asyncio
 async def test_judge_verdict_and_claim_assessments_preserved(repo):
     result = full_council_run_result()
     await repo.save_success(result)

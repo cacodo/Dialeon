@@ -216,6 +216,22 @@ class Claim(BaseModel):
 
     supporting_model_response_ids: list[ClaimSupport] = Field(min_length=1)
     total_models_in_round: int = Field(ge=1)
+    # Cross-round claim reconciliation -- `total_models_in_round` mantém seu
+    # significado honesto de sempre ("quantos modelos participaram com
+    # sucesso na rodada ORDINÁRIA desta claim") -- NUNCA sobrecarregado com
+    # uma contagem de união entre rodadas, que descreveria uma população
+    # diferente (ver investigação de contrato de metadados). Quando o
+    # universo de suporte de uma claim genuinamente atravessa mais de uma
+    # rodada (canônica de reconciliação, fundindo uma claim atual do Round 1
+    # com uma do Round 2), este campo opcional carrega o tamanho real desse
+    # universo maior -- `None` (default) preserva o comportamento histórico
+    # exato pra QUALQUER claim que nunca precisou disso (toda claim já
+    # persistida antes desta etapa, e toda claim ordinária de round único
+    # daqui pra frente). Nunca lido diretamente por ninguém além do
+    # denominador efetivo abaixo -- não é uma segunda fonte de verdade
+    # paralela, é a MESMA fonte (`_effective_support_denominator`), só
+    # substituível quando presente.
+    support_scope_model_count: int | None = Field(default=None, ge=1)
 
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     external_evidence: EvidenceRef | None = None
@@ -235,6 +251,23 @@ class Claim(BaseModel):
                 seen.append(label)
         return seen
 
+    @property
+    def _effective_support_denominator(self) -> int:
+        """Denominador efetivo — `support_scope_model_count` quando
+        presente (universo de suporte que atravessa mais de uma rodada),
+        senão `total_models_in_round` (comportamento histórico, toda
+        claim de rodada única). Property simples, NÃO `computed_field` —
+        deliberadamente não serializado/exposto: é um detalhe de cálculo
+        interno de `supporting_model_ratio`/da validação abaixo, não um
+        novo dado público (o dado público continua sendo os dois campos
+        que o compõem, `support_scope_model_count`/`total_models_in_round`,
+        ambos já expostos individualmente)."""
+        return (
+            self.support_scope_model_count
+            if self.support_scope_model_count is not None
+            else self.total_models_in_round
+        )
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def supporting_model_ratio(self) -> float:
@@ -242,8 +275,13 @@ class Claim(BaseModel):
         Derivada de `supporting_models` (já deduplicado), não da
         contagem bruta de `supporting_model_response_ids` — um mesmo
         modelo respondendo em 2 rodadas conta como 1 modelo apoiando,
-        não 2."""
-        return len(self.supporting_models) / self.total_models_in_round
+        não 2. Denominador = `_effective_support_denominator` (nunca
+        `total_models_in_round` diretamente) -- pra uma claim de
+        reconciliação cross-round, isso é `support_scope_model_count`;
+        pra toda claim histórica/ordinária (`support_scope_model_count`
+        é `None`), é exatamente `total_models_in_round`, byte-idêntico ao
+        comportamento de sempre."""
+        return len(self.supporting_models) / self._effective_support_denominator
 
     @model_validator(mode="after")
     def _no_duplicate_response_ids_among_supporters(self) -> Claim:
@@ -257,10 +295,23 @@ class Claim(BaseModel):
 
     @model_validator(mode="after")
     def _supporting_models_within_total(self) -> Claim:
-        if len(self.supporting_models) > self.total_models_in_round:
+        """Usa o denominador EFETIVO (`_effective_support_denominator`),
+        nunca `total_models_in_round` diretamente -- pra uma claim de
+        reconciliação cross-round, `total_models_in_round` sozinho
+        legitimamente pode ser MENOR que o número de supporters únicos
+        fundidos (ele preserva um valor de rodada ordinária real, nunca a
+        união entre rodadas -- ver `support_scope_model_count`); é
+        `support_scope_model_count`, quando presente, que precisa ser
+        >= supporters únicos, nunca `total_models_in_round`. Pra toda
+        claim sem `support_scope_model_count` (histórica ou ordinária de
+        rodada única), o denominador efetivo É `total_models_in_round`,
+        então esta validação continua idêntica ao comportamento de
+        sempre."""
+        if len(self.supporting_models) > self._effective_support_denominator:
             raise ValueError(
                 "supporting_models (deduplicado) não pode ter mais entradas "
-                "que total_models_in_round"
+                "que o denominador de suporte efetivo (support_scope_model_count, "
+                "quando presente, senão total_models_in_round)"
             )
         return self
 

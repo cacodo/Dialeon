@@ -232,6 +232,173 @@ def test_supporting_models_deduplicated_cannot_exceed_total():
         )
 
 
+# ---------------------------------------------------------------------------
+# Cross-round claim reconciliation -- support_scope_model_count /
+# denominador efetivo (18.A-H)
+# ---------------------------------------------------------------------------
+
+
+def test_ordinary_claim_has_no_support_scope_override_by_default():
+    """18.A -- toda claim comum (nunca produzida por reconciliação) tem
+    support_scope_model_count=None; o denominador continua sendo
+    total_models_in_round, comportamento byte-idêntico ao de sempre."""
+    claim = _claim(
+        supporting_model_response_ids=[_support("resp-1", "openai"), _support("resp-2", "anthropic")],
+        total_models_in_round=4,
+    )
+    assert claim.support_scope_model_count is None
+    assert claim.supporting_model_ratio == 0.5  # 2/4, denominador = total_models_in_round
+
+
+def test_reconciliation_claim_support_scope_overrides_denominator():
+    """18.B -- quando support_scope_model_count é fornecido, ele é o
+    denominador efetivo de supporting_model_ratio, NUNCA
+    total_models_in_round diretamente (ver
+    Claim._effective_support_denominator)."""
+    claim = _claim(
+        source_model_response_id=None,
+        merged_from_claim_ids=["r1-claim", "r2-claim"],
+        supporting_model_response_ids=[_support("resp-r1", "openai"), _support("resp-r2", "anthropic")],
+        # total_models_in_round preserva um valor de rodada ORDINÁRIA
+        # (Round 2) menor que o universo real de suporte cross-round --
+        # exatamente o cenário que motiva support_scope_model_count.
+        total_models_in_round=2,
+        support_scope_model_count=3,
+    )
+    assert claim.supporting_model_ratio == pytest.approx(2 / 3)
+
+
+def test_same_model_across_rounds_counts_once_in_reconciliation_claim():
+    """18.C -- o MESMO provider/model respondendo em Round 1 e Round 2
+    (2 ModelResponse/ClaimSupport distintos, mesmo provider/model) conta
+    UMA vez só no numerador, mesma disciplina de
+    test_supporting_models_is_derived_and_deduplicated, agora com um
+    denominador cross-round."""
+    claim = _claim(
+        source_model_response_id=None,
+        merged_from_claim_ids=["r1-claim", "r2-claim"],
+        supporting_model_response_ids=[
+            _support("resp-r1", "openai", "gpt-test"),
+            _support("resp-r2", "openai", "gpt-test"),  # mesmo modelo, Round 2
+        ],
+        total_models_in_round=1,
+        support_scope_model_count=2,
+    )
+    assert claim.supporting_models == ["openai/gpt-test"]  # 1 modelo único, nunca 2
+    assert claim.supporting_model_ratio == 0.5  # 1/2, nunca 2/2
+
+
+def test_distinct_r1_r2_models_union_denominator_is_correct():
+    """18.D -- 2 modelos distintos (um de cada rodada) apoiando uma claim
+    de reconciliação cujo universo de suporte real é a união de 4
+    identidades provider/model entre as duas rodadas."""
+    claim = _claim(
+        source_model_response_id=None,
+        merged_from_claim_ids=["r1-claim", "r2-claim"],
+        supporting_model_response_ids=[
+            _support("resp-r1", "openai", "gpt-test"),
+            _support("resp-r2", "gemini", "gemini-test"),
+        ],
+        total_models_in_round=2,
+        support_scope_model_count=4,
+    )
+    assert claim.supporting_model_ratio == 0.5  # 2/4
+
+
+def test_support_ratio_never_exceeds_one_with_effective_denominator():
+    """18.E -- com o denominador efetivo correto, o ratio nunca excede 1
+    -- propriedade geral, não só um caso isolado."""
+    claim = _claim(
+        source_model_response_id=None,
+        merged_from_claim_ids=["r1-claim", "r2-claim"],
+        supporting_model_response_ids=[
+            _support("resp-r1", "openai"),
+            _support("resp-r2", "anthropic"),
+            _support("resp-r3", "gemini"),
+        ],
+        total_models_in_round=2,
+        support_scope_model_count=3,
+    )
+    assert claim.supporting_model_ratio == 1.0
+    assert claim.supporting_model_ratio <= 1.0
+
+
+def test_validator_uses_effective_denominator_not_legacy_total_when_override_present():
+    """18.F -- o validator (`_supporting_models_within_total`) usa o
+    denominador EFETIVO -- uma claim cujos supporters únicos excedem
+    total_models_in_round (um valor de rodada ORDINÁRIA menor, por
+    design, ver docstring de Claim.total_models_in_round) NÃO levanta,
+    contanto que support_scope_model_count seja grande o bastante.
+    Prova que total_models_in_round sozinho NÃO é mais checado
+    diretamente quando o override existe."""
+    claim = _claim(
+        source_model_response_id=None,
+        merged_from_claim_ids=["r1-claim", "r2-claim", "r3-claim"],
+        supporting_model_response_ids=[
+            _support("resp-1", "openai"),
+            _support("resp-2", "anthropic"),
+            _support("resp-3", "gemini"),
+        ],
+        # total_models_in_round=2 seria MENOR que os 3 supporters únicos
+        # -- validaria com erro se fosse o denominador realmente checado.
+        total_models_in_round=2,
+        support_scope_model_count=3,  # >= 3 supporters únicos -- válido
+    )
+    assert claim.supporting_model_ratio == 1.0
+
+
+def test_support_scope_model_count_cannot_be_smaller_than_unique_supporters():
+    """18.G -- support_scope_model_count, quando presente, é a
+    autoridade -- não pode ser menor que o número de supporters únicos
+    (mesma checagem de sempre, `_supporting_models_within_total`, agora
+    usando o denominador efetivo)."""
+    with pytest.raises(ValidationError, match="denominador de suporte efetivo"):
+        _claim(
+            source_model_response_id=None,
+            merged_from_claim_ids=["r1-claim", "r2-claim", "r3-claim"],
+            supporting_model_response_ids=[
+                _support("resp-1", "openai"),
+                _support("resp-2", "anthropic"),
+                _support("resp-3", "gemini"),
+            ],
+            total_models_in_round=3,
+            support_scope_model_count=2,  # menor que os 3 supporters únicos
+        )
+
+
+def test_historical_claim_payload_without_support_scope_field_still_validates():
+    """18.H -- um payload histórico (dict sem a chave
+    support_scope_model_count -- exatamente o que uma linha persistida
+    antes desta etapa produziria) continua validando normalmente,
+    default None, denominador = total_models_in_round de sempre."""
+    payload = {
+        "text": "TCP garante entrega confiável de dados.",
+        "source_model_response_id": "resp-1",
+        "round_introduced": 1,
+        "status": "active",
+        "supporting_model_response_ids": [
+            {"model_response_id": "resp-1", "provider": "openai", "model": "gpt-test"}
+        ],
+        "total_models_in_round": 2,
+    }
+    claim = Claim.model_validate(payload)
+    assert claim.support_scope_model_count is None
+    assert claim.supporting_model_ratio == 0.5
+
+
+def test_support_scope_model_count_not_serialized_as_computed_effective_denominator():
+    """`_effective_support_denominator` é uma property simples, NÃO um
+    `computed_field` -- não deve aparecer na serialização como um campo
+    novo próprio; só os dois campos que já o compõem
+    (support_scope_model_count/total_models_in_round) são dados
+    públicos."""
+    claim = _claim(total_models_in_round=3)
+    dumped = claim.model_dump()
+    assert "_effective_support_denominator" not in dumped
+    assert "effective_support_denominator" not in dumped
+    assert dumped["support_scope_model_count"] is None
+
+
 def test_supporting_model_response_ids_cannot_be_empty():
     with pytest.raises(ValidationError):
         _claim(supporting_model_response_ids=[])

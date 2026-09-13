@@ -135,3 +135,92 @@ def test_grouping_valid_attempt():
         )
     )
     assert attempt.operation == "grouping"
+
+
+# ---------------------------------------------------------------------------
+# Cross-round claim reconciliation -- operation="reconciliation" (20)
+# ---------------------------------------------------------------------------
+
+
+def test_reconciliation_valid_with_target_claim_ids():
+    """20 -- operation='reconciliation' válida com target_claim_ids não-
+    vazio, round_number=2 (ver docstring do campo -- reconciliação SEMPRE
+    ocorre depois da Round 2, nunca inventa uma Round 3)."""
+    attempt = ClaimProcessingAttempt(
+        **_base(
+            operation="reconciliation",
+            round_number=2,
+            target_model_response_id=None,
+            target_claim_ids=["r1-claim", "r2-claim"],
+            raw_output_text='{"groups": [], "ungrouped_claim_ids": ["r1-claim", "r2-claim"]}',
+        )
+    )
+    assert attempt.operation == "reconciliation"
+    assert attempt.round_number == 2
+
+
+def test_reconciliation_rejects_target_model_response_id():
+    """20 -- mesmo formato de target que 'grouping': reconciliação nunca
+    tem target_model_response_id (não processa uma resposta específica,
+    compara N claims já existentes)."""
+    with pytest.raises(ValidationError, match="target_model_response_id"):
+        ClaimProcessingAttempt(
+            **_base(
+                operation="reconciliation",
+                round_number=2,
+                target_model_response_id="resp-1",
+                target_claim_ids=["r1-claim", "r2-claim"],
+                raw_output_text='{"groups": [], "ungrouped_claim_ids": ["r1-claim", "r2-claim"]}',
+            )
+        )
+
+
+def test_reconciliation_requires_target_claim_ids():
+    """20 -- reconciliação exige target_claim_ids não-vazio, mesma regra
+    de 'grouping'."""
+    with pytest.raises(ValidationError, match="target_claim_ids"):
+        ClaimProcessingAttempt(
+            **_base(
+                operation="reconciliation",
+                round_number=2,
+                target_model_response_id=None,
+                target_claim_ids=[],
+                raw_output_text='{"groups": [], "ungrouped_claim_ids": []}',
+            )
+        )
+
+
+def test_extraction_behavior_unchanged_after_reconciliation_added():
+    """20 -- extração continua exigindo target_model_response_id e
+    proibindo target_claim_ids, comportamento inalterado por
+    'reconciliation' ter sido adicionado ao Literal."""
+    attempt = ClaimProcessingAttempt(**_base(operation="extraction"))
+    assert attempt.operation == "extraction"
+    with pytest.raises(ValidationError, match="target_model_response_id"):
+        ClaimProcessingAttempt(**_base(operation="extraction", target_model_response_id=None))
+    with pytest.raises(ValidationError, match="target_claim_ids"):
+        ClaimProcessingAttempt(**_base(operation="extraction", target_claim_ids=["a"]))
+
+
+def test_grouping_behavior_unchanged_after_reconciliation_added():
+    """20 -- 'grouping' continua com exatamente as mesmas regras de
+    target de antes -- 'reconciliation' compartilha o FORMATO, mas é um
+    rótulo semântico distinto, nunca confundido com 'grouping' em nenhum
+    teste ou validação."""
+    attempt = ClaimProcessingAttempt(
+        **_base(
+            operation="grouping",
+            target_model_response_id=None,
+            target_claim_ids=["a", "b"],
+            raw_output_text='{"groups": [], "ungrouped_claim_ids": ["a", "b"]}',
+        )
+    )
+    assert attempt.operation == "grouping"
+
+
+def test_unknown_operation_value_rejected_by_type() -> None:
+    """Hardening -- um valor de operation fora do Literal fechado
+    (extraction/grouping/reconciliation) é rejeitado na validação de
+    tipo do Pydantic, antes mesmo de `_targets_match_operation` rodar."""
+    with pytest.raises(ValidationError):
+        ClaimProcessingAttempt(**_base(operation="made_up_future_operation"))

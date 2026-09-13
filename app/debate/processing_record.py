@@ -41,7 +41,28 @@ class ClaimProcessingAttempt(BaseModel):
     model_config = _CONFIG
 
     id: str = Field(default_factory=_new_id)
-    operation: Literal["extraction", "grouping"]
+    # Cross-round claim reconciliation -- "reconciliation" é uma comparação
+    # semântica LLM entre claims de RODADAS DIFERENTES (Round 1 sobrevivente
+    # vs. Round 2 sobrevivente), deliberadamente NUNCA rotulada "grouping"
+    # no registro de auditoria mesmo reusando boa parte do mesmo mecanismo
+    # (mesmo formato de schema/validação, mesma disciplina de retry) --
+    # "grouping" continua significando exclusivamente comparação DENTRO de
+    # uma única rodada (ver app/debate/claim_extraction.py). Ver
+    # `_targets_match_operation` abaixo: o formato de target é o MESMO de
+    # "grouping" (sem target_model_response_id, com target_claim_ids), mas
+    # o rótulo semântico permanece distinto -- um quarto valor futuro
+    # precisaria decidir explicitamente qual formato de target usar, nunca
+    # herdar silenciosamente de um `else` genérico.
+    operation: Literal["extraction", "grouping", "reconciliation"]
+    # round_number=2 pra uma tentativa de reconciliation NÃO significa
+    # "esta é uma operação ordinária da Round 2" -- significa "esta
+    # reconciliação ocorreu depois que a Round 2 (a segunda rodada real do
+    # debate) terminou de processar". A identidade auditável de uma
+    # tentativa de reconciliação é o PAR (operation="reconciliation",
+    # round_number=2), nunca round_number sozinho -- este sistema tem
+    # exatamente 2 rodadas reais de debate (ver app/debate/debate_engine.py,
+    # _INITIAL_ROUND_NUMBER/_CRITIQUE_ROUND_NUMBER); nenhuma "Round 3" é
+    # inventada aqui nem em nenhum outro lugar do domínio.
     round_number: int = Field(ge=1)
     # Contador do retry de STRUCTURED OUTPUT (camada separada do retry de
     # transporte, que já é interno/opaco ao LLMProvider) — 1=primeira
@@ -128,14 +149,37 @@ class ClaimProcessingAttempt(BaseModel):
 
     @model_validator(mode="after")
     def _targets_match_operation(self) -> ClaimProcessingAttempt:
+        """Sem `else` genérico de propósito -- cada operação conhecida é
+        um ramo EXPLÍCITO com sua própria regra, nunca "qualquer coisa que
+        não seja X". Isso garante que um QUARTO valor de `operation`
+        adicionado no futuro sem atualizar esta função vira um
+        `ValueError` aqui mesmo (nenhum ramo bate), nunca herda
+        silenciosamente a regra de "grouping"/"reconciliation" só porque
+        também não é "extraction" -- ver hardening análogo já aplicado a
+        `_bucket_for_verdict` em app/editor/compose.py (mapeamento
+        exaustivo, nunca fallback implícito)."""
         if self.operation == "extraction":
             if self.target_model_response_id is None:
                 raise ValueError("operation='extraction' exige target_model_response_id")
             if self.target_claim_ids:
                 raise ValueError("operation='extraction' não deve ter target_claim_ids")
-        else:  # grouping
+        elif self.operation in ("grouping", "reconciliation"):
+            # Mesmo formato de target pras duas -- "reconciliation" reusa
+            # a forma estrutural de "grouping" (compara N claims dadas,
+            # nunca uma resposta específica), mas continua um rótulo
+            # semântico distinto (ver docstring de `operation` acima) --
+            # nunca confundir "mesmo formato de target" com "mesma
+            # operação".
             if self.target_model_response_id is not None:
-                raise ValueError("operation='grouping' não deve ter target_model_response_id")
+                raise ValueError(
+                    f"operation={self.operation!r} não deve ter target_model_response_id"
+                )
             if not self.target_claim_ids:
-                raise ValueError("operation='grouping' exige target_claim_ids não-vazio")
+                raise ValueError(f"operation={self.operation!r} exige target_claim_ids não-vazio")
+        else:
+            raise ValueError(
+                f"operation={self.operation!r} não tem regra de target definida -- "
+                "todo valor de operation precisa de um ramo explícito nesta função, "
+                "nunca um fallback implícito"
+            )
         return self

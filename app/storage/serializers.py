@@ -198,6 +198,7 @@ def claim_to_row(claim: Claim, *, council_run_id: str, position: int = 0) -> Cla
         superseded_by=claim.superseded_by,
         status=claim.status,
         total_models_in_round=claim.total_models_in_round,
+        support_scope_model_count=claim.support_scope_model_count,
         confidence=claim.confidence,
         external_evidence_json=(
             claim.external_evidence.model_dump(mode="json")
@@ -242,6 +243,7 @@ def claim_from_row(
         status=row.status,
         supporting_model_response_ids=supports,
         total_models_in_round=row.total_models_in_round,
+        support_scope_model_count=row.support_scope_model_count,
         confidence=row.confidence,
         external_evidence=(
             None if row.external_evidence_json is None else EvidenceRef(**row.external_evidence_json)

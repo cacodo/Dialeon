@@ -295,6 +295,70 @@ async def test_grouping_failure_preserves_raw_claims_untouched():
 
 
 @pytest.mark.asyncio
+async def test_same_round_grouping_round_introduced_equals_round_number():
+    """19 -- fusão DENTRO da rodada 1: round_introduced=1, comportamento
+    inalterado por `_build_canonical_claim` ter generalizado a regra pra
+    max(member.round_introduced) -- todo membro aqui já compartilha
+    round_introduced=1, então max() é idêntico ao round_number de antes."""
+    a = _raw_claim("a", "openai")
+    b = _raw_claim("b", "anthropic")
+    payload = json.dumps(
+        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    canonical, _ = await group_claims(
+        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,)
+    assert canonical[0].round_introduced == 1
+
+
+@pytest.mark.asyncio
+async def test_round2_grouping_round_introduced_equals_two():
+    """19 -- fusão DENTRO da rodada 2 (crítica): round_introduced=2, mesma
+    generalização, mesmo resultado de antes."""
+    a = _raw_claim("a", "openai")
+    a = a.model_copy(update={"round_introduced": 2})
+    b = _raw_claim("b", "anthropic")
+    b = b.model_copy(update={"round_introduced": 2})
+    payload = json.dumps(
+        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    canonical, _ = await group_claims(
+        [a, b], round_number=2, grouper=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,)
+    assert canonical[0].round_introduced == 2
+
+
+@pytest.mark.asyncio
+async def test_ordinary_grouping_never_sets_support_scope_model_count():
+    """18/19 -- agrupamento DENTRO de uma rodada nunca precisa de um
+    universo de suporte maior que o da própria rodada --
+    support_scope_model_count fica None, denominador continua sendo
+    total_models_in_round (comportamento histórico)."""
+    a = _raw_claim("a", "openai", total=3)
+    b = _raw_claim("b", "anthropic", total=3)
+    payload = json.dumps(
+        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    canonical, _ = await group_claims(
+        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,)
+    assert canonical[0].support_scope_model_count is None
+    assert canonical[0].total_models_in_round == 3
+
+
+@pytest.mark.asyncio
 async def test_canonical_status_active_when_ratio_below_one():
     a = _raw_claim("a", "openai", total=3)
     b = _raw_claim("b", "anthropic", total=3)

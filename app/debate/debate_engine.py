@@ -23,11 +23,22 @@ qualquer chamada) e o `status` estrutural de `ModelResponse`/
 
 Não implementa: Judge, Context Manager separado, Verification, Cost
 Tracker real, persistência, loop de N rodadas.
-"""
+
+Cross-round claim reconciliation -- depois que a Round 2 termina de
+processar (extração + agrupamento, ambos escopados a uma única rodada),
+`run()` tenta UMA reconciliação semântica adicional entre claims
+sobreviventes do Round 1 e do Round 2 (ver `reconcile_claims`,
+app/debate/claim_extraction.py) -- a única comparação desta camada que
+atravessa a fronteira entre rodadas. É aditiva e opcional: nunca reduz o
+conjunto de claims que existiria sem ela, nunca aborta o debate, nunca
+afeta disponibilidade do Judge -- falha/budget insuficiente/ausência de
+candidato em algum dos lados simplesmente resulta em nenhuma
+reconciliação (o conjunto pré-reconciliação segue pro Judge exatamente
+como já seguia antes desta etapa)."""
 
 from __future__ import annotations
 
-from app.debate.claim_extraction import extract_claims, group_claims
+from app.debate.claim_extraction import extract_claims, group_claims, reconcile_claims
 from app.debate.claims import get_current_claims
 from app.debate.context import build_critique_requests
 from app.debate.numeric_verification import DeterministicVerificationAttempt
@@ -151,6 +162,106 @@ class DebateEngine:
         all_claims = all_claims + round2_claims
         all_attempts = all_attempts + round2_attempts
         all_verifications = all_verifications + round2_verifications
+
+        # --- Reconciliação cross-round (pós Round 2, pré-Judge) ---
+        # `group_claims` (rodada 1 e rodada 2 acima) NUNCA compara uma
+        # claim sobrevivente do Round 1 com uma do Round 2 -- cada chamada
+        # dela é escopada a uma única rodada, por construção (ver
+        # app/debate/claim_extraction.py). Isso permite que uma
+        # proposição semanticamente equivalente permaneça atual duas
+        # vezes só porque as duas representações vieram de rodadas
+        # diferentes. `reconcile_claims` é a ÚNICA operação desta camada
+        # que compara as duas rodadas entre si.
+        #
+        # `get_current_claims(all_claims)` (não os dois lados brutos
+        # separadamente) é quem decide "sobrevivente" aqui -- inclui
+        # corretamente uma revisão cross-round já existente (uma claim do
+        # Round 2 com parent_claim_id apontando pro Round 1 já retira o
+        # ancestral do conjunto atual, então ele nunca chega a ser
+        # candidato de reconciliação -- reconciliação nunca reconsidera o
+        # que a revisão já resolveu, ver app/debate/claims.py).
+        current_after_round2 = get_current_claims(all_claims)
+        current_round1_after_round2 = [
+            c for c in current_after_round2 if c.round_introduced == _INITIAL_ROUND_NUMBER
+        ]
+        current_round2_after_round2 = [
+            c for c in current_after_round2 if c.round_introduced == _CRITIQUE_ROUND_NUMBER
+        ]
+
+        reconciliation_claims: list[Claim] = []
+        reconciliation_attempts: list[ClaimProcessingAttempt] = []
+
+        # Só reconcilia quando os DOIS lados têm ao menos uma claim atual
+        # -- não há nada pra uma chamada semântica comparar quando um dos
+        # lados está vazio (nenhuma claim atual sobreviveu daquela
+        # rodada), então nem uma chamada LLM é iniciada nesse caso --
+        # nenhum ClaimProcessingAttempt fabricado pra uma comparação que
+        # não podia produzir nada.
+        if current_round1_after_round2 and current_round2_after_round2:
+            (
+                input_before_reconciliation,
+                output_before_reconciliation,
+                cost_before_reconciliation,
+            ) = _cumulative_totals(initial_result, round2_round_result, all_attempts)
+
+            # Gate de budget ANTES da chamada -- mesmo padrão já usado
+            # antes de cada extração/agrupamento acima. Se o budget já
+            # está esgotado, a reconciliação simplesmente não é tentada;
+            # nenhum ClaimProcessingAttempt fabricado pra uma chamada que
+            # nunca aconteceu (o conjunto pré-reconciliação segue
+            # exatamente como está).
+            if not compute_budget_exceeded(
+                input_before_reconciliation,
+                output_before_reconciliation,
+                cost_before_reconciliation,
+                run_config,
+            ):
+                # Universo de suporte real -- união de identidades
+                # provider/model que responderam com sucesso em QUALQUER
+                # uma das duas rodadas (mesma chave de identidade que
+                # `Claim.supporting_models` já usa, ver
+                # app/models/domain.py) -- nunca model_response_id (que
+                # contaria a mesma resposta como "modelo distinto"),
+                # nunca requested_model (que ignoraria um modelo
+                # efetivamente diferente do reportado pelo provider),
+                # nunca soma/max das contagens por rodada (que
+                # sub/sobre-contaria quando os conjuntos de participantes
+                # não são idênticos entre as duas rodadas -- ver
+                # investigação de contrato de metadados).
+                successful_model_identities = {
+                    (r.provider, r.model) for r in successful_round1 + successful_round2
+                }
+                # Correção pós-revisão independente (HIGH 1) -- os dois
+                # lados são passados SEPARADOS, nunca uma lista já
+                # achatada: `reconcile_claims` precisa saber qual id
+                # pertence a qual rodada pra rejeitar estruturalmente um
+                # grupo same-side (ex.: 2 claims de Round 1 fundidas sem
+                # nenhuma de Round 2) -- ver docstring de
+                # `reconcile_claims`/`_make_cross_side_reconciliation_validator`.
+                reconciliation_claims, reconciliation_attempts = await reconcile_claims(
+                    current_round1_after_round2,
+                    current_round2_after_round2,
+                    reconciler=processor,
+                    # Mesmo teto de agrupamento (não o geral de extração)
+                    # -- reconciliação também exige cobertura de TODA
+                    # claim candidata, mesma razão de tamanho de output
+                    # já documentada pra `group_claims` abaixo.
+                    max_output_tokens_per_call=run_config.max_output_tokens_grouping,
+                    # Valor de rodada ORDINÁRIA (Round 2, a mais recente
+                    # entre as fundidas) -- nunca a união entre rodadas,
+                    # que vai em support_scope_model_count. Preserva o
+                    # significado honesto de sempre de
+                    # total_models_in_round.
+                    total_models_in_round=round2_round_result.successful_count,
+                    support_scope_model_count=len(successful_model_identities),
+                    run_config=run_config,
+                    prior_input_tokens=input_before_reconciliation,
+                    prior_output_tokens=output_before_reconciliation,
+                    prior_cost_usd=cost_before_reconciliation,
+                )
+
+        all_claims = all_claims + reconciliation_claims
+        all_attempts = all_attempts + reconciliation_attempts
 
         input_total, output_total, cost_total = _cumulative_totals(
             initial_result, round2_round_result, all_attempts

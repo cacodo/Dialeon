@@ -312,6 +312,136 @@ async def test_stage17a_upgrade_does_not_touch_had_uncertain_prior_attempts(tmp_
     assert row[1] is None  # coluna nova, sem informação derivável -- NULL honesto
 
 
+# ---------------------------------------------------------------------------
+# Cross-round claim reconciliation — upgrade de banco sem
+# support_scope_model_count na tabela claims
+# ---------------------------------------------------------------------------
+
+
+async def _make_pre_reconciliation_db(db_path: str) -> None:
+    """Cria o schema ATUAL e remove só a coluna
+    `support_scope_model_count` da tabela `claims` -- simula fielmente um
+    banco criado antes desta etapa (tem todas as outras colunas, inclusive
+    `had_uncertain_prior_attempts`/`provider_finish_reason`, que não são
+    afetadas por este upgrade -- upgrades independentes)."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("ALTER TABLE claims DROP COLUMN support_scope_model_count")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_reconciliation_database_gets_support_scope_column_added(tmp_path):
+    db_path = str(tmp_path / "pre_reconciliation.db")
+    await _make_pre_reconciliation_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    columns_before = {c[1] for c in conn.execute("PRAGMA table_info(claims)")}
+    assert "support_scope_model_count" not in columns_before
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns_after = {c[1] for c in conn.execute("PRAGMA table_info(claims)")}
+    assert "support_scope_model_count" in columns_after
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_reconciliation_claims_get_null_support_scope_not_a_guessed_value(tmp_path):
+    """Nenhum backfill -- claims persistidas antes desta etapa nunca
+    tiveram um universo de suporte cross-round real; NULL é o único
+    valor honesto, nunca um número inventado."""
+    db_path = str(tmp_path / "pre_reconciliation.db")
+    await _make_pre_reconciliation_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO council_runs (id, status, started_at, completed_at, run_config_json, "
+        "claim_processor_provider, debate_cumulative_budget_exceeded, "
+        "initial_insufficient_data_for_consensus, initial_budget_exceeded, judge_provider, "
+        "judge_cumulative_budget_exceeded, editor_provider, editor_cumulative_budget_exceeded) "
+        "VALUES ('run1','completed','2026-01-01','2026-01-01','{}','anthropic',0,0,0,"
+        "'anthropic',0,'anthropic',0)"
+    )
+    conn.execute(
+        "INSERT INTO claims (id, council_run_id, position, text, round_introduced, status, "
+        "total_models_in_round, created_at) "
+        "VALUES ('claim1','run1',0,'Uma claim antiga.',1,'active',2,'2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    value = conn.execute(
+        "SELECT support_scope_model_count FROM claims WHERE id = 'claim1'"
+    ).fetchone()[0]
+    conn.close()
+    assert value is None
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_upgrade_does_not_touch_other_legacy_columns(tmp_path):
+    """Upgrades independentes -- adicionar support_scope_model_count
+    nunca deveria recalcular/tocar had_uncertain_prior_attempts (já
+    autoritativo neste banco)."""
+    db_path = str(tmp_path / "pre_reconciliation.db")
+    await _make_pre_reconciliation_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn)
+    # Coluna `had_uncertain_prior_attempts` já existe (NOT NULL) neste
+    # banco -- diferente de `_make_legacy_db`, `_make_pre_reconciliation_db`
+    # não a remove, só `support_scope_model_count`. Precisa ser fornecida
+    # explicitamente no INSERT (valor nativo, não backfill).
+    conn.execute(
+        "INSERT INTO model_responses (id, council_run_id, round_number, position, provider, "
+        "requested_model, model, status, usage_present, latency_ms, attempts, "
+        "had_uncertain_prior_attempts, created_at) "
+        "VALUES ('mr1','run1',1,0,'openai','gpt-5.5','gpt-5.5','success',0,100,1,"
+        "1,'2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    value = conn.execute(
+        "SELECT had_uncertain_prior_attempts FROM model_responses WHERE id = 'mr1'"
+    ).fetchone()[0]
+    conn.close()
+    assert value == 1  # nunca recalculado por causa do upgrade não relacionado
+
+
+@pytest.mark.asyncio
+async def test_fresh_database_does_not_run_pre_reconciliation_upgrade_path(tmp_path):
+    """Um banco que nasce já com a coluna nunca exercita o branch de
+    upgrade -- a checagem de coluna existente já pula tudo."""
+    db_path = str(tmp_path / "fresh.db")
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns = {c[1] for c in conn.execute("PRAGMA table_info(claims)")}
+    conn.close()
+    assert "support_scope_model_count" in columns
+
+
 @pytest.mark.asyncio
 async def test_both_legacy_upgrades_together_from_true_stage16_database(tmp_path):
     """Cenário mais antigo possível: banco Stage-16 puro (nenhuma das
