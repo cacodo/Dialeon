@@ -15,8 +15,10 @@ from app.api.exceptions import RunNotFoundError
 from app.presentation.mappers import (
     completed_run_audit,
     completed_run_response,
+    failed_run_response,
     quorum_failure_audit,
     quorum_failure_run_response,
+    running_run_response,
     run_summary_response,
 )
 from app.presentation.schemas import (
@@ -27,7 +29,7 @@ from app.presentation.schemas import (
     RunResponse,
 )
 from app.orchestrator.config import RunConfig
-from app.storage.records import CompletedRunRecord, QuorumFailureRecord
+from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 
 router = APIRouter()
 
@@ -93,8 +95,12 @@ async def get_run(run_id: str, request: Request) -> RunResponse:
 
     if isinstance(record, CompletedRunRecord):
         return completed_run_response(record.council_run_result)
-    assert isinstance(record, QuorumFailureRecord)
-    return quorum_failure_run_response(record)
+    if isinstance(record, QuorumFailureRecord):
+        return quorum_failure_run_response(record)
+    assert isinstance(record, AcceptedRunRecord)
+    if record.status == "running":
+        return running_run_response(record)
+    return failed_run_response(record)
 
 
 @router.get("/runs/{run_id}/audit", response_model=RunAuditResponse)
@@ -106,5 +112,9 @@ async def get_run_audit(run_id: str, request: Request) -> RunAuditResponse:
 
     if isinstance(record, CompletedRunRecord):
         return completed_run_audit(record.council_run_result)
-    assert isinstance(record, QuorumFailureRecord)
-    return quorum_failure_audit(record)
+    if isinstance(record, QuorumFailureRecord):
+        return quorum_failure_audit(record)
+    assert isinstance(record, AcceptedRunRecord)
+    if record.status == "running":
+        return running_run_response(record)
+    return failed_run_response(record)

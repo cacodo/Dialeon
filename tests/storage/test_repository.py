@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.models.domain import ClaimSupport
-from app.storage.records import CompletedRunRecord, QuorumFailureRecord
+from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 from app.storage.repository import _run_config_from_json
 from tests.storage.fixtures import (
     claim,
@@ -1382,3 +1382,177 @@ async def test_provider_finish_reason_none_roundtrips_as_none(repo):
 
     reloaded_mr = loaded.debate_result.initial_result.responses[0]
     assert reloaded_mr.provider_finish_reason is None
+
+
+# ---------------------------------------------------------------------------
+# T02.4 — lifecycle de aceite durável (accepted_runs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_accepted_persists_minimal_running_record(repo):
+    rc = run_config()
+    started_at = now()
+    await repo.save_accepted("run-accept-1", run_config=rc, started_at=started_at)
+
+    loaded = await repo.get_run("run-accept-1")
+    assert isinstance(loaded, AcceptedRunRecord)
+    assert loaded.status == "running"
+    assert loaded.id == "run-accept-1"
+    assert loaded.failed_at is None
+    assert loaded.failure_classification is None
+    assert loaded.failure_message is None
+    assert loaded.run_config == rc
+
+
+@pytest.mark.asyncio
+async def test_accepted_running_record_appears_in_list_runs_with_null_ended_at(repo):
+    """Teste H -- modela honestamente "processo morreu (ou ainda está
+    rodando) logo depois do aceite, antes de qualquer desfecho
+    terminal": nenhuma simulação de crash real de processo é necessária
+    -- só NÃO chamar nenhum save_success/save_quorum_failure/
+    save_unexpected_failure depois de save_accepted já é o estado
+    honesto que este teste verifica."""
+    await repo.save_accepted("run-accept-2", run_config=run_config(), started_at=now())
+
+    summaries = await repo.list_runs()
+    assert len(summaries) == 1
+    assert summaries[0].id == "run-accept-2"
+    assert summaries[0].status == "running"
+    assert summaries[0].ended_at is None
+
+
+@pytest.mark.asyncio
+async def test_save_success_finalizes_and_deletes_accepted_row(repo):
+    result = full_council_run_result()
+    await repo.save_accepted(result.id, run_config=result.run_config, started_at=result.started_at)
+
+    await repo.save_success(result)
+
+    summaries = await repo.list_runs()
+    assert len(summaries) == 1  # a linha de aceite não sobrevive -- nunca 2 fontes pro mesmo id
+    assert summaries[0].status == "completed"
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+
+
+@pytest.mark.asyncio
+async def test_save_quorum_failure_with_run_id_reuses_identity_and_deletes_accepted_row(repo):
+    exc = quorum_failure_exception()
+    rc = run_config()
+    started_at = now()
+    await repo.save_accepted("run-accept-3", run_config=rc, started_at=started_at)
+
+    failure_id = await repo.save_quorum_failure(
+        exc, run_config=rc, started_at=started_at, failed_at=now(), run_id="run-accept-3"
+    )
+    assert failure_id == "run-accept-3"
+
+    summaries = await repo.list_runs()
+    assert len(summaries) == 1
+    assert summaries[0].status == "insufficient_quorum"
+
+    loaded = await repo.get_run("run-accept-3")
+    assert isinstance(loaded, QuorumFailureRecord)
+
+
+@pytest.mark.asyncio
+async def test_save_quorum_failure_without_run_id_still_mints_its_own(repo):
+    """Compatibilidade -- chamadores diretos (testes existentes acima)
+    que exercitam só a mecânica de persistência de quórum, sem passar
+    por save_accepted antes, continuam funcionando exatamente como
+    antes: `run_id` é opcional."""
+    exc = quorum_failure_exception()
+    failure_id = await repo.save_quorum_failure(
+        exc, run_config=run_config(), started_at=now(), failed_at=now()
+    )
+    assert failure_id is not None
+    loaded = await repo.get_run(failure_id)
+    assert isinstance(loaded, QuorumFailureRecord)
+
+
+@pytest.mark.asyncio
+async def test_save_unexpected_failure_transitions_accepted_row_to_failed(repo):
+    rc = run_config()
+    started_at = now()
+    await repo.save_accepted("run-accept-4", run_config=rc, started_at=started_at)
+
+    failed_at = now()
+    await repo.save_unexpected_failure(
+        "run-accept-4",
+        failed_at=failed_at,
+        failure_classification="WeirdBug",
+        failure_message="Erro interno inesperado durante a execução.",
+    )
+
+    loaded = await repo.get_run("run-accept-4")
+    assert isinstance(loaded, AcceptedRunRecord)
+    assert loaded.status == "failed"
+    assert loaded.failed_at == failed_at
+    assert loaded.failure_classification == "WeirdBug"
+    assert loaded.failure_message == "Erro interno inesperado durante a execução."
+    assert loaded.run_config == rc  # config aceita original, nunca perdida na transição
+
+    summaries = await repo.list_runs()
+    assert len(summaries) == 1
+    assert summaries[0].status == "failed"
+    assert summaries[0].ended_at == failed_at
+
+
+@pytest.mark.asyncio
+async def test_save_success_terminal_rollback_preserves_accepted_row(repo):
+    """Teste G -- se a transação terminal "completed" falhar
+    (integridade referencial violada), a linha de aceite gravada ANTES
+    precisa sobreviver intacta -- nunca um estado parcial/fabricado, e a
+    falha de persistência propaga (nunca é convertida em sucesso ou
+    silenciada)."""
+    result = full_council_run_result()
+    await repo.save_accepted(result.id, run_config=result.run_config, started_at=result.started_at)
+
+    bad_claim = result.debate_result.claims[0].model_copy(
+        update={"source_model_response_id": "id-que-nao-existe-em-nenhum-model-response"}
+    )
+    debate_result = result.debate_result.model_copy(update={"claims": [bad_claim]})
+    broken_result = result.model_copy(update={"debate_result": debate_result})
+
+    with pytest.raises(Exception):
+        await repo.save_success(broken_result)
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, AcceptedRunRecord)
+    assert loaded.status == "running"  # nem completed, nem apagado -- a evidência de aceite persiste
+
+
+@pytest.mark.asyncio
+async def test_save_quorum_failure_terminal_rollback_preserves_accepted_row(repo):
+    """Teste G, variante quorum failure -- mesma garantia, via violação
+    de PK (2 ModelResponse com o mesmo id na mesma rodada)."""
+    from app.orchestrator.result import RoundResult
+
+    duplicated_id = "resposta-duplicada-de-proposito-t02-4"
+    r1 = model_response("openai", id=duplicated_id)
+    r2 = model_response("anthropic", id=duplicated_id)
+    round_result = RoundResult(
+        round_number=1,
+        responses=[r1, r2],
+        successful_count=2,
+        total_participants=2,
+        total_input_tokens=200,
+        total_output_tokens=40,
+        total_cost_usd=0.002,
+        has_unknown_accounting_components=False,
+    )
+    exc = quorum_failure_exception(round_result=round_result)
+    rc = run_config()
+    started_at = now()
+    await repo.save_accepted("run-accept-5", run_config=rc, started_at=started_at)
+
+    with pytest.raises(Exception):
+        await repo.save_quorum_failure(
+            exc, run_config=rc, started_at=started_at, failed_at=now(), run_id="run-accept-5"
+        )
+
+    loaded = await repo.get_run("run-accept-5")
+    assert isinstance(loaded, AcceptedRunRecord)
+    assert loaded.status == "running"

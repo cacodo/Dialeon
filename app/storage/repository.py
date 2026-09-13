@@ -22,7 +22,7 @@ from collections import defaultdict
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.council.result import CouncilRunResult
@@ -37,6 +37,7 @@ from app.orchestrator.errors import InsufficientQuorumError
 from app.orchestrator.result import InitialResponsesResult, RoundResult
 from app.storage.database import session_scope
 from app.storage.models import (
+    AcceptedRunRow,
     ClaimAssessmentRow,
     ClaimMergeRow,
     ClaimProcessingAttemptRow,
@@ -53,7 +54,12 @@ from app.storage.models import (
     SourceAnalysisAttemptRow,
     SourceClaimAnalysisResultRow,
 )
-from app.storage.records import CompletedRunRecord, QuorumFailureRecord, RunSummary
+from app.storage.records import (
+    AcceptedRunRecord,
+    CompletedRunRecord,
+    QuorumFailureRecord,
+    RunSummary,
+)
 from app.storage.serializers import (
     dt_from_naive_utc,
     dt_to_naive_utc,
@@ -146,6 +152,49 @@ class CouncilRepository:
     # -----------------------------------------------------------------
     # SAVE
     # -----------------------------------------------------------------
+
+    async def save_accepted(
+        self, run_id: str, *, run_config: RunConfig, started_at: datetime
+    ) -> None:
+        """T02.4 -- grava o registro mínimo de aceite ANTES de qualquer
+        chamada ao `CouncilRunner` (contrato de `CouncilExecutionService`).
+        `run_id`/`started_at` são autoritativos desde aqui -- nenhum
+        estágio posterior (runner, terminal save) minta substituto."""
+        async with session_scope(self._session_factory) as session:
+            session.add(
+                AcceptedRunRow(
+                    id=run_id,
+                    status="running",
+                    started_at=dt_to_naive_utc(started_at),
+                    run_config_json=run_config.model_dump(mode="json"),
+                    failed_at=None,
+                    failure_classification=None,
+                    failure_message=None,
+                )
+            )
+
+    async def save_unexpected_failure(
+        self,
+        run_id: str,
+        *,
+        failed_at: datetime,
+        failure_classification: str,
+        failure_message: str,
+    ) -> None:
+        """T02.4 -- transição terminal FAILED da MESMA linha de aceite
+        (nunca cria um registro novo/paralelo). `failure_classification`/
+        `failure_message` já chegam sanitizados (ver
+        `CouncilExecutionService._sanitize_unexpected_failure`) -- esta
+        camada nunca examina/reformata o que recebe, só persiste."""
+        async with session_scope(self._session_factory) as session:
+            row = await session.get(AcceptedRunRow, run_id)
+            assert row is not None, (
+                f"save_unexpected_failure chamado sem um accepted_runs prévio: {run_id!r}"
+            )
+            row.status = "failed"
+            row.failed_at = dt_to_naive_utc(failed_at)
+            row.failure_classification = failure_classification
+            row.failure_message = failure_message
 
     async def save_success(self, result: CouncilRunResult) -> None:
         """Persiste um `CouncilRunResult` completo numa única transação.
@@ -273,6 +322,17 @@ class CouncilRepository:
             for attempt in editor.attempts:
                 session.add(editor_attempt_to_row(attempt, council_run_id=result.id))
 
+            # T02.4 -- finaliza a MESMA transação atômica que grava o
+            # terminal "completed": a linha de aceite (se existir --
+            # chamadores diretos de save_success em teste, sem passar
+            # por save_accepted antes, legitimamente não têm uma) deixa
+            # de ser necessária, porque CouncilRunRow agora É a fonte
+            # canônica única (principio 9). Se o commit desta transação
+            # falhar, o DELETE rola de volta junto -- a linha de aceite
+            # permanece intacta, exatamente a garantia que o item 7 do
+            # contrato exige.
+            await session.execute(delete(AcceptedRunRow).where(AcceptedRunRow.id == result.id))
+
     async def save_quorum_failure(
         self,
         exc: InsufficientQuorumError,
@@ -280,12 +340,19 @@ class CouncilRepository:
         run_config: RunConfig,
         started_at: datetime,
         failed_at: datetime,
+        run_id: str | None = None,
     ) -> str:
         """Persiste uma `InsufficientQuorumError` capturada, junto com o
-        `RoundResult` real que ela carrega (Decision Delta §3). Gera seu
-        próprio id -- a exceção não tem run_id, nunca teve (o Council nunca
-        chegou perto de mintar um)."""
-        failure_id = _new_id()
+        `RoundResult` real que ela carrega (Decision Delta §3).
+
+        T02.4: `run_id` é opcional -- quando fornecido (fluxo real via
+        `CouncilExecutionService`, que já mintou/persistiu um aceite
+        antes de chamar o runner), esta falha finaliza a MESMA identidade
+        aceita, nunca uma paralela (principio 3: autoridade única de
+        run-id). Quando omitido (chamadores diretos em teste, exercitando
+        só a mecânica de persistência de quórum, sem lifecycle de
+        aceite), um id novo é mintado aqui, como sempre foi."""
+        failure_id = run_id if run_id is not None else _new_id()
         round_result = exc.round_result
 
         async with session_scope(self._session_factory) as session:
@@ -310,13 +377,19 @@ class CouncilRepository:
                     )
                 )
 
+            # T02.4 -- mesma disciplina de save_success: finaliza (nunca
+            # duplica) a linha de aceite, na MESMA transação atômica.
+            await session.execute(delete(AcceptedRunRow).where(AcceptedRunRow.id == failure_id))
+
         return failure_id
 
     # -----------------------------------------------------------------
     # LOAD
     # -----------------------------------------------------------------
 
-    async def get_run(self, run_id: str) -> CompletedRunRecord | QuorumFailureRecord | None:
+    async def get_run(
+        self, run_id: str
+    ) -> CompletedRunRecord | QuorumFailureRecord | AcceptedRunRecord | None:
         async with self._session_factory() as session:
             run_row = await session.get(CouncilRunRow, run_id)
             if run_row is not None:
@@ -325,6 +398,10 @@ class CouncilRepository:
             failure_row = await session.get(QuorumFailureRow, run_id)
             if failure_row is not None:
                 return await self._reconstruct_quorum_failure(session, failure_row)
+
+            accepted_row = await session.get(AcceptedRunRow, run_id)
+            if accepted_row is not None:
+                return _reconstruct_accepted(accepted_row)
 
         return None
 
@@ -338,7 +415,12 @@ class CouncilRepository:
         cortamos a página exata em Python. Simples e correto para o
         volume do MVP — não é uma solução que escale pra offsets muito
         grandes, e não precisa ser (sem cursor pagination, por decisão
-        explícita)."""
+        explícita).
+
+        T02.4: `accepted_runs` (running/failed) entra na mesma fusão,
+        pelo mesmo motivo -- item 9 do contrato exige que list/detail
+        sejam derivados exclusivamente dos fatos persistidos canônicos,
+        nunca só das duas tabelas terminais históricas."""
         fetch_count = offset + limit
         async with self._session_factory() as session:
             completed = (
@@ -363,24 +445,49 @@ class CouncilRepository:
                 .scalars()
                 .all()
             )
+            accepted = (
+                (
+                    await session.execute(
+                        select(AcceptedRunRow)
+                        .order_by(AcceptedRunRow.started_at.desc())
+                        .limit(fetch_count)
+                    )
+                )
+                .scalars()
+                .all()
+            )
 
-        summaries = [
-            RunSummary(
-                id=row.id,
-                status="completed",
-                started_at=dt_from_naive_utc(row.started_at),
-                ended_at=dt_from_naive_utc(row.completed_at),
-            )
-            for row in completed
-        ] + [
-            RunSummary(
-                id=row.id,
-                status="insufficient_quorum",
-                started_at=dt_from_naive_utc(row.started_at),
-                ended_at=dt_from_naive_utc(row.failed_at),
-            )
-            for row in failures
-        ]
+        summaries = (
+            [
+                RunSummary(
+                    id=row.id,
+                    status="completed",
+                    started_at=dt_from_naive_utc(row.started_at),
+                    ended_at=dt_from_naive_utc(row.completed_at),
+                )
+                for row in completed
+            ]
+            + [
+                RunSummary(
+                    id=row.id,
+                    status="insufficient_quorum",
+                    started_at=dt_from_naive_utc(row.started_at),
+                    ended_at=dt_from_naive_utc(row.failed_at),
+                )
+                for row in failures
+            ]
+            + [
+                RunSummary(
+                    id=row.id,
+                    status=row.status,  # type: ignore[arg-type]  # "running" | "failed"
+                    started_at=dt_from_naive_utc(row.started_at),
+                    ended_at=(
+                        dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None
+                    ),
+                )
+                for row in accepted
+            ]
+        )
         summaries.sort(key=lambda s: s.started_at, reverse=True)
         return summaries[offset : offset + limit]
 
@@ -680,6 +787,22 @@ class CouncilRepository:
 # sum_usage_and_cost, NUNCA via coluna própria (RoundResult/
 # InitialResponsesResult não têm tabela — ver docstring de models.py).
 # ---------------------------------------------------------------------------
+
+
+def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord:
+    """T02.4 -- reconstrução direta, sem sub-consultas: `accepted_runs`
+    nunca tem tabelas filhas (ver docstring de `AcceptedRunRow`), então
+    não há árvore nenhuma pra remontar além dos campos da própria
+    linha."""
+    return AcceptedRunRecord(
+        status=row.status,  # type: ignore[arg-type]  # "running" | "failed"
+        id=row.id,
+        started_at=dt_from_naive_utc(row.started_at),
+        run_config=_run_config_from_json(row.run_config_json),
+        failed_at=dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None,
+        failure_classification=row.failure_classification,
+        failure_message=row.failure_message,
+    )
 
 
 def _build_round_result(responses: list, *, round_number: int) -> RoundResult:

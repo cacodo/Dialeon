@@ -10,6 +10,15 @@ import { formatDateTime, formatErrorCode } from '../api/formatting'
 
 const PAGE_SIZE = 20
 
+// T02.4 -- rótulos pros 2 estados novos ("running"/"failed"), lado a
+// lado dos 2 já existentes -- nenhuma lógica nova, só apresentação.
+const STATUS_LABELS: Record<RunSummaryResponse['status'], string> = {
+  completed: 'Concluída',
+  insufficient_quorum: 'Quórum insuficiente',
+  running: 'Em andamento',
+  failed: 'Falhou',
+}
+
 type ListState =
   | { phase: 'loading' }
   | { phase: 'error'; message: string }
@@ -59,9 +68,7 @@ export function History() {
               {state.runs.map((run) => (
                 <li key={run.id} className="history__item">
                   <Link to={`/runs/${run.id}`}>
-                    <span className="history__status">
-                      {run.status === 'completed' ? 'Concluída' : 'Quórum insuficiente'}
-                    </span>
+                    <span className="history__status">{STATUS_LABELS[run.status]}</span>
                     <span className="history__timestamp">{formatDateTime(run.started_at)}</span>
                   </Link>
                 </li>

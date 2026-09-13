@@ -225,6 +225,35 @@ class RunConfig(BaseModel):
             raise ValueError("enabled_providers não pode conter duplicatas")
         return self
 
+    @property
+    def all_provider_authorities(self) -> frozenset[str]:
+        """T02.4 (repair pós-revisão independente, MEDIUM) -- enumeração
+        CANÔNICA de toda autoridade de provider que este RunConfig
+        autoriza o pipeline a chamar: os 4 papéis internos
+        (`claim_processor_provider`/`judge_provider`/`editor_provider`/
+        `source_analyzer_provider`) SOMADOS a `enabled_providers`.
+
+        Único lugar que soma os 5 campos -- qualquer validação de
+        "provider desconhecido" (`CouncilExecutionService.run`, e
+        futuras) deve iterar isto, nunca reimplementar a lista à mão,
+        pra que um campo de autoridade futuro não escape silenciosamente
+        de validação (achado da revisão independente: `bootstrap.py`
+        validava só 3 dos 4 papéis internos, esquecendo
+        `source_analyzer_provider` -- ver `_validate_internal_provider_config`).
+
+        `@property`, nunca `@computed_field`: este valor NUNCA pode
+        aparecer em `model_dump(mode="json")` -- `run_config_json` é
+        persistido e reconstruído via `RunConfig(**data)`
+        (`extra="forbid"`); um `computed_field` extra quebraria essa
+        reconstrução (mesmo raciocínio de `CouncilRunResult.status`/
+        `final_answer`, ver docstring daquela classe)."""
+        return frozenset(self.enabled_providers) | {
+            self.claim_processor_provider,
+            self.judge_provider,
+            self.editor_provider,
+            self.source_analyzer_provider,
+        }
+
     @classmethod
     def from_settings(
         cls,

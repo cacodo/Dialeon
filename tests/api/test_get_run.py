@@ -30,6 +30,26 @@ async def _seed_quorum_failure(components, exc) -> str:
     )
 
 
+async def _seed_accepted(components, run_id: str) -> str:
+    await components.repository.save_accepted(
+        run_id, run_config=run_config(), started_at=now()
+    )
+    return run_id
+
+
+async def _seed_unexpected_failure(components, run_id: str) -> str:
+    await components.repository.save_accepted(
+        run_id, run_config=run_config(), started_at=now()
+    )
+    await components.repository.save_unexpected_failure(
+        run_id,
+        failed_at=now(),
+        failure_classification="WeirdBug",
+        failure_message="Erro interno inesperado durante a execução.",
+    )
+    return run_id
+
+
 def test_get_run_completed():
     result = full_council_run_result()
     app = create_app(settings=_settings(), components_factory=make_components_factory())
@@ -118,6 +138,50 @@ def test_get_run_insufficient_quorum():
     assert body["total_providers"] == exc.total_providers
     assert body["min_to_return"] == exc.min_to_return
     assert "final_answer" not in body  # nunca fingir completed
+
+
+def test_get_run_running():
+    """T02.4, teste I -- um run aceito, ainda sem desfecho terminal,
+    discrimina corretamente (`status="running"`) e nunca inventa
+    `final_answer`/`accounting` que não existem."""
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_accepted, app.state.components, "run-running-1")
+        resp = client.get(f"/runs/{run_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["id"] == run_id
+    assert "final_answer" not in body
+    assert "accounting" not in body
+    assert set(body.keys()) == {"status", "id", "started_at", "config"}
+
+
+def test_get_run_failed():
+    """T02.4, teste I/F -- um run com falha inesperada discrimina
+    corretamente (`status="failed"`) e só expõe informação já
+    sanitizada (classificação/mensagem fixas -- nunca traceback)."""
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(
+            _seed_unexpected_failure, app.state.components, "run-failed-1"
+        )
+        resp = client.get(f"/runs/{run_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert body["id"] == run_id
+    assert body["failure_reason"] == "WeirdBug"
+    assert body["message"] == "Erro interno inesperado durante a execução."
+    assert "final_answer" not in body
+    assert "accounting" not in body
+    assert set(body.keys()) == {
+        "status", "id", "started_at", "failed_at", "failure_reason", "message", "config",
+    }
 
 
 def test_get_run_not_found_returns_404():

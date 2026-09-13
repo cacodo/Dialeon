@@ -81,7 +81,7 @@ export function RunDetail() {
       </p>
       <h1>{run.config.question}</h1>
 
-      {run.status === 'completed' ? (
+      {run.status === 'completed' && (
         <>
           <FinalAnswerView finalAnswer={run.final_answer} />
           <section aria-labelledby="execution-summary-heading">
@@ -91,7 +91,9 @@ export function RunDetail() {
             <AccountingView accounting={run.accounting} />
           </section>
         </>
-      ) : (
+      )}
+
+      {run.status === 'insufficient_quorum' && (
         <section role="alert" aria-labelledby="quorum-heading">
           <h2 id="quorum-heading">Quórum insuficiente</h2>
           <p>
@@ -103,7 +105,31 @@ export function RunDetail() {
         </section>
       )}
 
-      <InspectionPanel runId={run.id} />
+      {run.status === 'running' && (
+        // T02.4 -- honestamente incompleto: em andamento, ou o processo
+        // morreu antes de terminar (indistinguíveis por design, ver
+        // AcceptedRunRow). Nunca inventa um desfecho que não existe.
+        <section aria-labelledby="running-heading">
+          <h2 id="running-heading">Em andamento</h2>
+          <p>Iniciada em {formatDateTime(run.started_at)}.</p>
+          <p>Nenhum desfecho terminal foi registrado ainda para esta execução.</p>
+        </section>
+      )}
+
+      {run.status === 'failed' && (
+        <section role="alert" aria-labelledby="failed-heading">
+          <h2 id="failed-heading">Falhou</h2>
+          <p>Iniciada em {formatDateTime(run.started_at)}, falhou em {formatDateTime(run.failed_at)}.</p>
+          <p>{run.message}</p>
+        </section>
+      )}
+
+      {/* T02.4 -- inspeção detalhada só existe pra runs com desfecho
+          terminal auditável (completed/insufficient_quorum); "running"/
+          "failed" nunca têm claim/attempt/verdict pra mostrar. */}
+      {(run.status === 'completed' || run.status === 'insufficient_quorum') && (
+        <InspectionPanel runId={run.id} />
+      )}
     </main>
   )
 }

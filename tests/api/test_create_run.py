@@ -204,3 +204,29 @@ def test_create_run_unexpected_internal_error_returns_500_generic():
     assert body["error"]["code"] == "internal_error"
     assert "AssertionError" not in body["error"]["message"]
     assert "Traceback" not in str(body)
+
+
+def test_create_run_unexpected_internal_error_leaves_persisted_failed_record():
+    """T02.4 -- fim a fim, através do stack HTTP real: um erro
+    inesperado (aqui, o AssertionError real do FakeDebateEngine sem
+    result/exc configurado) responde 500 genérico (comportamento HTTP
+    inalterado) MAS deixa um registro terminal "failed" recuperável via
+    GET /runs -- o gap que este slice fecha. Antes desta etapa, nada
+    era persistido nesse caminho."""
+    factory = make_components_factory()
+    app = create_app(settings=_settings(), components_factory=factory)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.post("/runs", json={"question": "pergunta", "enabled_providers": ["openai"]})
+        assert resp.status_code == 500
+
+        listed = client.get("/runs").json()["runs"]
+        assert len(listed) == 1
+        assert listed[0]["status"] == "failed"
+
+        detail = client.get(f"/runs/{listed[0]['id']}").json()
+
+    assert detail["status"] == "failed"
+    assert detail["failure_reason"] == "AssertionError"
+    assert "Traceback" not in str(detail)
+    assert "assert" not in detail["message"].lower()

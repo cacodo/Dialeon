@@ -54,16 +54,48 @@ class QuorumFailureRecord(BaseModel):
     round_result: RoundResult
 
 
-PersistedRun = CompletedRunRecord | QuorumFailureRecord
+class AcceptedRunRecord(BaseModel):
+    """T02.4 -- um run aceito (validação de provider já passou, id/
+    started_at já autoritativos) que ainda NÃO tem registro terminal
+    canônico. `status="running"`: honestamente incompleto -- em
+    andamento, ou processo morreu antes de terminar (as duas situações
+    são indistinguíveis por design, ver docstring de `AcceptedRunRow`;
+    fora de escopo deste slice inventar como diferenciá-las). `status=
+    "failed"`: exceção inesperada durante a execução, já sanitizada
+    (`failure_classification`/`failure_message` nunca contêm traceback,
+    segredo, ou texto cru do provider/LLM -- ver
+    `CouncilExecutionService._sanitize_unexpected_failure`). Nunca tem
+    claims/attempts/verdict/resposta final -- não existe persistência
+    incremental neste slice (fora de escopo), então não há nada
+    intermediário pra mostrar além de identidade + config aceita."""
+
+    model_config = _CONFIG
+
+    status: Literal["running", "failed"]
+    id: str
+    started_at: datetime
+    run_config: RunConfig
+    failed_at: datetime | None = None
+    failure_classification: str | None = None
+    failure_message: str | None = None
+
+
+PersistedRun = CompletedRunRecord | QuorumFailureRecord | AcceptedRunRecord
 
 
 class RunSummary(BaseModel):
     """Visão leve para listagem -- sem reconstruir a árvore inteira de
-    cada run (`list_runs` não deveria custar o mesmo que N×`get_run`)."""
+    cada run (`list_runs` não deveria custar o mesmo que N×`get_run`).
+
+    T02.4: `ended_at=None` é o único valor honesto pra `status="running"`
+    -- a execução não terminou, então não existe timestamp de fim
+    nenhum pra reportar (nunca aproximado por `started_at` nem por
+    "agora"). Pra `status="failed"`, `ended_at` é `failed_at`, o mesmo
+    padrão já usado por `insufficient_quorum`."""
 
     model_config = _CONFIG
 
     id: str
-    status: Literal["completed", "insufficient_quorum"]
+    status: Literal["completed", "insufficient_quorum", "running", "failed"]
     started_at: datetime
-    ended_at: datetime  # completed_at (sucesso) ou failed_at (quorum failure)
+    ended_at: datetime | None  # completed_at/failed_at, ou None se "running"

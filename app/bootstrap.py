@@ -71,17 +71,32 @@ class AppComponents:
 def _validate_internal_provider_config(
     settings: Settings, providers: dict[str, LLMProvider]
 ) -> None:
-    """`claim_processor_provider`/`judge_provider`/`editor_provider` não
-    precisam pertencer a `enabled_providers` (RunConfig, já documentado),
-    mas precisam existir no registry de providers construído -- senão
-    TODA execução falharia em runtime profundo (dentro de
-    DebateEngine/SingleJudge/Editor) com um ValueError cru. Falhar aqui,
-    no startup, com uma mensagem clara, é preferível a deixar isso
-    estourar silenciosamente na primeira request."""
+    """`claim_processor_provider`/`judge_provider`/`editor_provider`/
+    `source_analyzer_provider` não precisam pertencer a
+    `enabled_providers` (RunConfig, já documentado), mas precisam
+    existir no registry de providers construído -- senão TODA execução
+    falharia em runtime profundo (dentro de
+    DebateEngine/SingleJudge/Editor/SourceAnalyzer) com um ValueError
+    cru. Falhar aqui, no startup, com uma mensagem clara, é preferível a
+    deixar isso estourar silenciosamente na primeira request.
+
+    T02.4 (repair pós-revisão independente, MEDIUM): `source_analyzer_provider`
+    estava AUSENTE desta checagem -- um `default_source_analyzer_provider`
+    inválido sobrevivia ao startup inteiro, permitia que um Run fosse
+    aceito/mintado durably, consumisse providers reais de debate, e só
+    falhasse quando a Source Analysis começasse. As 4 chaves abaixo
+    espelham EXATAMENTE os 4 papéis internos que
+    `RunConfig.from_settings` lê de `Settings` (ver
+    `app/orchestrator/config.py`) -- se um papel novo for adicionado a
+    `RunConfig.from_settings` no futuro, adicione a chave equivalente
+    aqui também (nenhum mecanismo automático os mantém em sincronia,
+    deliberadamente, pra não introduzir um framework de capability
+    registry fora do escopo desta correção)."""
     required = {
         "default_claim_processor_provider": settings.default_claim_processor_provider,
         "default_judge_provider": settings.default_judge_provider,
         "default_editor_provider": settings.default_editor_provider,
+        "default_source_analyzer_provider": settings.default_source_analyzer_provider,
     }
     missing = {
         field: provider_name

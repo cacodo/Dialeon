@@ -80,6 +80,25 @@ def test_invalid_internal_config_still_fails_as_configuration_error_not_http():
             pass
 
 
+def test_invalid_source_analyzer_config_fails_as_configuration_error_not_http():
+    """T02.4 repair (MEDIUM, teste B) -- `default_source_analyzer_provider`
+    inválido precisa ser rejeitado no MESMO ponto/contrato que
+    `default_judge_provider`/`default_claim_processor_provider`/
+    `default_editor_provider` já eram (ver
+    `_validate_internal_provider_config`, app/bootstrap.py) -- ANTES do
+    startup completar, nunca só quando Source Analysis rodar em runtime
+    profundo. Achado da revisão independente: esta chave estava ausente
+    da checagem original."""
+    from app.bootstrap import build_app_components
+
+    settings = Settings(_env_file=None, default_source_analyzer_provider="provider-que-nao-existe")
+    app = create_app(settings=settings, components_factory=build_app_components)
+
+    with pytest.raises(ConfigurationError):
+        with TestClient(app):
+            pass
+
+
 @pytest.mark.asyncio
 async def test_engine_disposed_when_failure_occurs_after_creation_before_return(monkeypatch):
     """Stage 14 (segunda revisão): se `init_db()` (ou qualquer passo

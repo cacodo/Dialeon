@@ -229,9 +229,11 @@ export interface AccountingSummary {
 
 export interface RunSummaryResponse {
   id: string
-  status: 'completed' | 'insufficient_quorum'
+  status: 'completed' | 'insufficient_quorum' | 'running' | 'failed'
   started_at: string
-  ended_at: string
+  // T02.4 -- null é o único valor honesto pra status="running" (a
+  // execução ainda não terminou).
+  ended_at: string | null
 }
 
 export interface RunListResponse {
@@ -262,7 +264,35 @@ export interface QuorumFailureRunResponse {
   config: RunConfigPublic
 }
 
-export type RunResponse = CompletedRunResponse | QuorumFailureRunResponse
+// T02.4 -- run aceito ainda sem desfecho terminal: em andamento, ou o
+// processo morreu antes de terminar (indistinguíveis por design). Sem
+// final_answer/accounting -- não existe persistência incremental neste
+// slice, então não há nada intermediário real pra expor.
+export interface RunningRunResponse {
+  status: 'running'
+  id: string
+  started_at: string
+  config: RunConfigPublic
+}
+
+// T02.4 -- exceção inesperada durante a execução (nem validação de
+// request, nem quórum insuficiente). failure_reason/message já chegam
+// sanitizados do backend -- nunca traceback/segredo/texto cru.
+export interface FailedRunResponse {
+  status: 'failed'
+  id: string
+  started_at: string
+  failed_at: string
+  failure_reason: string
+  message: string
+  config: RunConfigPublic
+}
+
+export type RunResponse =
+  | CompletedRunResponse
+  | QuorumFailureRunResponse
+  | RunningRunResponse
+  | FailedRunResponse
 
 export interface DebateOutcome {
   skipped_reason: string | null
@@ -312,7 +342,14 @@ export interface QuorumFailureAudit {
   round_result: RoundAudit
 }
 
-export type RunAuditResponse = CompletedRunAudit | QuorumFailureAudit
+// T02.4 -- um run "running"/"failed" nunca tem detalhe de auditoria
+// alem do que o detail já mostra (ver RunningRunResponse/FailedRunResponse
+// acima) -- reusados aqui em vez de tipos "Audit" idênticos.
+export type RunAuditResponse =
+  | CompletedRunAudit
+  | QuorumFailureAudit
+  | RunningRunResponse
+  | FailedRunResponse
 
 export interface ProvidersResponse {
   providers: string[]

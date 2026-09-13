@@ -102,6 +102,25 @@ const quorumRun = {
   },
 }
 
+// T02.4 -- run aceito sem desfecho terminal ainda.
+const runningRun = {
+  status: 'running' as const,
+  id: 'run-3',
+  started_at: '2026-09-06T00:00:00Z',
+  config: completedRun.config,
+}
+
+// T02.4 -- exceção inesperada durante a execução.
+const failedRun = {
+  status: 'failed' as const,
+  id: 'run-4',
+  started_at: '2026-09-06T00:00:00Z',
+  failed_at: '2026-09-06T00:00:02Z',
+  failure_reason: 'WeirdBug',
+  message: 'Erro interno inesperado durante a execução.',
+  config: completedRun.config,
+}
+
 describe('RunDetail', () => {
   it('mostra detail de uma run completed', async () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
@@ -192,5 +211,27 @@ describe('RunDetail', () => {
 
     await screen.findByText(/quórum insuficiente/i)
     expect(screen.getByText(/estimativa parcial/i)).toBeInTheDocument()
+  })
+
+  it('T02.4: mostra detail de uma run running, sem inventar desfecho nem oferecer inspeção', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(runningRun)
+    renderDetail('run-3')
+
+    expect(await screen.findByText(/em andamento/i)).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /inspecionar execução/i }),
+    ).not.toBeInTheDocument()
+    expect(apiClient.getRunAudit).not.toHaveBeenCalled()
+  })
+
+  it('T02.4: mostra detail de uma run failed com mensagem sanitizada, sem oferecer inspeção', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(failedRun)
+    renderDetail('run-4')
+
+    expect(await screen.findByRole('heading', { name: /falhou/i })).toBeInTheDocument()
+    expect(screen.getByText(failedRun.message)).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /inspecionar execução/i }),
+    ).not.toBeInTheDocument()
   })
 })

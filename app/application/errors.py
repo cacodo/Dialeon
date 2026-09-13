@@ -17,8 +17,11 @@ from __future__ import annotations
 
 
 class UnknownProviderError(Exception):
-    """`RunConfig.enabled_providers` contém nome(s) que não existem no
-    registry de providers construído (`AppComponents.providers`)."""
+    """Alguma autoridade de provider do `RunConfig`
+    (`RunConfig.all_provider_authorities` -- `enabled_providers` OU
+    qualquer um dos 4 papéis internos: claim processor, judge, editor,
+    source analyzer -- ver T02.4 repair) contém nome(s) que não existem
+    no registry de providers construído (`AppComponents.providers`)."""
 
     def __init__(self, unknown_providers: list[str], known_providers: list[str]):
         self.unknown_providers = unknown_providers

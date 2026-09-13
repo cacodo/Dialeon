@@ -27,7 +27,12 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.presentation.schemas import CompletedRunResponse, QuorumFailureRunResponse
+from app.presentation.schemas import (
+    CompletedRunResponse,
+    FailedRunResponse,
+    QuorumFailureRunResponse,
+    RunningRunResponse,
+)
 from app.text_safety import terminal_safe_text
 
 # Patch de seguranca de terminal -- terminal_safe_text mora em
@@ -113,14 +118,50 @@ def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
     )
 
 
+_RUN_SUMMARY_STATUS_LABELS: dict[str, str] = {
+    "completed": "concluída",
+    "insufficient_quorum": "quórum insuficiente",
+    "running": "em andamento",
+    "failed": "falhou",
+}
+
+
 def human_run_summary_list(runs: list) -> str:
     if not runs:
         return "Nenhuma execução ainda."
     lines = []
     for run in runs:
-        status = "concluída" if run.status == "completed" else "quórum insuficiente"
+        status = _RUN_SUMMARY_STATUS_LABELS.get(run.status, run.status)
         lines.append(f"{run.id}  {status:20s}  {run.started_at.isoformat()}")
     return "\n".join(lines)
+
+
+def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
+    """T02.4 -- `run.status in ("running", "failed")`: nunca tenta
+    imprimir campos de resultado/quórum que não existem pra esses dois
+    estados (nenhuma persistência incremental existe -- ver docstring de
+    RunningRunResponse/FailedRunResponse)."""
+    if run.status == "running":
+        return "\n".join(
+            [
+                "status: em andamento",
+                f"run_id: {run.id}",
+                f"iniciada em: {run.started_at.isoformat()}",
+                "Nenhum desfecho terminal foi registrado ainda -- a execução pode "
+                "estar em andamento, ou o processo pode ter sido interrompido antes "
+                "de terminar; os dois casos são indistinguíveis a partir deste registro.",
+            ]
+        )
+    return "\n".join(
+        [
+            "status: falhou",
+            f"run_id: {run.id}",
+            f"iniciada em: {run.started_at.isoformat()}",
+            f"falhou em: {run.failed_at.isoformat()}",
+            f"classificação: {terminal_safe_text(run.failure_reason)}",
+            terminal_safe_text(run.message),
+        ]
+    )
 
 
 def human_providers_list(providers: list[str]) -> str:

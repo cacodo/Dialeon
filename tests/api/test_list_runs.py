@@ -51,6 +51,40 @@ def test_list_runs_returns_both_kinds_sorted_started_at_desc():
     assert started_ats == sorted(started_ats, reverse=True)
 
 
+def test_list_runs_includes_running_and_failed():
+    """T02.4, teste I -- list/detail derivam exclusivamente dos fatos
+    persistidos canônicos: um run "running" (aceito, sem desfecho) e um
+    "failed" (exceção inesperada) aparecem em GET /runs igual a
+    completed/insufficient_quorum, com ended_at=null pro running."""
+
+    async def seed_lifecycle(components) -> None:
+        await components.repository.save_accepted(
+            "run-list-running", run_config=run_config(), started_at=now()
+        )
+        await components.repository.save_accepted(
+            "run-list-failed", run_config=run_config(), started_at=now()
+        )
+        await components.repository.save_unexpected_failure(
+            "run-list-failed",
+            failed_at=now(),
+            failure_classification="WeirdBug",
+            failure_message="Erro interno inesperado durante a execução.",
+        )
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        client.portal.call(seed_lifecycle, app.state.components)
+        resp = client.get("/runs")
+
+    body = resp.json()
+    by_id = {r["id"]: r for r in body["runs"]}
+    assert by_id["run-list-running"]["status"] == "running"
+    assert by_id["run-list-running"]["ended_at"] is None
+    assert by_id["run-list-failed"]["status"] == "failed"
+    assert by_id["run-list-failed"]["ended_at"] is not None
+
+
 def test_list_runs_respects_limit():
     app = create_app(settings=_settings(), components_factory=make_components_factory())
 

@@ -24,6 +24,7 @@ from app.presentation.schemas import (
     DeterministicVerificationAttemptPublic,
     EditorAttemptPublic,
     EditorOutcome,
+    FailedRunResponse,
     FinalAnswerPublic,
     InitialRoundAudit,
     JudgeAttemptPublic,
@@ -37,6 +38,7 @@ from app.presentation.schemas import (
     RoundAccountingPublic,
     RoundAudit,
     RunConfigPublic,
+    RunningRunResponse,
     RunSummaryResponse,
     SourceAnalysisAttemptPublic,
     SourceAnalysisOutcome,
@@ -60,7 +62,7 @@ from app.source_analysis.models import (
     ValidSourceRelation,
 )
 from app.source_analysis.result import SourceAnalysisResult
-from app.storage.records import QuorumFailureRecord, RunSummary
+from app.storage.records import AcceptedRunRecord, QuorumFailureRecord, RunSummary
 
 
 def model_response_public(mr: ModelResponse) -> ModelResponsePublic:
@@ -437,6 +439,28 @@ def quorum_failure_audit(record: QuorumFailureRecord) -> QuorumFailureAudit:
         total_providers=record.total_providers,
         min_to_return=record.min_to_return,
         round_result=round_audit(record.round_result),
+    )
+
+
+def running_run_response(record: AcceptedRunRecord) -> RunningRunResponse:
+    assert record.status == "running"
+    return RunningRunResponse(
+        id=record.id, started_at=record.started_at, config=run_config_public(record.run_config)
+    )
+
+
+def failed_run_response(record: AcceptedRunRecord) -> FailedRunResponse:
+    assert record.status == "failed"
+    assert record.failed_at is not None
+    assert record.failure_classification is not None
+    assert record.failure_message is not None
+    return FailedRunResponse(
+        id=record.id,
+        started_at=record.started_at,
+        failed_at=record.failed_at,
+        failure_reason=record.failure_classification,
+        message=record.failure_message,
+        config=run_config_public(record.run_config),
     )
 
 

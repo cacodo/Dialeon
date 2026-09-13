@@ -16,8 +16,8 @@ from __future__ import annotations
 
 
 class RunNotFoundError(Exception):
-    """`run_id` não existe em nenhuma das duas tabelas raiz
-    (council_runs/quorum_failures)."""
+    """`run_id` não existe em nenhuma das três tabelas raiz
+    (council_runs/quorum_failures/accepted_runs -- T02.4)."""
 
     def __init__(self, run_id: str):
         self.run_id = run_id

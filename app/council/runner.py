@@ -55,11 +55,26 @@ class CouncilRunner:
         self._judge = judge
         self._editor = editor
 
-    async def run(self, run_config: RunConfig) -> CouncilRunResult:
+    async def run(
+        self,
+        run_config: RunConfig,
+        *,
+        run_id: str | None = None,
+        started_at: datetime | None = None,
+    ) -> CouncilRunResult:
         """`run_config` é repassado, IDÊNTICO (mesma instância, nunca copiado ou
         mutado), a todas as chamadas abaixo. Não promete idempotência — cada chamada
-        real produz um `run_id` novo, timestamps novos, e chamadas reais e
-        não-determinísticas a LLMs.
+        real produz timestamps novos e chamadas reais e não-determinísticas a LLMs.
+
+        `run_id`/`started_at` (T02.4, aditivo/opcional): quando um chamador
+        autoritativo (`CouncilExecutionService`) já mintou/persistiu uma
+        identidade de aceite ANTES desta chamada, ele passa essa MESMA
+        identidade aqui -- `CouncilRunner` nunca minta um substituto
+        nesse caso (principio 3 do contrato: autoridade única de run-id).
+        Quando omitidos (chamada direta, sem lifecycle de aceite -- ex.:
+        testes de `CouncilRunner` isolado, scripts), o comportamento é
+        exatamente o de antes: `CouncilRunResult.id` usa seu próprio
+        `default_factory`, e `started_at` é capturado aqui mesmo.
 
         Etapa 16: `SourceAnalyzer` roda DEPOIS do `DebateEngine` (opera sobre
         claims CORRENTES pós-crítica, via `get_current_claims` internamente) e
@@ -81,7 +96,7 @@ class CouncilRunner:
         REAL LLM CALLS COUNT BUDGET permanece verdadeiro sem que Judge
         precise saber que Source Analysis existe como conceito — só
         quanto ela custou."""
-        started_at = _now()
+        started_at = started_at if started_at is not None else _now()
 
         debate_result = await self._debate_engine.run(run_config)
         source_analysis_result = await self._source_analyzer.analyze(debate_result, run_config)
@@ -130,6 +145,7 @@ class CouncilRunner:
         completed_at = _now()
 
         return CouncilRunResult(
+            **({"id": run_id} if run_id is not None else {}),
             run_config=run_config,
             debate_result=debate_result,
             source_analysis_result=source_analysis_result,

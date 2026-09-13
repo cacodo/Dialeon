@@ -252,6 +252,21 @@ async def test_cmd_list_shows_persisted_runs(capsys):
 
 
 @pytest.mark.asyncio
+async def test_cmd_list_shows_running_and_failed_labels(capsys):
+    components = await _components()
+    await components.repository.save_accepted(
+        "run-cli-list-running", run_config=run_config(), started_at=now()
+    )
+
+    exit_code = await commands.cmd_list(components, limit=50, offset=0, as_json=False)
+
+    assert exit_code == commands.EXIT_OK
+    out = capsys.readouterr().out
+    assert "run-cli-list-running" in out
+    assert "em andamento" in out
+
+
+@pytest.mark.asyncio
 async def test_cmd_list_json_has_stable_shape(capsys):
     components = await _components()
     result = full_council_run_result()
@@ -280,6 +295,58 @@ async def test_cmd_get_completed_run(capsys):
     body = json.loads(out.out)
     assert body["status"] == "completed"
     assert body["id"] == result.id
+
+
+@pytest.mark.asyncio
+async def test_cmd_get_running_run_json(capsys):
+    components = await _components()
+    await components.repository.save_accepted(
+        "run-cli-running", run_config=run_config(), started_at=now()
+    )
+
+    exit_code = await commands.cmd_get(components, run_id="run-cli-running", as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "running"
+    assert body["id"] == "run-cli-running"
+
+
+@pytest.mark.asyncio
+async def test_cmd_get_running_run_human_output(capsys):
+    components = await _components()
+    await components.repository.save_accepted(
+        "run-cli-running-2", run_config=run_config(), started_at=now()
+    )
+
+    exit_code = await commands.cmd_get(components, run_id="run-cli-running-2", as_json=False)
+
+    assert exit_code == commands.EXIT_OK
+    out = capsys.readouterr().out
+    assert "em andamento" in out
+    assert "run-cli-running-2" in out
+
+
+@pytest.mark.asyncio
+async def test_cmd_get_failed_run_json_sanitized(capsys):
+    components = await _components()
+    await components.repository.save_accepted(
+        "run-cli-failed", run_config=run_config(), started_at=now()
+    )
+    await components.repository.save_unexpected_failure(
+        "run-cli-failed",
+        failed_at=now(),
+        failure_classification="WeirdBug",
+        failure_message="Erro interno inesperado durante a execução.",
+    )
+
+    exit_code = await commands.cmd_get(components, run_id="run-cli-failed", as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "failed"
+    assert body["failure_reason"] == "WeirdBug"
+    assert "Traceback" not in json.dumps(body)
 
 
 @pytest.mark.asyncio
@@ -395,6 +462,36 @@ async def test_cmd_audit_quorum_failure_run(capsys):
     out = capsys.readouterr()
     body = json.loads(out.out)
     assert body["status"] == "insufficient_quorum"
+
+
+@pytest.mark.asyncio
+async def test_cmd_audit_running_run_never_invents_detail(capsys):
+    components = await _components()
+    await components.repository.save_accepted(
+        "run-cli-audit-running", run_config=run_config(), started_at=now()
+    )
+
+    exit_code = await commands.cmd_audit(components, run_id="run-cli-audit-running", as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["status"] == "running"
+    assert set(body.keys()) == {"status", "id", "started_at", "config"}
+
+
+@pytest.mark.asyncio
+async def test_cmd_audit_running_run_human_output(capsys):
+    components = await _components()
+    await components.repository.save_accepted(
+        "run-cli-audit-running-2", run_config=run_config(), started_at=now()
+    )
+
+    exit_code = await commands.cmd_audit(
+        components, run_id="run-cli-audit-running-2", as_json=False
+    )
+
+    assert exit_code == commands.EXIT_OK
+    assert "em andamento" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

@@ -35,12 +35,14 @@ from app.orchestrator.errors import InsufficientQuorumError
 from app.presentation.mappers import (
     completed_run_audit,
     completed_run_response,
+    failed_run_response,
     quorum_failure_audit,
     quorum_failure_run_response,
+    running_run_response,
     run_summary_response,
 )
 from app.presentation.schemas import CreateRunRequest, ProvidersResponse, RunListResponse
-from app.storage.records import CompletedRunRecord, QuorumFailureRecord
+from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 
 EXIT_OK = 0
 EXIT_INTERNAL_ERROR = 1
@@ -179,13 +181,21 @@ async def cmd_get(components: AppComponents, *, run_id: str, as_json: bool) -> i
             output.emit_json(response)
         else:
             print(output.human_run_result(response))
-    else:
-        assert isinstance(record, QuorumFailureRecord)
+    elif isinstance(record, QuorumFailureRecord):
         response = quorum_failure_run_response(record)
         if as_json:
             output.emit_json(response)
         else:
             print(output.human_quorum_failure(response))
+    else:
+        assert isinstance(record, AcceptedRunRecord)
+        lifecycle_response = (
+            running_run_response(record) if record.status == "running" else failed_run_response(record)
+        )
+        if as_json:
+            output.emit_json(lifecycle_response)
+        else:
+            print(output.human_accepted_run(lifecycle_response))
     return EXIT_OK
 
 
@@ -201,12 +211,16 @@ async def cmd_audit(components: AppComponents, *, run_id: str, as_json: bool) ->
 
     if isinstance(record, CompletedRunRecord):
         audit = completed_run_audit(record.council_run_result)
-    else:
-        assert isinstance(record, QuorumFailureRecord)
+    elif isinstance(record, QuorumFailureRecord):
         audit = quorum_failure_audit(record)
+    else:
+        assert isinstance(record, AcceptedRunRecord)
+        audit = running_run_response(record) if record.status == "running" else failed_run_response(record)
 
     if as_json:
         output.emit_json(audit)
+    elif isinstance(record, AcceptedRunRecord):
+        print(output.human_accepted_run(audit))
     else:
         print(output.human_run_audit(audit))
     return EXIT_OK

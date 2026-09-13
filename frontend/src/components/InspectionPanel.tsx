@@ -66,6 +66,14 @@ export function InspectionPanel({ runId }: InspectionPanelProps) {
 
   const audit = state.audit
 
+  if (audit.status !== 'completed' && audit.status !== 'insufficient_quorum') {
+    // T02.4 -- este componente só é montado (ver RunDetail.tsx) pra runs
+    // com desfecho terminal auditável; "running"/"failed" nunca chegam
+    // aqui na prática (nenhum claim/attempt/verdict pra inspecionar) --
+    // guarda defensiva só pra manter o narrowing de tipo abaixo.
+    return null
+  }
+
   const assessmentsByClaimId =
     audit.status === 'completed' && audit.judge_verdict
       ? new Map(audit.judge_verdict.claim_assessments.map((a) => [a.claim_id, a]))

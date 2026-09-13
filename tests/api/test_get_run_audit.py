@@ -24,6 +24,11 @@ async def _seed_quorum_failure(components, exc) -> str:
     )
 
 
+async def _seed_accepted(components, run_id: str) -> str:
+    await components.repository.save_accepted(run_id, run_config=run_config(), started_at=now())
+    return run_id
+
+
 def test_get_run_audit_completed_full_detail():
     result = full_council_run_result()
     app = create_app(settings=_settings(), components_factory=make_components_factory())
@@ -178,6 +183,22 @@ def test_get_run_audit_quorum_failure_full_detail():
     assert body["round_result"]["accounting"]["has_unknown_accounting_components"] == (
         exc.round_result.has_unknown_accounting_components
     )
+
+
+def test_get_run_audit_running_never_invents_detail():
+    """T02.4, teste I -- audit de um run "running" reusa exatamente o
+    mesmo shape do detail (identidade + config aceita), NUNCA inventa
+    claims/attempts/verdict que não existem/não foram persistidos."""
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_accepted, app.state.components, "run-audit-running-1")
+        resp = client.get(f"/runs/{run_id}/audit")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert set(body.keys()) == {"status", "id", "started_at", "config"}
 
 
 def test_get_run_audit_not_found_returns_404():

@@ -11,7 +11,8 @@ domínio, recalculados a partir dos registros-fato na hora da leitura via
 sum_usage_and_cost (o MESMO helper que o domínio já usa), nunca uma segunda
 fonte de verdade que possa divergir.
 
-Duas raízes independentes, cada uma com seu próprio espaço de id:
+Três raízes, cada uma com seu próprio espaço de id (T02.4 adicionou a
+terceira -- as duas primeiras existem desde a Etapa 10):
 
 - CouncilRunRow -- execução que chegou até CouncilRunResult (Editor
   concluiu). debate_skipped_reason/cumulative_budget_exceeded (Debate/
@@ -23,6 +24,15 @@ Duas raízes independentes, cada uma com seu próprio espaço de id:
   antes de qualquer processamento de claims (Etapa 10: a exceção agora
   carrega o RoundResult real da rodada inicial). Nunca tem claims/
   attempts/verdict/resposta final -- o pipeline nem chegou lá.
+- AcceptedRunRow (T02.4) -- registro mínimo de aceite/lifecycle, existe
+  ANTES de qualquer chamada a CouncilRunner. Compartilha temporariamente
+  o mesmo id que um CouncilRunRow/QuorumFailureRow vai assumir se a
+  execução chegar a um desfecho terminal -- mas é DELETADO na mesma
+  transação atômica que grava esse desfecho (ver
+  CouncilRepository.save_success/save_quorum_failure), então nunca é uma
+  segunda fonte de verdade competindo com as duas raízes acima. Só
+  sobrevive pra sempre em "running" (honestamente incompleto) ou
+  "failed" (exceção inesperada, sanitizada) -- ver docstring da classe.
 
 ModelResponseRow.council_run_id/quorum_failure_id são mutuamente
 exclusivos (exatamente um preenchido) -- um CHECK garante isso no nível
@@ -88,6 +98,54 @@ class CouncilRunRow(Base):
     source_analyzer_provider: Mapped[str | None]
     source_analysis_skipped_reason: Mapped[str | None]
     source_analysis_cumulative_budget_exceeded: Mapped[bool | None]
+
+
+class AcceptedRunRow(Base):
+    """Registro de aceite/lifecycle -- T02.4 (durable accepted-run
+    envelope). Existe DESDE o instante em que a execução é aceita
+    (validação de provider já passou), ANTES de qualquer chamada a
+    `CouncilRunner` -- exatamente pra que uma execução validada que já
+    pode consumir providers nunca desapareça do histórico se algo além
+    de `InsufficientQuorumError` acontecer, ou se o processo morrer
+    antes da persistência terminal (ver relatório de reconciliação
+    T02.4 -- gap de auditabilidade/reparabilidade, não de corrupção de
+    dado).
+
+    Efêmero por design pros dois casos que já têm registro terminal
+    canônico: uma execução que chega a `completed`/`insufficient_quorum`
+    tem esta linha DELETADA na MESMA transação atômica que grava
+    `CouncilRunRow`/`QuorumFailureRow` (ver `CouncilRepository.save_success`/
+    `save_quorum_failure`) -- nunca uma segunda fonte de verdade
+    duplicando o mesmo fato que aquelas duas tabelas já cobrem
+    (principio 9: fonte única por status). Se aquela transação terminal
+    falhar, o rollback preserva esta linha intacta -- é exatamente essa
+    propriedade (rollback atômico de `session_scope`) que garante que
+    uma falha de persistência terminal nunca apaga a evidência de que a
+    execução foi aceita.
+
+    Só sobrevive pra sempre em dois casos honestos, nunca resolvidos
+    artificialmente por este slice (fora de escopo: crash recovery,
+    heartbeat, lease, stale-run cleanup -- ver relatório):
+    `status="running"` (processo ainda em andamento, ou morreu antes de
+    terminar -- as duas situações são indistinguíveis aqui, de propósito,
+    e IS o dado honesto) ou `status="failed"` (exceção inesperada durante
+    a execução, já sanitizada -- ver
+    `CouncilExecutionService._sanitize_unexpected_failure`)."""
+
+    __tablename__ = "accepted_runs"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    status: Mapped[str]  # "running" | "failed"
+    started_at: Mapped[datetime]
+    run_config_json: Mapped[dict] = mapped_column(JSON)
+
+    # Só preenchidos quando status="failed" -- todos None em "running".
+    failed_at: Mapped[datetime | None]
+    # Classificação interna estável (nome da classe da exceção) -- NUNCA
+    # str(exc)/traceback/repr (ver docstring de
+    # CouncilExecutionService._sanitize_unexpected_failure).
+    failure_classification: Mapped[str | None]
+    failure_message: Mapped[str | None]
 
 
 class ModelResponseRow(Base):

@@ -444,14 +444,20 @@ class AccountingSummary(BaseModel):
 
 class RunSummaryResponse(BaseModel):
     """Dedicado -- NÃO é `storage.records.RunSummary` reexportado
-    (Decision Delta secao 9)."""
+    (Decision Delta secao 9).
+
+    T02.4: `ended_at=None` é o único valor honesto pra `status="running"`
+    -- a execução ainda não terminou (ou o processo morreu antes de
+    terminar; as duas situações são indistinguíveis por design, ver
+    `app.storage.models.AcceptedRunRow`), então não existe timestamp de
+    fim nenhum pra reportar."""
 
     model_config = _CONFIG
 
     id: str
-    status: Literal["completed", "insufficient_quorum"]
+    status: Literal["completed", "insufficient_quorum", "running", "failed"]
     started_at: datetime
-    ended_at: datetime
+    ended_at: datetime | None
 
 
 class ProvidersResponse(BaseModel):
@@ -498,8 +504,45 @@ class QuorumFailureRunResponse(BaseModel):
     config: RunConfigPublic
 
 
+class RunningRunResponse(BaseModel):
+    """T02.4 -- um run aceito que ainda não tem desfecho terminal:
+    honestamente incompleto (em andamento, ou processo morreu antes de
+    terminar -- indistinguíveis por design, ver
+    `app.storage.records.AcceptedRunRecord`). Sem `final_answer`/
+    `accounting` -- não existe persistência incremental neste slice
+    (fora de escopo), então não há nada intermediário real pra expor
+    além de identidade + configuração aceita."""
+
+    model_config = _CONFIG
+
+    status: Literal["running"] = "running"
+    id: str
+    started_at: datetime
+    config: RunConfigPublic
+
+
+class FailedRunResponse(BaseModel):
+    """T02.4 -- exceção inesperada durante a execução (nem validação de
+    request, nem quórum insuficiente -- ver
+    `app.application.service.CouncilExecutionService.run`).
+    `failure_reason` é uma classificação interna estável (nome da classe
+    da exceção) + mensagem genérica fixa -- NUNCA traceback, segredo, ou
+    texto cru do provider/LLM (item 6 do contrato T02.4)."""
+
+    model_config = _CONFIG
+
+    status: Literal["failed"] = "failed"
+    id: str
+    started_at: datetime
+    failed_at: datetime
+    failure_reason: str
+    message: str
+    config: RunConfigPublic
+
+
 RunResponse = Annotated[
-    Union[CompletedRunResponse, QuorumFailureRunResponse], Field(discriminator="status")
+    Union[CompletedRunResponse, QuorumFailureRunResponse, RunningRunResponse, FailedRunResponse],
+    Field(discriminator="status"),
 ]
 
 
@@ -598,8 +641,17 @@ class QuorumFailureAudit(BaseModel):
     round_result: RoundAudit
 
 
+# T02.4: um run "running"/"failed" nunca tem detalhe de auditoria pra
+# mostrar alem do que o detail (RunResponse) já mostra -- nenhuma claim/
+# attempt/verdict foi produzida (sem persistência incremental, fora de
+# escopo), ou, se foi, nunca foi persistida (item 6: só o desfecho é
+# sanitizado e gravado). Reusar RunningRunResponse/FailedRunResponse
+# aqui em vez de criar RunningRunAudit/FailedRunAudit idênticos evita
+# inventar detalhe de auditoria que não existe (requisito de teste I:
+# "não invente fatos de auditoria detalhados pra um run incompleto").
 RunAuditResponse = Annotated[
-    Union[CompletedRunAudit, QuorumFailureAudit], Field(discriminator="status")
+    Union[CompletedRunAudit, QuorumFailureAudit, RunningRunResponse, FailedRunResponse],
+    Field(discriminator="status"),
 ]
 
 

@@ -320,3 +320,47 @@ def test_run_config_from_settings_grouping_and_judge_default_to_8192():
     config = RunConfig.from_settings(settings, question="pergunta", enabled_providers=["openai"])
     assert config.max_output_tokens_grouping == 8192
     assert config.max_output_tokens_judge == 8192
+
+
+# ---------------------------------------------------------------------------
+# T02.4 repair (achado MEDIUM da revisão independente) --
+# all_provider_authorities
+# ---------------------------------------------------------------------------
+
+
+def test_all_provider_authorities_unions_participants_and_all_4_internal_roles():
+    """Enumeração canônica: os 4 papéis internos + enabled_providers,
+    sem duplicatas (frozenset), mesmo quando um papel interno coincide
+    com um participante."""
+    config = _run_config(
+        enabled_providers=["openai", "gemini"],
+        claim_processor_provider="anthropic",
+        judge_provider="anthropic",
+        editor_provider="cohere",
+        source_analyzer_provider="mistral",
+    )
+    assert config.all_provider_authorities == {
+        "openai",
+        "gemini",
+        "anthropic",
+        "cohere",
+        "mistral",
+    }
+
+
+def test_all_provider_authorities_reflects_source_analyzer_provider():
+    """Achado da revisão independente: `source_analyzer_provider`
+    especificamente precisa aparecer na enumeração -- era o campo que
+    escapava da validação de bootstrap antes deste repair."""
+    config = _run_config(source_analyzer_provider="provider-exclusivo-da-fonte")
+    assert "provider-exclusivo-da-fonte" in config.all_provider_authorities
+
+
+def test_all_provider_authorities_is_never_in_model_dump():
+    """Precisa ser @property, nunca @computed_field -- senão apareceria
+    em model_dump(mode="json") e quebraria a reconstrução de
+    RunConfig(**data) a partir do blob persistido (extra="forbid")."""
+    config = _run_config()
+    assert "all_provider_authorities" not in config.model_dump(mode="json")
+    # reconstrução a partir do próprio dump precisa continuar funcionando
+    RunConfig(**config.model_dump(mode="json"))

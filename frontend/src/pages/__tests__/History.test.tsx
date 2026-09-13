@@ -65,6 +65,21 @@ describe('History', () => {
     expect(runLink).toBeDefined()
   })
 
+  it('T02.4: mostra rótulos pros estados running/failed, com ended_at nulo pro running', async () => {
+    vi.mocked(apiClient.listRuns).mockResolvedValue({
+      runs: [
+        { id: 'r3', status: 'running', started_at: '2026-09-06T00:00:00Z', ended_at: null },
+        { id: 'r4', status: 'failed', started_at: '2026-09-05T00:00:00Z', ended_at: '2026-09-05T00:00:02Z' },
+      ],
+      limit: 20,
+      offset: 0,
+    })
+    renderHistory()
+
+    expect(await screen.findByText('Em andamento')).toBeInTheDocument()
+    expect(await screen.findByText('Falhou')).toBeInTheDocument()
+  })
+
   it('paginação avança o offset', async () => {
     vi.mocked(apiClient.listRuns).mockResolvedValue({
       runs: Array.from({ length: 20 }, (_, i) => ({
