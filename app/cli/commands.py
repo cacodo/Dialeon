@@ -134,7 +134,9 @@ async def cmd_run(
             output.print_error(f"quórum insuficiente: {message}")
         return EXIT_INSUFFICIENT_QUORUM
 
-    response = completed_run_response(result)
+    response = completed_run_response(
+        result, provider_execution_policy=components.provider_execution_policy
+    )
     if as_json:
         output.emit_json(response)
     else:
@@ -176,7 +178,9 @@ async def cmd_get(components: AppComponents, *, run_id: str, as_json: bool) -> i
         return EXIT_NOT_FOUND
 
     if isinstance(record, CompletedRunRecord):
-        response = completed_run_response(record.council_run_result)
+        response = completed_run_response(
+            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+        )
         if as_json:
             output.emit_json(response)
         else:
@@ -210,7 +214,9 @@ async def cmd_audit(components: AppComponents, *, run_id: str, as_json: bool) ->
         return EXIT_NOT_FOUND
 
     if isinstance(record, CompletedRunRecord):
-        audit = completed_run_audit(record.council_run_result)
+        audit = completed_run_audit(
+            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+        )
     elif isinstance(record, QuorumFailureRecord):
         audit = quorum_failure_audit(record)
     else:

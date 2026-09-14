@@ -466,3 +466,112 @@ async def test_both_legacy_upgrades_together_from_true_stage16_database(tmp_path
         assert "had_uncertain_prior_attempts" in columns, table
         assert "provider_finish_reason" in columns, table
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# T02.2 -- provider_execution_policy_json em council_runs/quorum_failures/
+# accepted_runs
+# ---------------------------------------------------------------------------
+
+_PROVIDER_EXECUTION_POLICY_TABLES = ("council_runs", "quorum_failures", "accepted_runs")
+
+
+async def _make_pre_t02_2_db(db_path: str) -> None:
+    """Cria o schema ATUAL e remove só a coluna
+    `provider_execution_policy_json` das 3 tabelas afetadas -- simula
+    fielmente um banco criado antes do slice T02.2 (todas as outras
+    colunas/upgrades legados permanecem intactos -- upgrades
+    independentes, mesma disciplina de `_make_pre_reconciliation_db`)."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_execution_policy_json")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_t02_2_database_gets_policy_column_added_to_all_three_tables(tmp_path):
+    db_path = str(tmp_path / "pre_t02_2.db")
+    await _make_pre_t02_2_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns_before = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "provider_execution_policy_json" not in columns_before, table
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns_after = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "provider_execution_policy_json" in columns_after, table
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_t02_2_council_run_gets_null_policy_never_current_settings_defaults(tmp_path):
+    """Teste N (nível de schema) -- uma linha `council_runs` persistida
+    antes desta coluna existir precisa reconstruir com
+    `provider_execution_policy_json=NULL` depois do upgrade -- NUNCA os
+    defaults ATUAIS de Settings (`provider_timeout_seconds=60`/
+    `provider_max_retries=2`, que produziriam
+    attempt_timeout_seconds=60.0/max_transport_attempts_per_completion=3)."""
+    db_path = str(tmp_path / "pre_t02_2_with_row.db")
+    await _make_pre_t02_2_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="legacy-run-1")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    (policy_json,) = conn.execute(
+        "SELECT provider_execution_policy_json FROM council_runs WHERE id = 'legacy-run-1'"
+    ).fetchone()
+    conn.close()
+    assert policy_json is None
+
+
+@pytest.mark.asyncio
+async def test_t02_2_upgrade_does_not_touch_other_legacy_columns(tmp_path):
+    """Upgrades independentes -- adicionar `provider_execution_policy_json`
+    não deve tocar `had_uncertain_prior_attempts`/`provider_finish_reason`/
+    `support_scope_model_count` (já testados isoladamente acima)."""
+    db_path = str(tmp_path / "pre_t02_2_full_legacy.db")
+    await _make_legacy_db(db_path)  # remove had_uncertain_prior_attempts
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_finish_reason")
+    conn.execute("ALTER TABLE claims DROP COLUMN support_scope_model_count")
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_execution_policy_json")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "had_uncertain_prior_attempts" in columns, table
+        assert "provider_finish_reason" in columns, table
+    claims_columns = {c[1] for c in conn.execute("PRAGMA table_info(claims)")}
+    assert "support_scope_model_count" in claims_columns
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "provider_execution_policy_json" in columns, table
+    conn.close()

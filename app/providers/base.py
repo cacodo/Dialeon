@@ -119,10 +119,17 @@ class LLMProvider(ABC):
     def __init__(
         self,
         api_key: str | None,
-        timeout_seconds: int,
+        timeout_seconds: float,
         max_retries: int,
         pricing: PricingRegistry,
     ):
+        # T02.2 fractional-timeout fidelity repair: `float`, não `int` --
+        # `asyncio.wait_for(timeout=...)` já aceita fracionário
+        # nativamente (ver `complete()` abaixo), e o valor que chega aqui
+        # precisa ser BIT-A-BIT o mesmo `ProviderExecutionPolicy.attempt_timeout_seconds`
+        # resolvido/persistido (app/providers/factory.py) -- um `int`
+        # aqui truncaria 1.5s->1s, 0.9s->0s, violando o invariante
+        # "persisted == enforced".
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries

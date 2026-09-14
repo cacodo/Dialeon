@@ -3,9 +3,18 @@ from __future__ import annotations
 from app.bootstrap import AppComponents
 from app.application.service import CouncilExecutionService
 from app.council.runner import CouncilRunner
+from app.models.provider_models import ProviderExecutionPolicy
 from app.storage.database import create_engine, init_db, make_session_factory
 from app.storage.repository import CouncilRepository
 from tests.council.fakes import FakeDebateEngine, FakeEditor, FakeJudge, FakeSourceAnalyzer
+
+# T02.2 -- valor de teste fixo, DISTINTO dos defaults reais de Settings
+# (60s/3 tentativas) de propósito: qualquer teste que confundisse "o
+# resolvido pra este componente de teste" com "o default global" seria
+# pego por essa diferença.
+TEST_PROVIDER_EXECUTION_POLICY = ProviderExecutionPolicy(
+    attempt_timeout_seconds=30.0, max_transport_attempts_per_completion=2
+)
 
 
 async def build_test_components(
@@ -17,6 +26,7 @@ async def build_test_components(
     editor_result=None,
     quorum_exc=None,
     provider_names=("openai", "anthropic", "gemini"),
+    provider_execution_policy: ProviderExecutionPolicy | None = None,
 ) -> AppComponents:
     """Monta AppComponents sem nenhum provider real/rede -- banco SQLite
     em memória isolado, e CouncilRunner recebendo os fakes já existentes
@@ -39,8 +49,12 @@ async def build_test_components(
         editor=editor,
     )
     providers = {name: object() for name in provider_names}
+    policy = provider_execution_policy or TEST_PROVIDER_EXECUTION_POLICY
     service = CouncilExecutionService(
-        runner=runner, repository=repository, known_providers=frozenset(providers)
+        runner=runner,
+        repository=repository,
+        known_providers=frozenset(providers),
+        provider_execution_policy=policy,
     )
 
     return AppComponents(
@@ -50,6 +64,7 @@ async def build_test_components(
         providers=providers,
         repository=repository,
         service=service,
+        provider_execution_policy=policy,
     )
 
 

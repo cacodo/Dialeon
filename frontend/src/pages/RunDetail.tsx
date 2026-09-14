@@ -10,6 +10,7 @@ import { formatDateTime, formatErrorCode } from '../api/formatting'
 import { FinalAnswerView } from '../components/FinalAnswerView'
 import { AccountingView } from '../components/AccountingView'
 import { InspectionPanel } from '../components/InspectionPanel'
+import { ProviderExecutionPolicyView } from '../components/ProviderExecutionPolicyView'
 
 type DetailState =
   | { phase: 'loading' }
@@ -89,6 +90,7 @@ export function RunDetail() {
             <p>Concluída em {formatDateTime(run.completed_at)}</p>
             <p>Participantes: {run.config.enabled_providers.join(', ')}</p>
             <AccountingView accounting={run.accounting} />
+            <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
           </section>
         </>
       )}
@@ -102,6 +104,7 @@ export function RunDetail() {
           </p>
           <p>Falhou em {formatDateTime(run.failed_at)}</p>
           <AccountingView accounting={run.accounting} />
+          <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
         </section>
       )}
 
@@ -113,6 +116,7 @@ export function RunDetail() {
           <h2 id="running-heading">Em andamento</h2>
           <p>Iniciada em {formatDateTime(run.started_at)}.</p>
           <p>Nenhum desfecho terminal foi registrado ainda para esta execução.</p>
+          <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
         </section>
       )}
 
@@ -121,6 +125,7 @@ export function RunDetail() {
           <h2 id="failed-heading">Falhou</h2>
           <p>Iniciada em {formatDateTime(run.started_at)}, falhou em {formatDateTime(run.failed_at)}.</p>
           <p>{run.message}</p>
+          <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
         </section>
       )}
 

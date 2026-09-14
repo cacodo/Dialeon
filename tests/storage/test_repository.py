@@ -16,6 +16,7 @@ from tests.storage.fixtures import (
     full_council_run_result,
     model_response,
     now,
+    provider_execution_policy,
     quorum_failure_exception,
     run_config,
 )# ---------------------------------------------------------------------------
@@ -1393,7 +1394,10 @@ async def test_provider_finish_reason_none_roundtrips_as_none(repo):
 async def test_save_accepted_persists_minimal_running_record(repo):
     rc = run_config()
     started_at = now()
-    await repo.save_accepted("run-accept-1", run_config=rc, started_at=started_at)
+    policy = provider_execution_policy()
+    await repo.save_accepted(
+        "run-accept-1", run_config=rc, started_at=started_at, provider_execution_policy=policy
+    )
 
     loaded = await repo.get_run("run-accept-1")
     assert isinstance(loaded, AcceptedRunRecord)
@@ -1403,6 +1407,7 @@ async def test_save_accepted_persists_minimal_running_record(repo):
     assert loaded.failure_classification is None
     assert loaded.failure_message is None
     assert loaded.run_config == rc
+    assert loaded.provider_execution_policy == policy  # T02.2, teste H
 
 
 @pytest.mark.asyncio
@@ -1413,7 +1418,7 @@ async def test_accepted_running_record_appears_in_list_runs_with_null_ended_at(r
     -- só NÃO chamar nenhum save_success/save_quorum_failure/
     save_unexpected_failure depois de save_accepted já é o estado
     honesto que este teste verifica."""
-    await repo.save_accepted("run-accept-2", run_config=run_config(), started_at=now())
+    await repo.save_accepted("run-accept-2", run_config=run_config(), started_at=now(), provider_execution_policy=provider_execution_policy())
 
     summaries = await repo.list_runs()
     assert len(summaries) == 1
@@ -1425,7 +1430,13 @@ async def test_accepted_running_record_appears_in_list_runs_with_null_ended_at(r
 @pytest.mark.asyncio
 async def test_save_success_finalizes_and_deletes_accepted_row(repo):
     result = full_council_run_result()
-    await repo.save_accepted(result.id, run_config=result.run_config, started_at=result.started_at)
+    policy = provider_execution_policy()
+    await repo.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=policy,
+    )
 
     await repo.save_success(result)
 
@@ -1435,6 +1446,22 @@ async def test_save_success_finalizes_and_deletes_accepted_row(repo):
 
     loaded = await repo.get_run(result.id)
     assert isinstance(loaded, CompletedRunRecord)
+    # T02.2, teste I -- a política aceita é copiada EXATA pro terminal completed.
+    assert loaded.provider_execution_policy == policy
+
+
+@pytest.mark.asyncio
+async def test_save_success_without_prior_accepted_row_leaves_policy_none(repo):
+    """T02.2 -- chamador direto de save_success, sem passar por
+    save_accepted antes (mesma disciplina já testada pra outros campos):
+    não há linha de aceite nenhuma de onde copiar, então
+    provider_execution_policy fica None -- nunca um default inventado."""
+    result = full_council_run_result()
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.provider_execution_policy is None
 
 
 @pytest.mark.asyncio
@@ -1442,7 +1469,10 @@ async def test_save_quorum_failure_with_run_id_reuses_identity_and_deletes_accep
     exc = quorum_failure_exception()
     rc = run_config()
     started_at = now()
-    await repo.save_accepted("run-accept-3", run_config=rc, started_at=started_at)
+    policy = provider_execution_policy()
+    await repo.save_accepted(
+        "run-accept-3", run_config=rc, started_at=started_at, provider_execution_policy=policy
+    )
 
     failure_id = await repo.save_quorum_failure(
         exc, run_config=rc, started_at=started_at, failed_at=now(), run_id="run-accept-3"
@@ -1455,6 +1485,8 @@ async def test_save_quorum_failure_with_run_id_reuses_identity_and_deletes_accep
 
     loaded = await repo.get_run("run-accept-3")
     assert isinstance(loaded, QuorumFailureRecord)
+    # T02.2, teste J -- a política aceita é copiada EXATA pro terminal insufficient_quorum.
+    assert loaded.provider_execution_policy == policy
 
 
 @pytest.mark.asyncio
@@ -1476,7 +1508,10 @@ async def test_save_quorum_failure_without_run_id_still_mints_its_own(repo):
 async def test_save_unexpected_failure_transitions_accepted_row_to_failed(repo):
     rc = run_config()
     started_at = now()
-    await repo.save_accepted("run-accept-4", run_config=rc, started_at=started_at)
+    policy = provider_execution_policy()
+    await repo.save_accepted(
+        "run-accept-4", run_config=rc, started_at=started_at, provider_execution_policy=policy
+    )
 
     failed_at = now()
     await repo.save_unexpected_failure(
@@ -1493,6 +1528,9 @@ async def test_save_unexpected_failure_transitions_accepted_row_to_failed(repo):
     assert loaded.failure_classification == "WeirdBug"
     assert loaded.failure_message == "Erro interno inesperado durante a execução."
     assert loaded.run_config == rc  # config aceita original, nunca perdida na transição
+    # T02.2, teste K -- a política aceita sobrevive INTACTA à transição
+    # running -> failed (save_unexpected_failure nunca a toca).
+    assert loaded.provider_execution_policy == policy
 
     summaries = await repo.list_runs()
     assert len(summaries) == 1
@@ -1508,7 +1546,13 @@ async def test_save_success_terminal_rollback_preserves_accepted_row(repo):
     falha de persistência propaga (nunca é convertida em sucesso ou
     silenciada)."""
     result = full_council_run_result()
-    await repo.save_accepted(result.id, run_config=result.run_config, started_at=result.started_at)
+    policy = provider_execution_policy()
+    await repo.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=policy,
+    )
 
     bad_claim = result.debate_result.claims[0].model_copy(
         update={"source_model_response_id": "id-que-nao-existe-em-nenhum-model-response"}
@@ -1522,6 +1566,8 @@ async def test_save_success_terminal_rollback_preserves_accepted_row(repo):
     loaded = await repo.get_run(result.id)
     assert isinstance(loaded, AcceptedRunRecord)
     assert loaded.status == "running"  # nem completed, nem apagado -- a evidência de aceite persiste
+    # T02.2, teste L -- a política aceita também sobrevive ao rollback intacta.
+    assert loaded.provider_execution_policy == policy
 
 
 @pytest.mark.asyncio
@@ -1546,7 +1592,7 @@ async def test_save_quorum_failure_terminal_rollback_preserves_accepted_row(repo
     exc = quorum_failure_exception(round_result=round_result)
     rc = run_config()
     started_at = now()
-    await repo.save_accepted("run-accept-5", run_config=rc, started_at=started_at)
+    await repo.save_accepted("run-accept-5", run_config=rc, started_at=started_at, provider_execution_policy=provider_execution_policy())
 
     with pytest.raises(Exception):
         await repo.save_quorum_failure(
@@ -1556,3 +1602,113 @@ async def test_save_quorum_failure_terminal_rollback_preserves_accepted_row(repo
     loaded = await repo.get_run("run-accept-5")
     assert isinstance(loaded, AcceptedRunRecord)
     assert loaded.status == "running"
+
+
+# ---------------------------------------------------------------------------
+# T02.2 -- provenance de ProviderExecutionPolicy: distinguibilidade,
+# compatibilidade legada, finalização de linha legada
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_different_policy_same_run_config_produces_distinguishable_manifests(repo):
+    """Teste M -- duas execuções com o MESMO RunConfig efetivo, mas
+    ProviderExecutionPolicy RESOLVIDA diferente (deployment mudou
+    provider_timeout_seconds/provider_max_retries entre as duas),
+    precisam permanecer distinguíveis via o snapshot persistido -- é
+    exatamente o gap que esta feature fecha (antes, essa diferença era
+    invisível/irreconstruível)."""
+    rc = run_config()
+    result_a = full_council_run_result(run_config=rc)
+    result_b = full_council_run_result(run_config=rc)
+    policy_a = provider_execution_policy(
+        attempt_timeout_seconds=30.0, max_transport_attempts_per_completion=2
+    )
+    policy_b = provider_execution_policy(
+        attempt_timeout_seconds=90.0, max_transport_attempts_per_completion=5
+    )
+
+    await repo.save_accepted(
+        result_a.id, run_config=rc, started_at=result_a.started_at, provider_execution_policy=policy_a
+    )
+    await repo.save_success(result_a)
+    await repo.save_accepted(
+        result_b.id, run_config=rc, started_at=result_b.started_at, provider_execution_policy=policy_b
+    )
+    await repo.save_success(result_b)
+
+    loaded_a = await repo.get_run(result_a.id)
+    loaded_b = await repo.get_run(result_b.id)
+
+    assert loaded_a.council_run_result.run_config == loaded_b.council_run_result.run_config
+    assert loaded_a.provider_execution_policy == policy_a
+    assert loaded_b.provider_execution_policy == policy_b
+    assert loaded_a.provider_execution_policy != loaded_b.provider_execution_policy
+
+
+@pytest.mark.asyncio
+async def test_legacy_rows_without_policy_column_reconstruct_as_none(engine, repo):
+    """Teste N -- simula uma linha "pré-T02.2" inserindo diretamente via
+    SQL cru SEM a coluna provider_execution_policy_json (mesma técnica
+    já usada pelos testes de compatibilidade legada de run_config_json
+    mais acima neste arquivo) -- nunca deve reconstruir com os defaults
+    ATUAIS de Settings."""
+    from app.storage.database import make_session_factory
+    from app.storage.repository import CouncilRepository
+
+    result = full_council_run_result()
+    # save_success grava a coluna nova -- pra simular uma linha
+    # GENUINAMENTE legada, sobrescrevemos com UPDATE direto pra NULL
+    # (equivalente ao que uma linha pré-upgrade real teria).
+    await repo.save_success(result)
+    session_factory = make_session_factory(engine)
+    async with session_factory() as session:
+        await session.execute(
+            text("UPDATE council_runs SET provider_execution_policy_json = NULL WHERE id = :id"),
+            {"id": result.id},
+        )
+        await session.commit()
+
+    fresh_repo = CouncilRepository(session_factory)
+    loaded = await fresh_repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.provider_execution_policy is None  # NUNCA os defaults atuais (60s/3 tentativas)
+
+
+@pytest.mark.asyncio
+async def test_legacy_accepted_row_without_policy_finalizes_with_policy_none(engine, repo):
+    """Teste O -- uma linha accepted_runs "pré-upgrade" (policy=NULL),
+    ao ser finalizada como completed DEPOIS do upgrade de schema, deve
+    produzir um terminal com provider_execution_policy=None -- nunca
+    fabricar um valor pra ela só porque o resto do sistema já suporta a
+    feature. Prova que save_success COPIA o que está na linha de
+    aceite, nunca INVENTA quando a linha de aceite está incompleta."""
+    result = full_council_run_result()
+    policy = provider_execution_policy()
+    await repo.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=policy,
+    )
+    # Simula que esta linha de aceite é, na verdade, legada -- o
+    # deployment fez upgrade de schema, mas esta linha específica nunca
+    # teve a política gravada (ex.: aceita bem antes do slice T02.2
+    # existir, sobrevivendo até agora como "running").
+    from app.storage.database import make_session_factory
+
+    session_factory = make_session_factory(engine)
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "UPDATE accepted_runs SET provider_execution_policy_json = NULL WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+        await session.commit()
+
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.provider_execution_policy is None  # nunca herdou o `policy` original

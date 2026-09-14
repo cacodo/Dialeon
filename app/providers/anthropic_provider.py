@@ -27,7 +27,7 @@ class AnthropicProvider(LLMProvider):
     def __init__(
         self,
         api_key: str | None,
-        timeout_seconds: int,
+        timeout_seconds: float,
         max_retries: int,
         default_model: str,
         pricing: PricingRegistry,

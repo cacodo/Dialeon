@@ -59,10 +59,16 @@ def test_list_runs_includes_running_and_failed():
 
     async def seed_lifecycle(components) -> None:
         await components.repository.save_accepted(
-            "run-list-running", run_config=run_config(), started_at=now()
+            "run-list-running",
+            run_config=run_config(),
+            started_at=now(),
+            provider_execution_policy=components.provider_execution_policy,
         )
         await components.repository.save_accepted(
-            "run-list-failed", run_config=run_config(), started_at=now()
+            "run-list-failed",
+            run_config=run_config(),
+            started_at=now(),
+            provider_execution_policy=components.provider_execution_policy,
         )
         await components.repository.save_unexpected_failure(
             "run-list-failed",

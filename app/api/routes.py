@@ -70,7 +70,9 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
     )
 
     result = await components.service.run(run_config)
-    return completed_run_response(result)
+    return completed_run_response(
+        result, provider_execution_policy=components.provider_execution_policy
+    )
 
 
 @router.get("/runs", response_model=RunListResponse)
@@ -94,7 +96,9 @@ async def get_run(run_id: str, request: Request) -> RunResponse:
         raise RunNotFoundError(run_id)
 
     if isinstance(record, CompletedRunRecord):
-        return completed_run_response(record.council_run_result)
+        return completed_run_response(
+            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+        )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_run_response(record)
     assert isinstance(record, AcceptedRunRecord)
@@ -111,7 +115,9 @@ async def get_run_audit(run_id: str, request: Request) -> RunAuditResponse:
         raise RunNotFoundError(run_id)
 
     if isinstance(record, CompletedRunRecord):
-        return completed_run_audit(record.council_run_result)
+        return completed_run_audit(
+            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+        )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_audit(record)
     assert isinstance(record, AcceptedRunRecord)

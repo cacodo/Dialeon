@@ -5,6 +5,7 @@ import pytest
 from app.application.errors import UnknownProviderError
 from app.application.service import CouncilExecutionService
 from app.council.runner import CouncilRunner
+from tests.api.helpers import TEST_PROVIDER_EXECUTION_POLICY
 from tests.council.fakes import FakeSourceAnalyzer, FakeDebateEngine, FakeEditor, FakeJudge
 from tests.council.fixtures import judge_result, model_response, run_config, verdict
 from tests.storage.fixtures import full_council_run_result, quorum_failure_exception
@@ -20,7 +21,10 @@ async def test_success_persists_and_returns_result(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     returned = await service.run(run_config())
@@ -41,7 +45,10 @@ async def test_quorum_failure_persists_and_reraises(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     with pytest.raises(type(exc)) as exc_info:
@@ -67,7 +74,10 @@ async def test_quorum_failure_does_not_call_judge_or_editor(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     with pytest.raises(type(exc)):
@@ -96,7 +106,10 @@ async def test_unexpected_exception_persists_failed_record_and_reraises_unmodifi
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     with pytest.raises(WeirdBug) as exc_info:
@@ -136,7 +149,10 @@ async def test_unexpected_exception_sanitizes_adversarial_message(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     with pytest.raises(BoringBug):
@@ -172,7 +188,10 @@ async def test_unknown_provider_raises_before_calling_runner(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
     rc = run_config(enabled_providers=["openai", "provider-fake"])
 
@@ -204,7 +223,10 @@ async def test_unknown_source_analyzer_provider_rejected_before_acceptance(repo)
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
     rc = run_config(source_analyzer_provider="provider-fake")
 
@@ -240,7 +262,10 @@ async def test_every_internal_provider_authority_rejected_before_acceptance(repo
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
     rc = run_config(**{field_name: "provider-fake"})
 
@@ -269,7 +294,10 @@ async def test_valid_run_config_still_reaches_runner_after_repair(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
     # run_config() default: claim_processor/judge/editor/source_analyzer
     # = "anthropic", enabled_providers = ["openai", "anthropic"] -- as 5
@@ -295,8 +323,13 @@ async def test_service_mints_and_persists_accepted_run_before_calling_runner(rep
     events: list[str] = []
     original_save_accepted = repo.save_accepted
 
-    async def spy_save_accepted(run_id, *, run_config, started_at):
-        await original_save_accepted(run_id, run_config=run_config, started_at=started_at)
+    async def spy_save_accepted(run_id, *, run_config, started_at, provider_execution_policy):
+        await original_save_accepted(
+            run_id,
+            run_config=run_config,
+            started_at=started_at,
+            provider_execution_policy=provider_execution_policy,
+        )
         events.append("accepted_persisted")
 
     repo.save_accepted = spy_save_accepted  # type: ignore[method-assign]
@@ -314,12 +347,53 @@ async def test_service_mints_and_persists_accepted_run_before_calling_runner(rep
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     await service.run(run_config())
 
     assert events == ["accepted_persisted", "runner_called"]
+
+
+@pytest.mark.asyncio
+async def test_provider_execution_policy_persisted_before_runner_is_called(repo):
+    """T02.2, teste H -- a política de execução resolvida (a MESMA
+    instância injetada no service, ver `TEST_PROVIDER_EXECUTION_POLICY`)
+    já está presente no `accepted_runs` durável ANTES do runner
+    entrar -- mecanicamente provado relendo o repo de DENTRO do
+    `FakeDebateEngine.run` (o primeiro ponto que consumiria provider),
+    não só depois que tudo já terminou."""
+    observed: list = []
+
+    class InspectingDebateEngine(FakeDebateEngine):
+        async def run(self, run_config):
+            summaries = await repo.list_runs()
+            assert len(summaries) == 1  # exatamente o accepted_runs desta execução
+            observed.append(await repo.get_run(summaries[0].id))
+            return await super().run(run_config)
+
+    result_to_return = full_council_run_result()
+    runner = CouncilRunner(
+        debate_engine=InspectingDebateEngine(result=result_to_return.debate_result),
+        judge=FakeJudge(result=result_to_return.judge_result),
+        editor=FakeEditor(result=result_to_return.editor_result),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+
+    await service.run(run_config())
+
+    assert len(observed) == 1
+    assert observed[0].status == "running"
+    assert observed[0].provider_execution_policy == TEST_PROVIDER_EXECUTION_POLICY
 
 
 @pytest.mark.asyncio
@@ -336,7 +410,10 @@ async def test_success_uses_single_id_across_accept_and_terminal(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     returned = await service.run(run_config())
@@ -364,7 +441,10 @@ async def test_quorum_failure_uses_single_id_across_accept_and_terminal(repo):
         source_analyzer=FakeSourceAnalyzer(result=None),
     )
     service = CouncilExecutionService(
-        runner=runner, repository=repo, known_providers={"openai", "anthropic"}
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
     )
 
     with pytest.raises(type(exc)) as exc_info:

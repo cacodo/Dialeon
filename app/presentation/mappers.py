@@ -47,6 +47,7 @@ from app.presentation.schemas import (
 )
 from app.council.result import CouncilRunResult
 from app.debate.numeric_verification import DeterministicVerificationAttempt
+from app.models.provider_models import ProviderExecutionPolicy
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult
 from app.editor.attempt import EditorAttempt
@@ -278,7 +279,18 @@ def accounting_summary(result: CouncilRunResult) -> AccountingSummary:
     )
 
 
-def completed_run_response(result: CouncilRunResult) -> CompletedRunResponse:
+def completed_run_response(
+    result: CouncilRunResult, *, provider_execution_policy: ProviderExecutionPolicy | None
+) -> CompletedRunResponse:
+    """`provider_execution_policy` (T02.2) é passado explicitamente pelo
+    chamador -- `CouncilRunResult` NUNCA carrega isso (autoridade
+    distinta, ver docstring de `ProviderExecutionPolicy`). Quem chama
+    isto no caminho síncrono de criação (`POST /runs`) usa o snapshot
+    que acabou de ser aceito (`AppComponents.provider_execution_policy`);
+    quem chama depois de reconstruir de storage (`GET /runs/{id}`) usa
+    `CompletedRunRecord.provider_execution_policy` -- os dois SEMPRE
+    concordam pra qualquer run real (mesma instância resolvida), mas
+    esta função nunca decide isso por conta própria."""
     return CompletedRunResponse(
         id=result.id,
         started_at=result.started_at,
@@ -286,6 +298,7 @@ def completed_run_response(result: CouncilRunResult) -> CompletedRunResponse:
         final_answer=final_answer_public(result.final_answer),
         accounting=accounting_summary(result),
         config=run_config_public(result.run_config),
+        provider_execution_policy=provider_execution_policy,
     )
 
 
@@ -299,6 +312,7 @@ def quorum_failure_run_response(record: QuorumFailureRecord) -> QuorumFailureRun
         min_to_return=record.min_to_return,
         accounting=_round_accounting(record.round_result),
         config=run_config_public(record.run_config),
+        provider_execution_policy=record.provider_execution_policy,
     )
 
 
@@ -389,7 +403,11 @@ def source_analysis_outcome_public(
     )
 
 
-def completed_run_audit(result: CouncilRunResult) -> CompletedRunAudit:
+def completed_run_audit(
+    result: CouncilRunResult, *, provider_execution_policy: ProviderExecutionPolicy | None
+) -> CompletedRunAudit:
+    """Ver docstring de `completed_run_response` -- mesma disciplina de
+    passagem explícita de `provider_execution_policy`."""
     debate = result.debate_result
     judge = result.judge_result
     editor = result.editor_result
@@ -426,6 +444,7 @@ def completed_run_audit(result: CouncilRunResult) -> CompletedRunAudit:
         editor_attempts=[editor_attempt_public(a) for a in editor.attempts],
         final_answer=final_answer_public(editor.final_answer),
         accounting=accounting_summary(result),
+        provider_execution_policy=provider_execution_policy,
     )
 
 
@@ -439,13 +458,17 @@ def quorum_failure_audit(record: QuorumFailureRecord) -> QuorumFailureAudit:
         total_providers=record.total_providers,
         min_to_return=record.min_to_return,
         round_result=round_audit(record.round_result),
+        provider_execution_policy=record.provider_execution_policy,
     )
 
 
 def running_run_response(record: AcceptedRunRecord) -> RunningRunResponse:
     assert record.status == "running"
     return RunningRunResponse(
-        id=record.id, started_at=record.started_at, config=run_config_public(record.run_config)
+        id=record.id,
+        started_at=record.started_at,
+        config=run_config_public(record.run_config),
+        provider_execution_policy=record.provider_execution_policy,
     )
 
 
@@ -461,6 +484,7 @@ def failed_run_response(record: AcceptedRunRecord) -> FailedRunResponse:
         failure_reason=record.failure_classification,
         message=record.failure_message,
         config=run_config_public(record.run_config),
+        provider_execution_policy=record.provider_execution_policy,
     )
 
 

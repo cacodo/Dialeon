@@ -99,6 +99,15 @@ class CouncilRunRow(Base):
     source_analysis_skipped_reason: Mapped[str | None]
     source_analysis_cumulative_budget_exceeded: Mapped[bool | None]
 
+    # T02.2 -- snapshot de ProviderExecutionPolicy vigente no momento do
+    # aceite durável desta execução, COPIADO verbatim do accepted_runs
+    # correspondente na mesma transação que grava este registro (nunca
+    # recalculado a partir de Settings atual). NULL só pra runs
+    # persistidos ANTES desta coluna existir (ver
+    # `_upgrade_legacy_provider_execution_policy`, app/storage/database.py)
+    # -- nunca backfillado com o default atual.
+    provider_execution_policy_json: Mapped[dict | None] = mapped_column(JSON)
+
 
 class AcceptedRunRow(Base):
     """Registro de aceite/lifecycle -- T02.4 (durable accepted-run
@@ -146,6 +155,15 @@ class AcceptedRunRow(Base):
     # CouncilExecutionService._sanitize_unexpected_failure).
     failure_classification: Mapped[str | None]
     failure_message: Mapped[str | None]
+
+    # T02.2 -- snapshot de ProviderExecutionPolicy vigente no momento do
+    # aceite. Sempre preenchido por `save_accepted` (novas linhas nunca
+    # nascem com isto None) -- NULL só ocorre em linhas persistidas
+    # ANTES desta coluna existir (ver
+    # `_upgrade_legacy_provider_execution_policy`, app/storage/database.py).
+    # Sobrevive INTACTO à transição "running" -> "failed"
+    # (`save_unexpected_failure` nunca toca esta coluna).
+    provider_execution_policy_json: Mapped[dict | None] = mapped_column(JSON)
 
 
 class ModelResponseRow(Base):
@@ -576,3 +594,9 @@ class QuorumFailureRow(Base):
     total_providers: Mapped[int]
     min_to_return: Mapped[int]
     round_number: Mapped[int]
+
+    # T02.2 -- mesma disciplina de CouncilRunRow.provider_execution_policy_json:
+    # copiado verbatim do accepted_runs correspondente na mesma
+    # transação (ver CouncilRepository.save_quorum_failure), NULL só
+    # pra linhas legadas pré-upgrade.
+    provider_execution_policy_json: Mapped[dict | None] = mapped_column(JSON)

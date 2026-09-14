@@ -27,7 +27,12 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.provider_models import PricingProvenance, ProviderErrorInfo, TokenUsage
+from app.models.provider_models import (
+    PricingProvenance,
+    ProviderErrorInfo,
+    ProviderExecutionPolicy,
+    TokenUsage,
+)
 from app.orchestrator.config import _normalize_and_validate_source_text
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
@@ -488,6 +493,13 @@ class CompletedRunResponse(BaseModel):
     final_answer: FinalAnswerPublic
     accounting: AccountingSummary
     config: RunConfigPublic
+    # T02.2 -- SIBLING de `config`, nunca dentro de `RunConfigPublic`:
+    # política de transporte de provider é uma autoridade de deployment
+    # distinta da configuração de execução/domínio do Run (ver
+    # `app.models.provider_models.ProviderExecutionPolicy`). `None` só
+    # pra runs persistidos antes desta coluna existir -- nunca
+    # substituído pelos defaults atuais.
+    provider_execution_policy: ProviderExecutionPolicy | None
 
 
 class QuorumFailureRunResponse(BaseModel):
@@ -502,6 +514,8 @@ class QuorumFailureRunResponse(BaseModel):
     min_to_return: int
     accounting: RoundAccountingPublic
     config: RunConfigPublic
+    # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
+    provider_execution_policy: ProviderExecutionPolicy | None
 
 
 class RunningRunResponse(BaseModel):
@@ -519,6 +533,10 @@ class RunningRunResponse(BaseModel):
     id: str
     started_at: datetime
     config: RunConfigPublic
+    # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
+    # Um run "running" NOVO sempre tem valor concreto (mesma garantia de
+    # `save_accepted`); `None` só numa linha legada pré-upgrade.
+    provider_execution_policy: ProviderExecutionPolicy | None
 
 
 class FailedRunResponse(BaseModel):
@@ -538,6 +556,8 @@ class FailedRunResponse(BaseModel):
     failure_reason: str
     message: str
     config: RunConfigPublic
+    # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
+    provider_execution_policy: ProviderExecutionPolicy | None
 
 
 RunResponse = Annotated[
@@ -625,6 +645,8 @@ class CompletedRunAudit(BaseModel):
     editor_attempts: list[EditorAttemptPublic]
     final_answer: FinalAnswerPublic
     accounting: AccountingSummary
+    # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
+    provider_execution_policy: ProviderExecutionPolicy | None
 
 
 class QuorumFailureAudit(BaseModel):
@@ -639,6 +661,8 @@ class QuorumFailureAudit(BaseModel):
     total_providers: int
     min_to_return: int
     round_result: RoundAudit
+    # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
+    provider_execution_policy: ProviderExecutionPolicy | None
 
 
 # T02.4: um run "running"/"failed" nunca tem detalhe de auditoria pra

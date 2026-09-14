@@ -68,6 +68,7 @@ const completedRun = {
     round_dispatch_timeout_seconds: 30,
     quorum: { min_for_debate: 1, min_to_return: 1 },
   },
+  provider_execution_policy: { attempt_timeout_seconds: 45, max_transport_attempts_per_completion: 3 },
 }
 
 const quorumRun = {
@@ -100,14 +101,17 @@ const quorumRun = {
     round_dispatch_timeout_seconds: 30,
     quorum: { min_for_debate: 2, min_to_return: 2 },
   },
+  provider_execution_policy: null,
 }
 
-// T02.4 -- run aceito sem desfecho terminal ainda.
+// T02.4 -- run aceito sem desfecho terminal ainda. T02.2 -- policy=null
+// (histórico/desconhecido) pra exercitar a renderização honesta.
 const runningRun = {
   status: 'running' as const,
   id: 'run-3',
   started_at: '2026-09-06T00:00:00Z',
   config: completedRun.config,
+  provider_execution_policy: null,
 }
 
 // T02.4 -- exceção inesperada durante a execução.
@@ -119,6 +123,7 @@ const failedRun = {
   failure_reason: 'WeirdBug',
   message: 'Erro interno inesperado durante a execução.',
   config: completedRun.config,
+  provider_execution_policy: null,
 }
 
 describe('RunDetail', () => {
@@ -128,6 +133,9 @@ describe('RunDetail', () => {
 
     expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
     expect(screen.getByText('Qual a capital do Brasil?')).toBeInTheDocument()
+    // T02.2 -- política de execução conhecida exibida como SIBLING do
+    // resumo, nunca dentro de RunConfigPublic.
+    expect(screen.getByText('45s')).toBeInTheDocument()
   })
 
   it('mostra detail de uma run insufficient_quorum', async () => {
@@ -180,6 +188,7 @@ describe('RunDetail', () => {
       editor_attempts: [],
       final_answer: completedRun.final_answer,
       accounting: completedRun.accounting,
+      provider_execution_policy: completedRun.provider_execution_policy,
     })
     renderDetail('run-1')
 
@@ -222,6 +231,8 @@ describe('RunDetail', () => {
       screen.queryByRole('button', { name: /inspecionar execução/i }),
     ).not.toBeInTheDocument()
     expect(apiClient.getRunAudit).not.toHaveBeenCalled()
+    // T02.2 -- policy=null (histórico/desconhecido) renderiza honestamente.
+    expect(screen.getByText(/não registrada/i)).toBeInTheDocument()
   })
 
   it('T02.4: mostra detail de uma run failed com mensagem sanitizada, sem oferecer inspeção', async () => {

@@ -41,6 +41,7 @@ from app.council.runner import CouncilRunner
 from app.debate.debate_engine import DebateEngine
 from app.editor.compose import Editor
 from app.judge.single_judge import SingleJudge
+from app.models.provider_models import ProviderExecutionPolicy
 from app.providers.base import LLMProvider
 from app.providers.factory import build_all_providers
 from app.source_analysis.analyzer import SourceAnalyzer
@@ -58,7 +59,15 @@ class ConfigurationError(Exception):
 @dataclass
 class AppComponents:
     """Tudo que a API precisa, montado uma vez no lifespan e guardado em
-    `app.state` -- nenhum global mutável de módulo (Decision Delta §14)."""
+    `app.state` -- nenhum global mutável de módulo (Decision Delta §14).
+
+    `provider_execution_policy` (T02.2): a MESMA instância resolvida que
+    foi injetada em `providers`/`service` -- exposta aqui, sibling de
+    `.repository`, pra que `app/api/routes.py`/`app/cli/commands.py`
+    consigam ler o snapshot que acabou de ser aceito no caminho
+    síncrono de criação de Run (POST /runs), sem precisar reler do
+    banco nem alcançar dentro de `.service` (que mantém o valor privado
+    -- ver `CouncilExecutionService`)."""
 
     settings: Settings
     engine: AsyncEngine
@@ -66,6 +75,7 @@ class AppComponents:
     providers: dict[str, LLMProvider]
     repository: CouncilRepository
     service: CouncilExecutionService
+    provider_execution_policy: ProviderExecutionPolicy
 
 
 def _validate_internal_provider_config(
@@ -114,8 +124,22 @@ async def build_app_components(settings: Settings) -> AppComponents:
     """Monta a cadeia inteira. Chamado uma vez no lifespan de
     `create_app()` -- nunca por request (Decision Delta, revisão final:
     "endpoint criando pipeline manualmente por request" é exatamente o
-    que isso evita)."""
-    providers = build_all_providers(settings)
+    que isso evita).
+
+    T02.2: `ProviderExecutionPolicy.from_settings(settings)` é chamado
+    AQUI, e SÓ AQUI, uma única vez por aplicação composta -- o valor
+    resolvido é então injetado, sem recálculo, em `build_all_providers`
+    (que constrói os 3 `LLMProvider`) e em `CouncilExecutionService`
+    (que o usa como snapshot de aceite durável). `ConfigurationError`
+    nunca precisa envolver a validação de
+    `attempt_timeout_seconds`/`max_transport_attempts_per_completion` --
+    um `provider_timeout_seconds<=0`/`provider_max_retries<0` já falha
+    aqui como `pydantic.ValidationError`, mesma convenção que
+    `QuorumPolicy.from_settings`/`RunConfig.from_settings` já seguem pra
+    qualquer outro valor de Settings semanticamente inválido (nunca um
+    clamp silencioso)."""
+    provider_execution_policy = ProviderExecutionPolicy.from_settings(settings)
+    providers = build_all_providers(settings, provider_execution_policy)
     _validate_internal_provider_config(settings, providers)
 
     engine = create_engine(settings.database_url)
@@ -135,7 +159,10 @@ async def build_app_components(settings: Settings) -> AppComponents:
             editor=editor,
         )
         service = CouncilExecutionService(
-            runner=runner, repository=repository, known_providers=frozenset(providers)
+            runner=runner,
+            repository=repository,
+            known_providers=frozenset(providers),
+            provider_execution_policy=provider_execution_policy,
         )
     except Exception:
         # Stage 14 (patch de revisão final): se qualquer coisa falhar
@@ -161,4 +188,5 @@ async def build_app_components(settings: Settings) -> AppComponents:
         providers=providers,
         repository=repository,
         service=service,
+        provider_execution_policy=provider_execution_policy,
     )

@@ -58,12 +58,18 @@ async def init_db(engine: AsyncEngine) -> None:
 
     Cross-round claim reconciliation: mesmo tratamento pra
     `support_scope_model_count` (tabela `claims`) -- também sem backfill,
-    ver docstring de `_upgrade_legacy_support_scope_model_count`."""
+    ver docstring de `_upgrade_legacy_support_scope_model_count`.
+
+    T02.2: mesmo tratamento pra `provider_execution_policy_json`
+    (`council_runs`/`quorum_failures`/`accepted_runs`) -- também sem
+    backfill, ver docstring de
+    `_upgrade_legacy_provider_execution_policy`."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_upgrade_legacy_had_uncertain_prior_attempts)
         await conn.run_sync(_upgrade_legacy_provider_finish_reason)
         await conn.run_sync(_upgrade_legacy_support_scope_model_count)
+        await conn.run_sync(_upgrade_legacy_provider_execution_policy)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -178,6 +184,43 @@ def _upgrade_legacy_support_scope_model_count(sync_conn) -> None:  # noqa: ANN00
         return  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
 
     sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN support_scope_model_count INTEGER"))
+
+
+_PROVIDER_EXECUTION_POLICY_TABLES = ("council_runs", "quorum_failures", "accepted_runs")
+
+
+def _upgrade_legacy_provider_execution_policy(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- T02.2 (provenance de política de
+    execução de provider). Mesma disciplina de
+    `_upgrade_legacy_provider_finish_reason`/
+    `_upgrade_legacy_support_scope_model_count`: só `ALTER TABLE` quando
+    a coluna genuinamente não existe (checagem via `PRAGMA table_info`),
+    nunca recalcula um valor já persistido.
+
+    SEM backfill, deliberadamente: `provider_execution_policy_json=NULL`
+    é o valor HONESTO pra toda linha persistida antes desta etapa --
+    NENHUM valor atual de `Settings`
+    (`provider_timeout_seconds`/`provider_max_retries`) pode ser
+    retroativamente atribuído a uma execução histórica como se fosse o
+    que ESTAVA de fato configurado no deployment no momento daquela
+    execução (pode ter sido qualquer outro valor -- não temos como
+    saber qual, e o próprio ponto desta feature é parar de perder essa
+    informação DAQUI EM DIANTE, não fingir tê-la reconstruído
+    retroativamente). Inventar um valor aqui seria pior que deixar
+    `NULL`. SQLite usa `NULL` implicitamente pra linhas existentes
+    quando um `ALTER TABLE ADD COLUMN` não declara `DEFAULT` numa
+    coluna nullable, então nenhum `UPDATE` é necessário."""
+    inspector = sa_inspect(sync_conn)
+    for table_name in _PROVIDER_EXECUTION_POLICY_TABLES:
+        if table_name not in inspector.get_table_names():
+            continue  # tabela nova, create_all() já a criou com a coluna
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        if "provider_execution_policy_json" in existing_columns:
+            continue  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
+
+        sync_conn.execute(
+            text(f"ALTER TABLE {table_name} ADD COLUMN provider_execution_policy_json TEXT")
+        )
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

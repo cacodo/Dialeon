@@ -24,6 +24,21 @@ async def _seed_success(components, result) -> str:
     return result.id
 
 
+async def _seed_accepted_then_success(components, result) -> str:
+    """T02.2 -- fluxo completo aceite->sucesso, pra provar que a política
+    resolvida (`components.provider_execution_policy`) chega ao detail
+    público -- diferente de `_seed_success` isolado (sem accepted_runs
+    prévio), que produz `provider_execution_policy=None` de propósito."""
+    await components.repository.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=components.provider_execution_policy,
+    )
+    await components.repository.save_success(result)
+    return result.id
+
+
 async def _seed_quorum_failure(components, exc) -> str:
     return await components.repository.save_quorum_failure(
         exc, run_config=run_config(), started_at=now(), failed_at=now()
@@ -32,14 +47,20 @@ async def _seed_quorum_failure(components, exc) -> str:
 
 async def _seed_accepted(components, run_id: str) -> str:
     await components.repository.save_accepted(
-        run_id, run_config=run_config(), started_at=now()
+        run_id,
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
     return run_id
 
 
 async def _seed_unexpected_failure(components, run_id: str) -> str:
     await components.repository.save_accepted(
-        run_id, run_config=run_config(), started_at=now()
+        run_id,
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
     await components.repository.save_unexpected_failure(
         run_id,
@@ -66,7 +87,30 @@ def test_get_run_completed():
     assert "judge_reasoning" not in body["final_answer"]
     assert set(body.keys()) == {
         "status", "id", "started_at", "completed_at", "final_answer", "accounting", "config",
+        "provider_execution_policy",
     }
+    # T02.2 -- sem accepted_runs prévio (_seed_success isolado), o valor
+    # honesto é None, nunca um default inventado.
+    assert body["provider_execution_policy"] is None
+
+
+def test_get_run_completed_with_known_policy_displays_it():
+    """T02.2, teste P -- fluxo completo (aceite -> sucesso) expõe a
+    política resolvida corretamente, como SIBLING de `config` (nunca
+    dentro dele)."""
+    result = full_council_run_result()
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_accepted_then_success, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}")
+
+    body = resp.json()
+    assert body["provider_execution_policy"] == {
+        "attempt_timeout_seconds": 30.0,
+        "max_transport_attempts_per_completion": 2,
+    }
+    assert "provider_execution_policy" not in body["config"]
 
 
 def test_get_run_completed_accounting_matches_domain():
@@ -156,7 +200,7 @@ def test_get_run_running():
     assert body["id"] == run_id
     assert "final_answer" not in body
     assert "accounting" not in body
-    assert set(body.keys()) == {"status", "id", "started_at", "config"}
+    assert set(body.keys()) == {"status", "id", "started_at", "config", "provider_execution_policy"}
 
 
 def test_get_run_failed():
@@ -181,6 +225,7 @@ def test_get_run_failed():
     assert "accounting" not in body
     assert set(body.keys()) == {
         "status", "id", "started_at", "failed_at", "failure_reason", "message", "config",
+        "provider_execution_policy",
     }
 
 

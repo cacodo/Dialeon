@@ -124,6 +124,7 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       estimated_cost_usd: 0.01,
       has_unknown_accounting_components: false,
     },
+    provider_execution_policy: null,
     ...overrides,
   }
 }

@@ -31,6 +31,7 @@ from app.editor.result import EditorResult
 from app.judge.result import JudgeResult
 from app.source_analysis.result import SourceAnalysisResult
 from app.models.domain import ClaimAssessment, ClaimSupport
+from app.models.provider_models import ProviderExecutionPolicy
 from app.orchestrator.budget import sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
@@ -91,6 +92,13 @@ from app.storage.serializers import (
 
 def _new_id() -> str:
     return str(uuid4())
+
+
+def _policy_from_json(data: dict | None) -> ProviderExecutionPolicy | None:
+    """T02.2 -- `None` é o valor HONESTO pra runs persistidos antes
+    desta coluna existir (ver `_upgrade_legacy_provider_execution_policy`,
+    app/storage/database.py) -- NUNCA substituído por um default atual."""
+    return ProviderExecutionPolicy(**data) if data is not None else None
 
 
 def _run_config_from_json(data: dict) -> RunConfig:
@@ -154,12 +162,22 @@ class CouncilRepository:
     # -----------------------------------------------------------------
 
     async def save_accepted(
-        self, run_id: str, *, run_config: RunConfig, started_at: datetime
+        self,
+        run_id: str,
+        *,
+        run_config: RunConfig,
+        started_at: datetime,
+        provider_execution_policy: ProviderExecutionPolicy,
     ) -> None:
         """T02.4 -- grava o registro mínimo de aceite ANTES de qualquer
         chamada ao `CouncilRunner` (contrato de `CouncilExecutionService`).
         `run_id`/`started_at` são autoritativos desde aqui -- nenhum
-        estágio posterior (runner, terminal save) minta substituto."""
+        estágio posterior (runner, terminal save) minta substituto.
+
+        `provider_execution_policy` (T02.2): obrigatório, nunca `None` --
+        um NOVO accepted run SEMPRE tem um snapshot concreto (é assim
+        que este campo fica `None` só pra linhas legadas, nunca pra
+        escritas novas). Persistido verbatim, nunca recalculado."""
         async with session_scope(self._session_factory) as session:
             session.add(
                 AcceptedRunRow(
@@ -170,6 +188,9 @@ class CouncilRepository:
                     failed_at=None,
                     failure_classification=None,
                     failure_message=None,
+                    provider_execution_policy_json=provider_execution_policy.model_dump(
+                        mode="json"
+                    ),
                 )
             )
 
@@ -204,13 +225,25 @@ class CouncilRepository:
         FinalAnswer referencia JudgeVerdict) -- SQLite verifica cada
         FOREIGN KEY imediatamente, não espera o fim da transação, então
         uma linha que referencia outra ainda não inserida falha na hora,
-        mesmo dentro do mesmo commit."""
+        mesmo dentro do mesmo commit.
+
+        T02.2: `provider_execution_policy_json` é COPIADO verbatim do
+        `accepted_runs` correspondente (se existir -- chamadores diretos
+        em teste, sem passar por `save_accepted` antes, legitimamente
+        não têm um, e o campo fica `None`), lido AQUI, na MESMA
+        transação, ANTES do DELETE que finaliza a linha de aceite -- a
+        linha de aceite é a fonte de provenance, nunca `Settings`
+        atual/um valor recalculado."""
         debate = result.debate_result
         source_analysis = result.source_analysis_result
         judge = result.judge_result
         editor = result.editor_result
 
         async with session_scope(self._session_factory) as session:
+            accepted_row = await session.get(AcceptedRunRow, result.id)
+            provider_execution_policy_json = (
+                accepted_row.provider_execution_policy_json if accepted_row is not None else None
+            )
             session.add(
                 CouncilRunRow(
                     id=result.id,
@@ -218,6 +251,7 @@ class CouncilRepository:
                     started_at=dt_to_naive_utc(result.started_at),
                     completed_at=dt_to_naive_utc(result.completed_at),
                     run_config_json=result.run_config.model_dump(mode="json"),
+                    provider_execution_policy_json=provider_execution_policy_json,
                     claim_processor_provider=debate.claim_processor_provider,
                     debate_skipped_reason=debate.debate_skipped_reason,
                     debate_cumulative_budget_exceeded=debate.cumulative_budget_exceeded,
@@ -351,11 +385,23 @@ class CouncilRepository:
         aceita, nunca uma paralela (principio 3: autoridade única de
         run-id). Quando omitido (chamadores diretos em teste, exercitando
         só a mecânica de persistência de quórum, sem lifecycle de
-        aceite), um id novo é mintado aqui, como sempre foi."""
+        aceite), um id novo é mintado aqui, como sempre foi.
+
+        T02.2: `provider_execution_policy_json` é COPIADO verbatim do
+        `accepted_runs` correspondente (só existe quando `run_id` foi
+        fornecido -- chamadores diretos em teste sem lifecycle de
+        aceite não têm nenhum, e o campo fica `None`), lido ANTES do
+        DELETE que finaliza a linha de aceite, na MESMA transação."""
         failure_id = run_id if run_id is not None else _new_id()
         round_result = exc.round_result
 
         async with session_scope(self._session_factory) as session:
+            accepted_row = (
+                await session.get(AcceptedRunRow, failure_id) if run_id is not None else None
+            )
+            provider_execution_policy_json = (
+                accepted_row.provider_execution_policy_json if accepted_row is not None else None
+            )
             session.add(
                 QuorumFailureRow(
                     id=failure_id,
@@ -367,6 +413,7 @@ class CouncilRepository:
                     total_providers=exc.total_providers,
                     min_to_return=exc.min_to_return,
                     round_number=round_result.round_number,
+                    provider_execution_policy_json=provider_execution_policy_json,
                 )
             )
             await session.flush()
@@ -751,7 +798,10 @@ class CouncilRepository:
             started_at=dt_from_naive_utc(row.started_at),
             completed_at=dt_from_naive_utc(row.completed_at),
         )
-        return CompletedRunRecord(council_run_result=council_run_result)
+        return CompletedRunRecord(
+            council_run_result=council_run_result,
+            provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
+        )
 
     async def _reconstruct_quorum_failure(
         self, session: AsyncSession, row: QuorumFailureRow
@@ -779,6 +829,7 @@ class CouncilRepository:
             total_providers=row.total_providers,
             min_to_return=row.min_to_return,
             round_result=round_result,
+            provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
         )
 
 
@@ -802,6 +853,7 @@ def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord:
         failed_at=dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None,
         failure_classification=row.failure_classification,
         failure_message=row.failure_message,
+        provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
     )
 
 

@@ -30,6 +30,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.config import Settings
+
 
 class Message(BaseModel):
     """Um turno de uma conversa, no formato genérico usado por todos os providers."""
@@ -122,6 +124,75 @@ class PricingProvenance(BaseModel):
     input_rate_usd_per_million_tokens: float = Field(ge=0)
     output_rate_usd_per_million_tokens: float = Field(ge=0)
     canonical_model_id: str | None = None
+
+
+class ProviderExecutionPolicy(BaseModel):
+    """T02.2 -- snapshot IMUTÁVEL da política de transporte (timeout +
+    retry) que um deployment tinha REALMENTE configurado no momento em
+    que um Run foi aceito. Resolvido UMA ÚNICA VEZ por aplicação
+    composta (`from_settings`, chamado uma vez em `app/bootstrap.py`) e
+    injetado na MESMA instância em todo `LLMProvider` construído
+    (`app/providers/factory.py`) E em `CouncilExecutionService`
+    (`app/application/service.py`) -- nunca duas resoluções
+    independentes que possam divergir entre "o que os providers
+    realmente aplicam" e "o que fica registrado no Run".
+
+    Deliberadamente SEPARADO de `RunConfig`
+    (`app/orchestrator/config.py`): `RunConfig` nunca aplica política de
+    transporte nenhuma -- é `LLMProvider` quem aplica, e `LLMProvider`
+    nunca lê `RunConfig`. Persistir estes dois números DENTRO de
+    `RunConfig` criaria uma autoridade duplicada/potencialmente
+    contraditória (RunConfig "diria" um timeout que ninguém garante que
+    o LLMProvider realmente aplicou). Este objeto é só um SNAPSHOT de
+    provenance de deployment -- nunca a autoridade de enforcement em si
+    (ver relatório T02.2, "AUTHORITY MODEL").
+
+    Contém APENAS os dois números normalizados abaixo -- nunca backoff,
+    jitter, timeout nativo do SDK, retry nativo do SDK (esses continuam
+    exclusivamente desligados/configurados dentro de cada adapter
+    concreto, ver `AnthropicProvider`/`OpenAIProvider`/`GeminiProvider`),
+    nome de provider/model, endpoint, ou segredo."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Teto de espera EM NÍVEL DE APLICAÇÃO ao redor de UMA invocação de
+    # `_call_api` (`LLMProvider.complete`, via `asyncio.wait_for`) --
+    # reseta a cada tentativa de transporte normalizada, EXCLUI o tempo
+    # de backoff entre tentativas (`_backoff_delay`, fora deste
+    # timeout). NÃO afirma representar o timeout nativo de
+    # conexão/leitura default do SDK -- isso é responsabilidade
+    # exclusiva de cada client concreto, nunca modelado aqui.
+    attempt_timeout_seconds: float = Field(gt=0)
+
+    # Número máximo de invocações de `_call_api` dentro de UM
+    # `LLMProvider.complete()` -- derivado de `provider_max_retries + 1`
+    # (ver `from_settings`), NUNCA persistido/nomeado como "max
+    # retries" (esse número descreveria retries, não o teto real de
+    # tentativas -- ver relatório T02.2). Descreve só tentativas de
+    # TRANSPORTE normalizadas -- nunca o contador de retry de output
+    # ESTRUTURADO (ClaimProcessingAttempt.attempt_number/
+    # SourceAnalysisAttempt.attempt_number/JudgeAttempt.attempt_number/
+    # EditorAttempt.attempt_number são contadores INTEIRAMENTE
+    # DISTINTOS, nunca renomeados/colapsados com este).
+    max_transport_attempts_per_completion: int = Field(ge=1)
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "ProviderExecutionPolicy":
+        """Único ponto de resolução Settings -> ProviderExecutionPolicy
+        do projeto inteiro -- chamado uma única vez, em
+        `app/bootstrap.py` (composition root), nunca dentro de
+        `app/providers/factory.py`/`CouncilExecutionService`/da camada
+        de persistência (que só recebem o valor JÁ resolvido). Falha
+        (ValidationError) se `provider_timeout_seconds<=0` ou
+        `provider_max_retries<0` -- mesma convenção de configuração já
+        usada por `QuorumPolicy.from_settings`/`RunConfig.from_settings`
+        (app/orchestrator/config.py): nenhum wrapper de erro especial,
+        nenhum clamp silencioso, a validação de campo do Pydantic já é
+        a falha de configuração."""
+        return cls(
+            attempt_timeout_seconds=float(settings.provider_timeout_seconds),
+            max_transport_attempts_per_completion=settings.provider_max_retries + 1,
+        )
 
 
 class ProviderResponse(BaseModel):

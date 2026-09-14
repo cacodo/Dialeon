@@ -61,6 +61,7 @@ const completedResult = {
     round_dispatch_timeout_seconds: 30,
     quorum: { min_for_debate: 1, min_to_return: 1 },
   },
+  provider_execution_policy: null,
 }
 
 beforeEach(() => {

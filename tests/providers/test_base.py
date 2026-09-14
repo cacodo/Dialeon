@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.provider_models import CompletionRequest, Message, TokenUsage
+from app.models.provider_models import (
+    CompletionRequest,
+    Message,
+    ProviderExecutionPolicy,
+    TokenUsage,
+)
 from app.providers.base import LLMProvider, is_known_output_truncation
 from app.providers.errors import ProviderAPIError, ProviderAuthError, ProviderRateLimitError
 from app.providers.pricing import ModelRate, PricingRegistry
@@ -474,3 +479,195 @@ def test_is_known_output_truncation_rejects_everything_else(finish_reason):
     inclusive os motivos de parada NORMAL dos três providers (end_turn/
     stop/STOP)."""
     assert is_known_output_truncation(finish_reason) is False
+
+
+# ---------------------------------------------------------------------------
+# T02.2 -- ProviderExecutionPolicy -> comportamento de LLMProvider.complete()
+#
+# LLMProvider.__init__ continua aceitando timeout_seconds/max_retries como
+# antes (sem mudança de assinatura) -- estes testes provam explicitamente
+# que os valores DERIVADOS de uma ProviderExecutionPolicy (a mesma tradução
+# que app/providers/factory.py faz) produzem exatamente o comportamento que
+# o contrato T02.2 promete.
+# ---------------------------------------------------------------------------
+
+
+def _provider_from_policy(policy: ProviderExecutionPolicy, script: list, **kwargs) -> _ScriptedProvider:
+    """Espelha EXATAMENTE a tradução real de app/providers/factory.py
+    (`timeout_seconds`/`max_retries`) -- desde o repair de fidelidade de
+    timeout fracionário (achado MEDIUM da revisão independente),
+    `attempt_timeout_seconds` é repassado losslessly (sem `int(...)`)
+    tanto aqui quanto na factory real, então este helper não precisa
+    mais divergir do caminho de produção pra usar timeouts fracionários
+    curtos nos testes D/E/F -- eles já são válidos e preservados de
+    ponta a ponta (`ProviderExecutionPolicy.attempt_timeout_seconds` é
+    `float > 0` por contrato de domínio, nunca só valores inteiros)."""
+    return _ScriptedProvider(
+        script=script,
+        timeout_seconds=policy.attempt_timeout_seconds,
+        max_retries=policy.max_transport_attempts_per_completion - 1,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_policy_max_attempts_one_allows_at_most_one_call_on_retryable_failure():
+    """Teste D -- max_transport_attempts_per_completion=1 significa
+    ZERO retries: uma falha retryable esgota na primeira tentativa."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=1
+    )
+    provider = _provider_from_policy(
+        policy,
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ("nunca deveria ser consumido", TokenUsage(), "scripted-model"),
+        ],
+    )
+    result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert provider.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_max_attempts_two_allows_at_most_two_calls_on_retryable_failure():
+    """Teste D -- max_transport_attempts_per_completion=2 permite
+    exatamente 1 retry (2 invocações de _call_api no total)."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=2
+    )
+    provider = _provider_from_policy(
+        policy,
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500 de novo", retryable=True),
+            ("nunca deveria ser consumido", TokenUsage(), "scripted-model"),
+        ],
+    )
+    result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert provider.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_policy_max_attempts_three_allows_at_most_three_calls_on_retryable_failure():
+    """Teste D -- max_transport_attempts_per_completion=3 (o default
+    real: provider_max_retries=2 + 1) permite exatamente 2 retries."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=3
+    )
+    provider = _provider_from_policy(
+        policy,
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500 de novo", retryable=True),
+            ProviderAPIError("erro 500 mais uma vez", retryable=True),
+        ],
+    )
+    result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert provider.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_policy_max_attempts_three_non_retryable_failure_stops_at_one_call():
+    """Teste D -- mesmo com max_transport_attempts_per_completion=3, um
+    erro NÃO retryable esgota imediatamente na primeira tentativa."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=3
+    )
+    provider = _provider_from_policy(
+        policy, script=[ProviderAuthError("chave inválida")]
+    )
+    result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert result.error.retryable is False
+    assert provider.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_timeout_applies_independently_to_each_transport_attempt():
+    """Teste E -- o timeout por tentativa reseta a cada nova invocação
+    de _call_api: a 1ª tentativa estoura o timeout (deliberadamente
+    lenta), mas a 2ª tentativa (rápida) ainda tem o MESMO teto completo
+    disponível pra si -- nunca um orçamento decrescente entre
+    tentativas. Determinístico via asyncio.sleep curto, sem depender de
+    tempo real de rede."""
+    import asyncio
+
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=0.05, max_transport_attempts_per_completion=2
+    )
+
+    class _SlowThenFastProvider(_ScriptedProvider):
+        async def _call_api(self, request):
+            self.call_count += 1
+            if self.call_count == 1:
+                await asyncio.sleep(10)  # nunca chega lá -- timeout curto interrompe antes
+            item = self._script.pop(0)
+            return (*item, None) if len(item) == 3 else item
+
+    provider = _SlowThenFastProvider(
+        script=[("resposta rápida", TokenUsage(), "scripted-model")],
+        timeout_seconds=policy.attempt_timeout_seconds,
+        max_retries=policy.max_transport_attempts_per_completion - 1,
+    )
+    result = await provider.complete(_request())
+
+    assert result.status == "success"
+    assert result.attempts == 2
+    assert provider.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_policy_backoff_never_counted_inside_the_per_attempt_timeout():
+    """Teste F -- o backoff entre tentativas (LLMProvider._backoff_delay,
+    ~0.5s+ na 2ª tentativa) fica FORA do wait_for de cada tentativa:
+    mesmo com attempt_timeout_seconds MUITO curto, uma sequência de
+    erros retryable rápidos (sem sleep dentro de _call_api) nunca
+    estoura por timeout -- só por esgotar as tentativas. Prova que
+    backoff e timeout-por-tentativa são orçamentos independentes."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=0.01, max_transport_attempts_per_completion=2
+    )
+    provider = _provider_from_policy(
+        policy,
+        script=[
+            ProviderRateLimitError("rate limited"),
+            ("resposta ok", TokenUsage(), "scripted-model"),
+        ],
+    )
+    result = await provider.complete(_request())
+
+    assert result.status == "success"
+    assert result.attempts == 2
+
+
+@pytest.mark.parametrize(
+    "client_attr,sdk_class_name",
+    [("_client", "AsyncOpenAI")],
+)
+def test_openai_sdk_retries_remain_disabled_regardless_of_policy(client_attr, sdk_class_name):
+    """Teste G -- reforça (não substitui) a garantia já existente em
+    tests/providers/test_openai_provider.py: o SDK nativo continua
+    construído com max_retries=0 independente do
+    max_transport_attempts_per_completion resolvido -- retry é
+    responsabilidade EXCLUSIVA de LLMProvider.complete()."""
+    from app.providers.openai_provider import OpenAIProvider
+
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=10.0, max_transport_attempts_per_completion=5
+    )
+    provider = OpenAIProvider(
+        api_key="fake-key",
+        timeout_seconds=int(policy.attempt_timeout_seconds),
+        max_retries=policy.max_transport_attempts_per_completion - 1,
+        default_model="gpt-5.5",
+        pricing=PricingRegistry({}),
+    )
+    assert provider._client.max_retries == 0
+    assert provider._max_retries == 4

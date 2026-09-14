@@ -255,7 +255,10 @@ async def test_cmd_list_shows_persisted_runs(capsys):
 async def test_cmd_list_shows_running_and_failed_labels(capsys):
     components = await _components()
     await components.repository.save_accepted(
-        "run-cli-list-running", run_config=run_config(), started_at=now()
+        "run-cli-list-running",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
 
     exit_code = await commands.cmd_list(components, limit=50, offset=0, as_json=False)
@@ -295,13 +298,63 @@ async def test_cmd_get_completed_run(capsys):
     body = json.loads(out.out)
     assert body["status"] == "completed"
     assert body["id"] == result.id
+    # T02.2 -- sem accepted_runs prévio, honestamente None.
+    assert body["provider_execution_policy"] is None
+
+
+@pytest.mark.asyncio
+async def test_cmd_get_completed_run_with_known_policy_json_and_human(capsys):
+    """T02.2, teste P -- fluxo completo aceite->sucesso expõe a
+    política conhecida tanto em --json quanto no texto humano."""
+    components = await _components()
+    result = full_council_run_result()
+    await components.repository.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=components.provider_execution_policy,
+    )
+    await components.repository.save_success(result)
+
+    exit_code = await commands.cmd_get(components, run_id=result.id, as_json=True)
+    assert exit_code == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["provider_execution_policy"] == {
+        "attempt_timeout_seconds": 30.0,
+        "max_transport_attempts_per_completion": 2,
+    }
+
+    exit_code = await commands.cmd_get(components, run_id=result.id, as_json=False)
+    assert exit_code == commands.EXIT_OK
+    out = capsys.readouterr().out
+    assert "30.0" in out
+    assert "2" in out
+
+
+@pytest.mark.asyncio
+async def test_cmd_get_completed_run_without_policy_renders_unknown_human(capsys):
+    """T02.2 -- historical null precisa renderizar honestamente como
+    "desconhecida", nunca inventar 60s/3 tentativas (defaults atuais)."""
+    components = await _components()
+    result = full_council_run_result()
+    await components.repository.save_success(result)  # sem accepted_runs -> policy=None
+
+    exit_code = await commands.cmd_get(components, run_id=result.id, as_json=False)
+
+    assert exit_code == commands.EXIT_OK
+    out = capsys.readouterr().out
+    assert "desconhecida" in out
+    assert "60" not in out.split("política_de_execução_do_provider")[-1].split("\n")[0]
 
 
 @pytest.mark.asyncio
 async def test_cmd_get_running_run_json(capsys):
     components = await _components()
     await components.repository.save_accepted(
-        "run-cli-running", run_config=run_config(), started_at=now()
+        "run-cli-running",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
 
     exit_code = await commands.cmd_get(components, run_id="run-cli-running", as_json=True)
@@ -316,7 +369,10 @@ async def test_cmd_get_running_run_json(capsys):
 async def test_cmd_get_running_run_human_output(capsys):
     components = await _components()
     await components.repository.save_accepted(
-        "run-cli-running-2", run_config=run_config(), started_at=now()
+        "run-cli-running-2",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
 
     exit_code = await commands.cmd_get(components, run_id="run-cli-running-2", as_json=False)
@@ -331,7 +387,10 @@ async def test_cmd_get_running_run_human_output(capsys):
 async def test_cmd_get_failed_run_json_sanitized(capsys):
     components = await _components()
     await components.repository.save_accepted(
-        "run-cli-failed", run_config=run_config(), started_at=now()
+        "run-cli-failed",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
     await components.repository.save_unexpected_failure(
         "run-cli-failed",
@@ -468,7 +527,10 @@ async def test_cmd_audit_quorum_failure_run(capsys):
 async def test_cmd_audit_running_run_never_invents_detail(capsys):
     components = await _components()
     await components.repository.save_accepted(
-        "run-cli-audit-running", run_config=run_config(), started_at=now()
+        "run-cli-audit-running",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
 
     exit_code = await commands.cmd_audit(components, run_id="run-cli-audit-running", as_json=True)
@@ -476,14 +538,17 @@ async def test_cmd_audit_running_run_never_invents_detail(capsys):
     assert exit_code == commands.EXIT_OK
     body = json.loads(capsys.readouterr().out)
     assert body["status"] == "running"
-    assert set(body.keys()) == {"status", "id", "started_at", "config"}
+    assert set(body.keys()) == {"status", "id", "started_at", "config", "provider_execution_policy"}
 
 
 @pytest.mark.asyncio
 async def test_cmd_audit_running_run_human_output(capsys):
     components = await _components()
     await components.repository.save_accepted(
-        "run-cli-audit-running-2", run_config=run_config(), started_at=now()
+        "run-cli-audit-running-2",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
     )
 
     exit_code = await commands.cmd_audit(

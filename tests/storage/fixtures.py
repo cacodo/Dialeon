@@ -18,6 +18,7 @@ from app.models.provider_models import (
     PricingProvenance,
     ProviderErrorInfo,
     ProviderErrorType,
+    ProviderExecutionPolicy,
     TokenUsage,
 )
 from app.orchestrator.config import QuorumPolicy, RunConfig
@@ -27,6 +28,12 @@ from app.orchestrator.result import InitialResponsesResult, RoundResult
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def provider_execution_policy(**overrides) -> ProviderExecutionPolicy:
+    fields = dict(attempt_timeout_seconds=45.0, max_transport_attempts_per_completion=3)
+    fields.update(overrides)
+    return ProviderExecutionPolicy(**fields)
 
 
 def provenance(**overrides) -> PricingProvenance:

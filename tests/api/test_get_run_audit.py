@@ -25,7 +25,12 @@ async def _seed_quorum_failure(components, exc) -> str:
 
 
 async def _seed_accepted(components, run_id: str) -> str:
-    await components.repository.save_accepted(run_id, run_config=run_config(), started_at=now())
+    await components.repository.save_accepted(
+        run_id,
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
+    )
     return run_id
 
 
@@ -198,7 +203,7 @@ def test_get_run_audit_running_never_invents_detail():
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "running"
-    assert set(body.keys()) == {"status", "id", "started_at", "config"}
+    assert set(body.keys()) == {"status", "id", "started_at", "config", "provider_execution_policy"}
 
 
 def test_get_run_audit_not_found_returns_404():

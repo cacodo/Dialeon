@@ -57,6 +57,7 @@ from uuid import uuid4
 from app.application.errors import UnknownProviderError
 from app.council.result import CouncilRunResult
 from app.council.runner import CouncilRunner
+from app.models.provider_models import ProviderExecutionPolicy
 from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
 from app.storage.repository import CouncilRepository
@@ -111,17 +112,29 @@ class CouncilExecutionService:
     validação NUNCA depende de `bootstrap._validate_internal_provider_config`
     ter rodado -- `CouncilExecutionService` é a boundary de aceite
     arquitetural e pode ser construído/testado independentemente da
-    composition root normal (achado da revisão independente do T02.4)."""
+    composition root normal (achado da revisão independente do T02.4).
+
+    `provider_execution_policy` (T02.2): a MESMA instância resolvida
+    (`ProviderExecutionPolicy.from_settings`, chamada uma única vez em
+    `app/bootstrap.py`) que também foi injetada nos `LLMProvider`
+    construídos por `build_all_providers` -- nunca recalculada aqui, nem
+    lida de `Settings` diretamente (este objeto não conhece `Settings`).
+    Snapshotada verbatim em `repo.save_accepted()` ANTES de qualquer
+    chamada ao runner -- ela é o que efetivamente estava configurado
+    pra ESTA execução, nunca reconstituída a partir de defaults atuais
+    depois do fato."""
 
     def __init__(
         self,
         runner: CouncilRunner,
         repository: CouncilRepository,
         known_providers: frozenset[str] | set[str],
+        provider_execution_policy: ProviderExecutionPolicy,
     ):
         self._runner = runner
         self._repository = repository
         self._known_providers = frozenset(known_providers)
+        self._provider_execution_policy = provider_execution_policy
 
     async def run(self, run_config: RunConfig) -> CouncilRunResult:
         """Valida, aceita (persiste ANTES de qualquer chamada ao runner),
@@ -172,7 +185,10 @@ class CouncilExecutionService:
         run_id = _new_id()
         started_at = _now()
         await self._repository.save_accepted(
-            run_id, run_config=run_config, started_at=started_at
+            run_id,
+            run_config=run_config,
+            started_at=started_at,
+            provider_execution_policy=self._provider_execution_policy,
         )
 
         try:

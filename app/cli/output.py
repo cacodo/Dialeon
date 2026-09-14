@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.models.provider_models import ProviderExecutionPolicy
 from app.presentation.schemas import (
     CompletedRunResponse,
     FailedRunResponse,
@@ -68,6 +69,19 @@ def _fmt(value: Any, *, unit: str = "") -> str:
     return f"{value}{unit}"
 
 
+def _human_provider_execution_policy_line(policy: ProviderExecutionPolicy | None) -> str:
+    """T02.2 -- `None` é o valor HONESTO pra runs persistidos antes
+    desta feature existir (nunca um default atual inventado -- ver
+    docstring de ProviderExecutionPolicy)."""
+    if policy is None:
+        return "política_de_execução_do_provider: desconhecida (execução anterior a este registro)"
+    return (
+        "política_de_execução_do_provider: "
+        f"timeout_por_tentativa={policy.attempt_timeout_seconds}s, "
+        f"tentativas_de_transporte_max={policy.max_transport_attempts_per_completion}"
+    )
+
+
 def human_run_result(run: CompletedRunResponse) -> str:
     """Patch de segurança de terminal (FinalAnswer da CLI, round 2) --
     `run.final_answer.answer_text`/`limitations`/`editor_model` podem
@@ -103,6 +117,7 @@ def human_run_result(run: CompletedRunResponse) -> str:
         f"custo estimado: {run.accounting.estimated_cost_usd:.6f} USD "
         f"(contabilidade completa: {'não' if run.accounting.has_unknown_accounting_components else 'sim'})"
     )
+    lines.append(_human_provider_execution_policy_line(run.provider_execution_policy))
     return "\n".join(lines)
 
 
@@ -114,6 +129,7 @@ def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
             f"respostas bem-sucedidas: {run.successful_count}/{run.total_providers} "
             f"(mínimo pra retornar: {run.min_to_return})",
             "Nenhuma resposta final foi composta -- o quórum mínimo não foi atingido.",
+            _human_provider_execution_policy_line(run.provider_execution_policy),
         ]
     )
 
@@ -150,6 +166,7 @@ def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
                 "Nenhum desfecho terminal foi registrado ainda -- a execução pode "
                 "estar em andamento, ou o processo pode ter sido interrompido antes "
                 "de terminar; os dois casos são indistinguíveis a partir deste registro.",
+                _human_provider_execution_policy_line(run.provider_execution_policy),
             ]
         )
     return "\n".join(
@@ -160,6 +177,7 @@ def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
             f"falhou em: {run.failed_at.isoformat()}",
             f"classificação: {terminal_safe_text(run.failure_reason)}",
             terminal_safe_text(run.message),
+            _human_provider_execution_policy_line(run.provider_execution_policy),
         ]
     )
 
@@ -269,6 +287,7 @@ def human_run_audit(audit: Any) -> str:
             f"contabilidade_completa: {'não' if audit.accounting.has_unknown_accounting_components else 'sim'}",
         ]
         lines.extend(_human_source_analysis_lines(audit.source_analysis))
+        lines.append(_human_provider_execution_policy_line(audit.provider_execution_policy))
         return "\n".join(lines)
 
     return "\n".join(
@@ -277,5 +296,6 @@ def human_run_audit(audit: Any) -> str:
             f"run_id: {audit.id}",
             f"respostas bem-sucedidas: {audit.successful_count}/{audit.total_providers} "
             f"(mínimo pra retornar: {audit.min_to_return})",
+            _human_provider_execution_policy_line(audit.provider_execution_policy),
         ]
     )

@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from app.council.result import CouncilRunResult
+from app.models.provider_models import ProviderExecutionPolicy
 from app.orchestrator.config import RunConfig
 from app.orchestrator.result import RoundResult
 
@@ -28,12 +29,20 @@ _CONFIG = ConfigDict(frozen=True, extra="forbid")
 class CompletedRunRecord(BaseModel):
     """Um run que chegou até o Editor -- reconstrução semanticamente
     equivalente ao `CouncilRunResult` original, montada a partir dos
-    registros-fato no banco (nunca de um cache de totais)."""
+    registros-fato no banco (nunca de um cache de totais).
+
+    `provider_execution_policy` (T02.2) -- SIBLING de
+    `council_run_result`, nunca um campo de `CouncilRunResult`: a
+    política de execução de provider é uma autoridade de deployment
+    inteiramente distinta de `RunConfig`/`CouncilRunner`, que nunca a
+    conhecem (ver `app.models.provider_models.ProviderExecutionPolicy`).
+    `None` só pra runs persistidos antes desta coluna existir."""
 
     model_config = _CONFIG
 
     status: Literal["completed"] = "completed"
     council_run_result: CouncilRunResult
+    provider_execution_policy: ProviderExecutionPolicy | None = None
 
 
 class QuorumFailureRecord(BaseModel):
@@ -52,6 +61,8 @@ class QuorumFailureRecord(BaseModel):
     total_providers: int
     min_to_return: int
     round_result: RoundResult
+    # T02.2 -- ver docstring de CompletedRunRecord.provider_execution_policy.
+    provider_execution_policy: ProviderExecutionPolicy | None = None
 
 
 class AcceptedRunRecord(BaseModel):
@@ -78,6 +89,11 @@ class AcceptedRunRecord(BaseModel):
     failed_at: datetime | None = None
     failure_classification: str | None = None
     failure_message: str | None = None
+    # T02.2 -- ver docstring de CompletedRunRecord.provider_execution_policy.
+    # Novos accepted runs SEMPRE têm um valor concreto (`save_accepted`
+    # exige o parâmetro); `None` só ocorre reconstruindo uma linha
+    # legada pré-upgrade.
+    provider_execution_policy: ProviderExecutionPolicy | None = None
 
 
 PersistedRun = CompletedRunRecord | QuorumFailureRecord | AcceptedRunRecord

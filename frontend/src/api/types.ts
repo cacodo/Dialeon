@@ -22,6 +22,18 @@ export interface ProviderErrorInfo {
   retryable: boolean
 }
 
+// T02.2 -- snapshot da política de transporte de provider (timeout +
+// retry) vigente no momento em que o Run foi aceito. SIBLING de
+// RunConfigPublic, nunca dentro dele -- autoridade de deployment
+// distinta da configuração de execução/domínio do Run (ver
+// app/models/provider_models.py:ProviderExecutionPolicy). `null` só pra
+// runs persistidos antes desta feature existir -- nunca substituído
+// pelos defaults atuais.
+export interface ProviderExecutionPolicy {
+  attempt_timeout_seconds: number
+  max_transport_attempts_per_completion: number
+}
+
 export interface ModelResponsePublic {
   id: string
   provider: string
@@ -250,6 +262,7 @@ export interface CompletedRunResponse {
   final_answer: FinalAnswerPublic
   accounting: AccountingSummary
   config: RunConfigPublic
+  provider_execution_policy: ProviderExecutionPolicy | null
 }
 
 export interface QuorumFailureRunResponse {
@@ -262,6 +275,7 @@ export interface QuorumFailureRunResponse {
   min_to_return: number
   accounting: RoundAccountingPublic
   config: RunConfigPublic
+  provider_execution_policy: ProviderExecutionPolicy | null
 }
 
 // T02.4 -- run aceito ainda sem desfecho terminal: em andamento, ou o
@@ -273,6 +287,7 @@ export interface RunningRunResponse {
   id: string
   started_at: string
   config: RunConfigPublic
+  provider_execution_policy: ProviderExecutionPolicy | null
 }
 
 // T02.4 -- exceção inesperada durante a execução (nem validação de
@@ -286,6 +301,7 @@ export interface FailedRunResponse {
   failure_reason: string
   message: string
   config: RunConfigPublic
+  provider_execution_policy: ProviderExecutionPolicy | null
 }
 
 export type RunResponse =
@@ -328,6 +344,7 @@ export interface CompletedRunAudit {
   editor_attempts: EditorAttemptPublic[]
   final_answer: FinalAnswerPublic
   accounting: AccountingSummary
+  provider_execution_policy: ProviderExecutionPolicy | null
 }
 
 export interface QuorumFailureAudit {
@@ -340,6 +357,7 @@ export interface QuorumFailureAudit {
   total_providers: number
   min_to_return: number
   round_result: RoundAudit
+  provider_execution_policy: ProviderExecutionPolicy | null
 }
 
 // T02.4 -- um run "running"/"failed" nunca tem detalhe de auditoria
