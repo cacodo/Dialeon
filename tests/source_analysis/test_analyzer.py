@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.models.provider_models import ModelIdentitySource
 from app.orchestrator.config import QuorumPolicy, RunConfig
 from app.source_analysis.analyzer import SourceAnalyzer
 from app.source_analysis.models import RejectedSourceEntry, ValidSourceRelation
@@ -139,6 +140,26 @@ async def test_single_call_covers_multiple_claims_supports_contradicts_unresolve
     assert by_claim[c3.id].relation == "unresolved"
     assert by_claim[c3.id].excerpt is None
     assert by_claim[c3.id].excerpt_start is None
+
+
+@pytest.mark.asyncio
+async def test_source_analysis_attempt_copies_model_identity_source_from_provider_response():
+    """Production-path regression -- prova que SourceAnalyzer.analyze()
+    (não uma construção manual de SourceAnalysisAttempt) copia
+    model_identity_source do ProviderResponse REAL devolvido pelo
+    provider fake."""
+    c1 = raw_claim("A receita cresceu 12%.", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    payload = _payload([{"claim_id": c1.id, "relation": "unresolved"}])
+    provider = ScriptedProvider(
+        "anthropic",
+        [text_response("anthropic", payload, model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK)],
+    )
+    analyzer = SourceAnalyzer({"anthropic": provider})
+
+    result = await analyzer.analyze(dr, _run_config())
+
+    assert result.attempts[0].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +407,16 @@ async def test_malformed_then_accepted_recovers_via_retry():
     )
     provider = ScriptedProvider(
         "anthropic",
-        [text_response("anthropic", "json quebrado"), text_response("anthropic", good_payload)],
+        [
+            text_response(
+                "anthropic", "json quebrado",
+                model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
+            ),
+            text_response(
+                "anthropic", good_payload,
+                model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
+            ),
+        ],
     )
     analyzer = SourceAnalyzer({"anthropic": provider})
 
@@ -394,7 +424,12 @@ async def test_malformed_then_accepted_recovers_via_retry():
 
     assert len(result.attempts) == 2
     assert result.attempts[0].parse_status == "malformed"
+    # LOW #2 -- a tentativa REJEITADA (malformed) copia a provenance da
+    # SUA PRÓPRIA ProviderResponse, nunca um valor global/default herdado
+    # da tentativa seguinte que a sucede.
+    assert result.attempts[0].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
     assert result.attempts[1].parse_status == "accepted"
+    assert result.attempts[1].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
     assert len(result.claim_results) == 1
 
 

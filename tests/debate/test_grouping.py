@@ -7,17 +7,28 @@ import pytest
 from app.debate.claim_extraction import group_claims
 from tests.council.fixtures import run_config as _run_config
 from app.models.domain import Claim, ClaimSupport
+from app.models.provider_models import ModelIdentitySource
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 
 
-def _raw_claim(claim_id_suffix: str, provider: str, total: int = 3) -> Claim:
+def _raw_claim(
+    claim_id_suffix: str,
+    provider: str,
+    total: int = 3,
+    model_identity_source: ModelIdentitySource | None = None,
+) -> Claim:
     return Claim(
         text=f"claim de {provider}",
         source_model_response_id=f"resp-{claim_id_suffix}",
         round_introduced=1,
         status="active",
         supporting_model_response_ids=[
-            ClaimSupport(model_response_id=f"resp-{claim_id_suffix}", provider=provider, model="m")
+            ClaimSupport(
+                model_response_id=f"resp-{claim_id_suffix}",
+                provider=provider,
+                model="m",
+                model_identity_source=model_identity_source,
+            )
         ],
         total_models_in_round=total,
     )
@@ -70,6 +81,43 @@ async def test_group_of_two_or_more_creates_canonical_claim():
     }
     assert merged.status == "consensus"  # ratio 3/3, >=2 participantes
     assert attempts[0].parse_status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_grouping_preserves_each_members_model_identity_source_verbatim():
+    """Cross-round/merge regression (repair pós-revisão independente) --
+    `group_claims` (via `_merge_supports`) NUNCA reconstrói um
+    ClaimSupport novo: reusa a MESMA instância dos membros fundidos, por
+    design (ver `app/debate/claim_extraction.py::_merge_supports` --
+    dedup por `model_response_id`, `merged.append(support)` sem
+    reconstrução). Prova isso na fronteira pública: 3 membros com 3
+    model_identity_source DIFERENTES entre si sobrevivem intactos, cada
+    um no seu próprio support, depois da fusão."""
+    a = _raw_claim("a", "openai", model_identity_source=ModelIdentitySource.PROVIDER_REPORTED)
+    b = _raw_claim("b", "anthropic", model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK)
+    c = _raw_claim("c", "gemini", model_identity_source=None)
+    payload = json.dumps(
+        {
+            "groups": [
+                {"member_claim_ids": [a.id, b.id, c.id], "canonical_text": "texto unificado"}
+            ],
+            "ungrouped_claim_ids": [],
+        }
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+
+    canonical, _attempts = await group_claims(
+        [a, b, c], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,)
+
+    merged = canonical[0]
+    by_provider = {s.provider: s.model_identity_source for s in merged.supporting_model_response_ids}
+    assert by_provider["openai"] == ModelIdentitySource.PROVIDER_REPORTED
+    assert by_provider["anthropic"] == ModelIdentitySource.REQUESTED_FALLBACK
+    assert by_provider["gemini"] is None
 
 
 @pytest.mark.asyncio

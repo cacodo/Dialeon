@@ -71,6 +71,7 @@ def _final_answer(**overrides) -> FinalAnswerPublic:
         limitations=[],
         status="llm_planned",
         editor_model="claude-sonnet-5",
+        editor_model_identity_source="provider_reported",
         judge_confidence=0.8,
     )
     fields.update(overrides)
@@ -137,6 +138,7 @@ def _completed_run_audit(**overrides) -> CompletedRunAudit:
             id="verdict-1",
             evaluated_through_round=1,
             judge_model="claude-sonnet-5",
+            judge_model_identity_source="provider_reported",
             claim_assessments=[
                 ClaimAssessmentPublic(claim_id="c1", verdict="supported", explanation="bem sustentada")
             ],
@@ -363,6 +365,36 @@ def test_human_run_result_editor_model_none_still_shows_unknown_label():
         _completed_run_response(final_answer=_final_answer(editor_model=None))
     )
     assert "editor_model: desconhecido" in text
+
+
+def test_human_run_result_shows_provider_reported_identity_source():
+    text = output.human_run_result(
+        _completed_run_response(
+            final_answer=_final_answer(editor_model_identity_source="provider_reported")
+        )
+    )
+    assert "editor_model_identity_source: reportada pelo provider" in text
+
+
+def test_human_run_result_shows_requested_fallback_identity_source():
+    text = output.human_run_result(
+        _completed_run_response(
+            final_answer=_final_answer(editor_model_identity_source="requested_fallback")
+        )
+    )
+    assert "editor_model_identity_source: fallback do modelo solicitado" in text
+
+
+def test_human_run_result_historical_none_identity_source_never_shown_as_fallback():
+    """Histórico (coluna não existia) -- renderiza honestamente como não
+    registrado, nunca confundido com requested_fallback."""
+    text = output.human_run_result(
+        _completed_run_response(
+            final_answer=_final_answer(editor_model_identity_source=None)
+        )
+    )
+    assert "editor_model_identity_source: não registrada" in text
+    assert "editor_model_identity_source: fallback do modelo solicitado" not in text
 
 
 def test_json_answer_text_editor_model_and_limitations_stay_byte_faithful():

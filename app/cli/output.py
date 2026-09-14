@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.models.provider_models import ProviderExecutionPolicy
+from app.models.provider_models import ModelIdentitySource, ProviderExecutionPolicy
 from app.presentation.schemas import (
     CompletedRunResponse,
     FailedRunResponse,
@@ -69,6 +69,17 @@ def _fmt(value: Any, *, unit: str = "") -> str:
     return f"{value}{unit}"
 
 
+def _fmt_model_identity_source(source: ModelIdentitySource | None) -> str:
+    """`None` é o valor HONESTO pra runs persistidos antes desta coluna
+    existir -- nunca confundido com `REQUESTED_FALLBACK` (ver docstring
+    de `ModelIdentitySource`, app/models/provider_models.py)."""
+    if source is None:
+        return "não registrada (execução anterior a este registro)"
+    if source is ModelIdentitySource.PROVIDER_REPORTED:
+        return "reportada pelo provider"
+    return "fallback do modelo solicitado"
+
+
 def _human_provider_execution_policy_line(policy: ProviderExecutionPolicy | None) -> str:
     """T02.2 -- `None` é o valor HONESTO pra runs persistidos antes
     desta feature existir (nunca um default atual inventado -- ver
@@ -92,8 +103,12 @@ def human_run_result(run: CompletedRunResponse) -> str:
     de cada `\\n` dentro dela se perde antes de chegar aqui, então
     NENHUM `\\n` pode ser tratado como "seguro" só por já estar em
     `answer_text` (ver docstring de `terminal_safe_text`); `limitations`
-    é texto livre do Judge; `editor_model` é metadado REPORTADO PELO
-    PROVIDER (nunca gerado pela aplicação). Byte-fiéis no domínio/API/
+    é texto livre do Judge; `editor_model` é a identidade de modelo da
+    tentativa aceita -- mas NÃO é necessariamente reportada pelo
+    provider: `editor_model_identity_source` (ver
+    `_fmt_model_identity_source` abaixo) é quem distingue isso, nunca
+    presuma "sempre reportada" só porque o valor existe (ver
+    `ModelIdentitySource`, app/models/provider_models.py). Byte-fiéis no domínio/API/
     persistência/frontend (nunca mutados aqui: `run`/`run.final_answer`
     permanecem intocados, só as STRINGS impressas passam por
     `terminal_safe_text`, sempre em modo estrito). Este é o único
@@ -104,6 +119,8 @@ def human_run_result(run: CompletedRunResponse) -> str:
         f"run_id: {run.id}",
         f"status_da_resposta: {run.final_answer.status}",
         f"editor_model: {terminal_safe_text(_fmt(run.final_answer.editor_model))}",
+        f"editor_model_identity_source: "
+        f"{_fmt_model_identity_source(run.final_answer.editor_model_identity_source)}",
         f"confiança_do_juiz: {_fmt(run.final_answer.judge_confidence)}",
         "",
         terminal_safe_text(run.final_answer.answer_text),

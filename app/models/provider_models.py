@@ -70,6 +70,37 @@ class ProviderErrorType(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ModelIdentitySource(str, Enum):
+    """Provenance FECHADA de `ProviderResponse.model` (e de todo campo
+    que copia essa identidade adiante -- `ModelResponse.model`,
+    `*Attempt.model`, `JudgeVerdict.judge_model`,
+    `FinalAnswer.editor_model`): resolve a ambiguidade que `model`
+    sozinho sempre teve (ver docstring de `ProviderResponse` abaixo) --
+    "provider-reported quando disponível, senão requested_model como
+    fallback" nunca dizia QUAL dos dois aconteceu numa resposta
+    específica.
+
+    - `PROVIDER_REPORTED`: o adapter concreto extraiu um identificador de
+      modelo do próprio objeto de resposta do SDK (`response.model`
+      OpenAI/Anthropic, `response.model_version` Gemini) -- um FATO
+      observado, nunca inferido.
+    - `REQUESTED_FALLBACK`: nenhuma identidade foi observada (SDK não
+      expôs o campo, ou nenhuma chamada de rede sequer ocorreu -- falha
+      pré-request/pré-`_call_api()`) -- `model` recebeu `requested_model`
+      como substituto honesto, nunca uma alegação de que o provider
+      confirmou aquele identificador.
+
+    Deliberadamente SEM um terceiro valor de enum pra "desconhecido" --
+    resolvido `None` no nível dos campos que usam este tipo (`X |
+    None`), reservado EXCLUSIVAMENTE para linhas persistidas antes desta
+    coluna existir (nunca para uma resposta nova: toda resposta nova
+    sempre sabe, no momento em que é construída, qual dos dois valores
+    reais se aplica -- ver `LLMProvider.complete()`)."""
+
+    PROVIDER_REPORTED = "provider_reported"
+    REQUESTED_FALLBACK = "requested_fallback"
+
+
 class ProviderErrorInfo(BaseModel):
     type: ProviderErrorType
     message: str
@@ -113,9 +144,13 @@ class PricingProvenance(BaseModel):
     original (ex.: `"gpt-5.5-2026-04-23"`). Isso nunca reescreve
     `ProviderResponse.model`/`requested_model` — só documenta, pra
     auditoria, que a taxa aplicada veio de um modelo canônico distinto
-    do identifier efetivamente reportado. Default `None` preserva
-    leitura de registros históricos persistidos antes deste campo
-    existir (chave ausente no JSON -> Pydantic aplica o default)."""
+    do identifier RESOLVIDO usado pra precificar (`model` -- provider-
+    reported ou requested-model fallback, ver `ModelIdentitySource`;
+    qual dos dois foi é rastreado separadamente por
+    `ProviderResponse.model_identity_source`, nunca por este campo).
+    Default `None` preserva leitura de registros históricos persistidos
+    antes deste campo existir (chave ausente no JSON -> Pydantic aplica
+    o default)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -211,11 +246,21 @@ class ProviderResponse(BaseModel):
       fallback. NÃO é prova de que o provider informou um
       snapshot/version efetivamente executado — apenas
       "provider-reported quando disponível, senão o que foi pedido".
+    - `model_identity_source`: resolve a ambiguidade acima explicitamente
+      -- ver `ModelIdentitySource`. NUNCA `None` aqui (diferente dos
+      campos que copiam esta identidade adiante em storage/apresentação):
+      toda `ProviderResponse` é construída FRESCA em tempo de execução
+      (nunca reconstruída de uma linha histórica), então sempre existe
+      um dos dois valores reais no momento da criação -- resolvido uma
+      única vez, dentro de `LLMProvider.complete()` (nunca recalculado
+      pelos 3 adapters concretos, que só expõem o valor CRU observado ou
+      `None`).
     """
 
     provider: str
     requested_model: str
     model: str
+    model_identity_source: ModelIdentitySource
     status: Literal["success", "error"]
     text: str | None = None
     usage: TokenUsage | None = None

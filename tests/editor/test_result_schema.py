@@ -443,6 +443,7 @@ def test_final_answer_public_accepts_llm_planned_status():
         limitations=[],
         status="llm_planned",
         editor_model="claude-test",
+        editor_model_identity_source="provider_reported",
         judge_confidence=0.7,
     )
     assert public.status == "llm_planned"
@@ -456,6 +457,7 @@ def test_final_answer_public_still_accepts_historical_llm_composed_status():
         limitations=[],
         status="llm_composed",
         editor_model="claude-legacy",
+        editor_model_identity_source=None,
         judge_confidence=0.6,
     )
     assert public.status == "llm_composed"

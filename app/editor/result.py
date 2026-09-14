@@ -24,6 +24,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.editor.attempt import EditorAttempt
+from app.models.provider_models import ModelIdentitySource
 from app.orchestrator.budget import sum_usage_and_cost
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
@@ -71,6 +72,18 @@ class FinalAnswer(BaseModel):
     # Modelo REAL da tentativa aceita — nunca presumido a partir de
     # config. None em qualquer caminho determinístico.
     editor_model: str | None = None
+    # Provenance de editor_model -- ver ModelResponse.model_identity_source
+    # (app/models/domain.py) pra semântica completa. NUNCA `None` numa
+    # composição NOVA quando editor_model está preenchido (sempre copiado
+    # de accepted_response.model_identity_source, ver app/editor/compose.py)
+    # -- mas DELIBERADAMENTE não acoplado por validator a editor_model:
+    # uma linha histórica persistida antes desta coluna existir pode
+    # legitimamente ter editor_model preenchido com
+    # editor_model_identity_source=None (ver
+    # `_upgrade_legacy_model_identity_source`, app/storage/database.py) --
+    # nunca retroativamente inferido. `None` em todo caminho
+    # determinístico (mesmo motivo de editor_model ser None ali).
+    editor_model_identity_source: ModelIdentitySource | None = None
     based_on_verdict_id: str | None = None
     # Eco de JudgeVerdict.confidence — provenance/auditoria da resposta,
     # NUNCA algo que answer_text deva citar como percentual cru (Etapa 7,

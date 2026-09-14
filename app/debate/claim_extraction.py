@@ -200,6 +200,7 @@ async def extract_claims(
                     model_response_id=response.id,
                     provider=response.provider,
                     model=response.model,
+                    model_identity_source=response.model_identity_source,
                 )
             ],
             total_models_in_round=total_models_in_round,
@@ -1019,6 +1020,7 @@ def _parse_rejected_attempt(
         provider=provider_response.provider,
         requested_model=provider_response.requested_model,
         model=provider_response.model,
+        model_identity_source=provider_response.model_identity_source,
         target_model_response_id=target_model_response_id,
         target_claim_ids=target_claim_ids or [],
         transport_status="success",
@@ -1052,6 +1054,7 @@ def _accepted_attempt(
         provider=provider_response.provider,
         requested_model=provider_response.requested_model,
         model=provider_response.model,
+        model_identity_source=provider_response.model_identity_source,
         target_model_response_id=target_model_response_id,
         target_claim_ids=target_claim_ids or [],
         transport_status="success",

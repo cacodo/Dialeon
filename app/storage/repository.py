@@ -69,6 +69,7 @@ from app.storage.serializers import (
     claim_merge_rows,
     claim_processing_attempt_from_row,
     claim_processing_attempt_to_row,
+    claim_support_from_row,
     claim_support_rows,
     claim_to_row,
     deterministic_verification_attempt_from_row,
@@ -610,11 +611,7 @@ class CouncilRepository:
             )
             supports_by_claim: dict[str, list[ClaimSupport]] = defaultdict(list)
             for s in support_rows:
-                supports_by_claim[s.claim_id].append(
-                    ClaimSupport(
-                        model_response_id=s.model_response_id, provider=s.provider, model=s.model
-                    )
-                )
+                supports_by_claim[s.claim_id].append(claim_support_from_row(s))
         else:
             supports_by_claim = {}
 

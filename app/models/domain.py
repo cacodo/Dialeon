@@ -39,7 +39,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
-from app.models.provider_models import PricingProvenance, ProviderErrorInfo, TokenUsage
+from app.models.provider_models import (
+    ModelIdentitySource,
+    PricingProvenance,
+    ProviderErrorInfo,
+    TokenUsage,
+)
 
 # Todo modelo de domínio compartilha a mesma postura: imutável depois de
 # criado (frozen) e sem campos extras não declarados (forbid) — isso é o
@@ -94,6 +99,14 @@ class ModelResponse(BaseModel):
     # inalterado, campo preservado por compatibilidade).
     requested_model: str
     model: str
+    # Provenance de `model` -- ver `ModelIdentitySource`
+    # (app/models/provider_models.py). Copiado verbatim de
+    # ProviderResponse.model_identity_source em toda resposta NOVA (nunca
+    # `None` nesse caso); `None` só numa reconstrução a partir de uma
+    # linha persistida ANTES desta coluna existir (ver
+    # `_upgrade_legacy_model_identity_source`, app/storage/database.py) --
+    # nunca inferido de `model == requested_model`.
+    model_identity_source: ModelIdentitySource | None = None
     round_number: int = Field(ge=1)
     status: Literal["success", "error"]
     response_text: str | None = None
@@ -156,6 +169,19 @@ class ClaimSupport(BaseModel):
     model_response_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    # Provenance de `model` -- ver ModelResponse.model_identity_source
+    # acima pra semântica completa. COPIADO VERBATIM do
+    # ModelResponse.model_identity_source identificado por
+    # model_response_id no momento da extração da claim (nunca
+    # recomputado a partir de provider/model/round/igualdade) -- toda
+    # claim BRUTA nova (extraída de uma única resposta) sempre tem isso
+    # concreto; `None` só numa reconstrução a partir de uma linha
+    # persistida antes desta coluna existir. Claims de FUSÃO (grouping/
+    # reconciliation) nunca reconstroem este objeto -- reusam a MESMA
+    # instância de ClaimSupport dos membros fundidos (ver
+    # `app/debate/claim_extraction.py::_merge_supports`), então a
+    # provenance sobrevive automaticamente, sem lógica adicional.
+    model_identity_source: ModelIdentitySource | None = None
 
 
 class Claim(BaseModel):
@@ -425,6 +451,12 @@ class JudgeVerdict(BaseModel):
     # CritiqueResult.critique_obtained/successful_count.
     evaluated_through_round: int = Field(ge=1)
     judge_model: str = Field(min_length=1)
+    # Provenance de judge_model -- ver ModelResponse.model_identity_source
+    # acima pra semântica completa. Copiado verbatim de
+    # accepted_response.model_identity_source em todo veredito NOVO;
+    # `None` só numa reconstrução a partir de uma linha persistida antes
+    # desta coluna existir.
+    judge_model_identity_source: ModelIdentitySource | None = None
 
     claim_assessments: list[ClaimAssessment] = Field(default_factory=list)
     best_arguments_by: dict[str, str] = Field(default_factory=dict)

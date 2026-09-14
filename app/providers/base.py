@@ -15,8 +15,11 @@ Orchestrator. O provider só sabe: recebeu um CompletionRequest, tenta
 cumprir, devolve um ProviderResponse.
 
 Accounting (Etapa 9): `cost_usd` é calculado aqui, via `PricingRegistry`
-injetado, usando o modelo EFETIVAMENTE retornado pelo provider — nunca
-inventado, `None` quando não há preço registrado. Falha ANTES de
+injetado, usando o identificador de modelo RESOLVIDO (`model` --
+provider-reported quando observado, requested_model como fallback quando
+não -- ver `ModelIdentitySource`, app/models/provider_models.py; a
+origem fica registrada separadamente, nunca decide o lookup de preço em
+si) — nunca inventado, `None` quando não há preço registrado. Falha ANTES de
 `_call_api()` começar (API key ausente) é conhecido-zero
 (`usage=None, cost_usd=0.0` — nenhuma chamada de rede foi tentada). Falha
 DEPOIS de `_call_api()` começar é sempre desconhecida
@@ -34,6 +37,7 @@ from abc import ABC, abstractmethod
 
 from app.models.provider_models import (
     CompletionRequest,
+    ModelIdentitySource,
     PricingProvenance,
     ProviderErrorInfo,
     ProviderErrorType,
@@ -97,6 +101,7 @@ def transport_error_common_fields(provider_response: ProviderResponse) -> dict:
         "provider": provider_response.provider,
         "requested_model": provider_response.requested_model,
         "model": provider_response.model,
+        "model_identity_source": provider_response.model_identity_source,
         "transport_status": "error",
         "transport_error": provider_response.error,
         "transport_attempts": provider_response.attempts,
@@ -141,20 +146,47 @@ class LLMProvider(ABC):
         """Modelo usado quando CompletionRequest.model é None."""
 
     @abstractmethod
-    async def _call_api(self, request: CompletionRequest) -> tuple[str, TokenUsage, str, str | None]:
+    async def _call_api(
+        self, request: CompletionRequest
+    ) -> tuple[str, TokenUsage, str | None, str | None]:
         """Faz a chamada real à API do provider.
 
         Deve levantar uma subclasse de ProviderError (ver app/providers/errors.py)
         em qualquer falha — nunca deixar uma exceção do SDK escapar sem
         tradução, porque o resto do sistema só entende ProviderErrorInfo.
 
-        Retorna (texto_da_resposta, uso_de_tokens, nome_do_modelo_efetivamente_usado,
+        Retorna (texto_da_resposta, uso_de_tokens, identidade_de_modelo_CRUA_observada_ou_None,
         motivo_de_parada_nativo_do_provider_ou_None).
 
         Etapa 17A.1: o 4º elemento é o motivo de parada NATIVO do
         provider (verbatim, nunca normalizado) quando o SDK expõe essa
         informação de forma confiável — `None` quando indisponível.
+
+        Provenance de identidade de modelo -- o 3º elemento é o valor CRU
+        que o adapter concreto conseguiu ler do objeto de resposta do SDK
+        (`response.model`/`response.model_version`), NUNCA já mesclado
+        com `requested_model` -- essa mescla (e a decisão de
+        `ModelIdentitySource` que a acompanha) é resolvida uma única vez
+        aqui em `complete()`, nunca duplicada em cada adapter. `None`
+        quando o SDK não expôs o campo de forma confiável.
         """
+
+    @staticmethod
+    def _resolve_model_identity(
+        observed_model: str | None, requested_model: str
+    ) -> tuple[str, ModelIdentitySource]:
+        """Único ponto de resolução model CRU-observado -> (model,
+        model_identity_source) do sistema inteiro -- usado pelos 3
+        pontos de construção de `ProviderResponse` abaixo (sucesso, falha
+        pré-request, falha pós-request exaurida), nunca duplicado dentro
+        de cada adapter concreto (mesma disciplina de
+        `ProviderExecutionPolicy.from_settings`: uma resolução, nunca
+        várias que possam divergir). `observed_model` falsy (None ou "")
+        sempre vira fallback -- nunca inventamos uma identidade que o
+        adapter não conseguiu extrair com confiança."""
+        if observed_model:
+            return observed_model, ModelIdentitySource.PROVIDER_REPORTED
+        return requested_model, ModelIdentitySource.REQUESTED_FALLBACK
 
     def _require_api_key(self) -> None:
         if not self._api_key:
@@ -204,6 +236,10 @@ class LLMProvider(ABC):
                 provider=self.provider_name,
                 requested_model=requested_model,
                 model=requested_model,
+                # Nenhuma chamada de rede foi sequer tentada -- nenhuma
+                # identidade pôde ter sido observada, então isto é
+                # SEMPRE fallback, nunca provider_reported.
+                model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
                 status="error",
                 text=None,
                 usage=None,
@@ -235,13 +271,24 @@ class LLMProvider(ABC):
                 # efetivamente reportou, ou `requested_model` como
                 # fallback quando o SDK não expõe identidade efetiva
                 # (ver contrato de cada adapter._call_api()).
-                text, usage, reported_or_fallback_model, finish_reason = await asyncio.wait_for(
+                text, usage, observed_model, finish_reason = await asyncio.wait_for(
                     self._call_api(request), timeout=self._timeout_seconds
                 )
+                # Etapa 13 / provenance de identidade de modelo: único
+                # ponto de mescla observed_model (CRU, do adapter) ->
+                # (model, model_identity_source) -- ver
+                # `_resolve_model_identity`.
+                reported_or_fallback_model, model_identity_source = self._resolve_model_identity(
+                    observed_model, requested_model
+                )
                 # Custo estimado real + proveniência (Etapa 9/10) — via
-                # PricingRegistry, usando o modelo EFETIVAMENTE retornado
-                # pelo provider (nunca o configurado/default). None se não
-                # houver taxa registrada pra esse par — nunca inventado.
+                # PricingRegistry, usando o identificador de modelo
+                # RESOLVIDO acima (`reported_or_fallback_model` --
+                # provider-reported quando observado, requested_model como
+                # fallback quando não; a origem fica registrada
+                # separadamente em `model_identity_source`, nunca decide o
+                # lookup de preço em si). None se não houver taxa
+                # registrada pra esse par — nunca inventado.
                 cost_usd, pricing_provenance = self._price_usage(
                     reported_or_fallback_model, usage
                 )
@@ -249,6 +296,7 @@ class LLMProvider(ABC):
                     provider=self.provider_name,
                     requested_model=requested_model,
                     model=reported_or_fallback_model,
+                    model_identity_source=model_identity_source,
                     status="success",
                     text=text,
                     usage=usage,
@@ -320,9 +368,10 @@ class LLMProvider(ABC):
                     observed_usage = last_error.observed_usage
                     observed_finish_reason = last_error.observed_finish_reason
 
-                cost_usd, pricing_provenance = self._price_usage(
-                    observed_model or requested_model, observed_usage
+                model, model_identity_source = self._resolve_model_identity(
+                    observed_model, requested_model
                 )
+                cost_usd, pricing_provenance = self._price_usage(model, observed_usage)
                 return ProviderResponse(
                     provider=self.provider_name,
                     requested_model=requested_model,
@@ -331,7 +380,8 @@ class LLMProvider(ABC):
                     # disponível (mesmo fallback do caso pré-request) —
                     # mas se o adapter observou uma identidade real antes
                     # do texto falhar, ela é preservada.
-                    model=observed_model or requested_model,
+                    model=model,
+                    model_identity_source=model_identity_source,
                     status="error",
                     text=None,
                     usage=observed_usage,

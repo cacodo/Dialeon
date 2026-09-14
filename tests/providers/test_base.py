@@ -11,11 +11,17 @@ import pytest
 from app.models.provider_models import (
     CompletionRequest,
     Message,
+    ModelIdentitySource,
     ProviderExecutionPolicy,
     TokenUsage,
 )
 from app.providers.base import LLMProvider, is_known_output_truncation
-from app.providers.errors import ProviderAPIError, ProviderAuthError, ProviderRateLimitError
+from app.providers.errors import (
+    ProviderAPIError,
+    ProviderAuthError,
+    ProviderMalformedResponseError,
+    ProviderRateLimitError,
+)
 from app.providers.pricing import ModelRate, PricingRegistry
 
 
@@ -286,6 +292,7 @@ async def test_requested_equals_provider_reported_when_no_override():
     assert result.requested_model == "scripted-model"
     assert result.model == "scripted-model"
     assert result.requested_model == result.model
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
 
 
 @pytest.mark.asyncio
@@ -308,6 +315,7 @@ async def test_requested_differs_from_provider_reported():
     assert result.requested_model == "scripted-model-latest"
     assert result.model == "scripted-model-2025-06-01"
     assert result.requested_model != result.model
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
 
 
 @pytest.mark.asyncio
@@ -325,6 +333,8 @@ async def test_missing_api_key_preserves_requested_model():
     assert result.status == "error"
     assert result.requested_model == "scripted-model-explicit"
     assert result.model == "scripted-model-explicit"
+    # Nenhuma chamada de rede foi sequer tentada -- nunca provider_reported.
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 @pytest.mark.asyncio
@@ -346,6 +356,8 @@ async def test_post_request_failure_preserves_requested_model():
     assert result.status == "error"
     assert result.requested_model == "scripted-model-explicit"
     assert result.model == "scripted-model-explicit"
+    # Nenhuma metadata observada (o script só continha erros) -- fallback.
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 @pytest.mark.asyncio
@@ -367,6 +379,7 @@ async def test_retry_preserves_requested_model_across_attempts():
     assert result.attempts == 2
     assert result.requested_model == "scripted-model-explicit"
     assert result.model == "scripted-model-reported"
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
 
 
 @pytest.mark.asyncio
@@ -395,6 +408,7 @@ async def test_pricing_uses_reported_model_not_requested_when_they_differ():
 
     assert result.requested_model == "scripted-model-requested"
     assert result.model == "scripted-model-reported"
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
     # 1000 * 1.0/1e6 + 500 * 2.0/1e6 = 0.002 -- só bate se o lookup usou
     # "scripted-model-reported", não "scripted-model-requested" (que não
     # tem taxa registrada e daria cost_usd=None)
@@ -422,6 +436,103 @@ async def test_model_field_backward_compatible_behavior_unchanged():
     provider2._api_key = None
     result2 = await provider2.complete(_request(model="explicit-model"))
     assert result2.model == "explicit-model"
+
+
+# ---------------------------------------------------------------------------
+# Provenance de identidade de modelo (ModelIdentitySource) -- resolvida uma
+# única vez em LLMProvider.complete() (`_resolve_model_identity`), nunca
+# duplicada por adapter. `_ScriptedProvider` já devolve o 3º elemento da
+# tupla como o valor CRU observado (possivelmente None) desde a Etapa 17A --
+# nenhuma mudança de fixture necessária pra testar o fallback.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_success_with_provider_omitting_model_marks_requested_fallback():
+    """Sucesso de transporte, mas o adapter não conseguiu observar
+    nenhuma identidade de modelo (3º elemento da tupla é None) -- `model`
+    cai pro requested, e a origem é marcada honestamente como fallback,
+    nunca provider_reported."""
+    provider = _ScriptedProvider(
+        script=[("resposta", TokenUsage(input_tokens=1, output_tokens=1), None)],
+        timeout_seconds=5,
+        max_retries=1,
+    )
+    result = await provider.complete(_request(model="scripted-model-explicit"))
+
+    assert result.status == "success"
+    assert result.requested_model == "scripted-model-explicit"
+    assert result.model == "scripted-model-explicit"
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_malformed_response_with_observed_model_marks_provider_reported():
+    """Falha DEPOIS de _call_api() começar (texto malformado), mas o
+    adapter conseguiu observar uma identidade real antes da validação de
+    texto falhar (Etapa 17A.1) -- essa identidade é preservada E marcada
+    como provider_reported, nunca fallback (ela FOI observada)."""
+
+    async def _call_api(self, request):
+        raise ProviderMalformedResponseError(
+            "resposta em formato inesperado",
+            observed_model="scripted-model-observed",
+            observed_usage=TokenUsage(input_tokens=5, output_tokens=0),
+            observed_finish_reason="stop",
+        )
+
+    provider = _ScriptedProvider(script=[], timeout_seconds=5, max_retries=0)
+    provider._call_api = _call_api.__get__(provider)
+
+    result = await provider.complete(_request(model="scripted-model-explicit"))
+
+    assert result.status == "error"
+    assert result.requested_model == "scripted-model-explicit"
+    assert result.model == "scripted-model-observed"
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+
+
+@pytest.mark.asyncio
+async def test_malformed_response_without_observed_model_marks_requested_fallback():
+    """Mesmo caminho acima, mas o adapter não conseguiu observar
+    identidade nenhuma antes do texto falhar (observed_model=None) --
+    fallback honesto, nunca uma identidade inventada."""
+
+    async def _call_api(self, request):
+        raise ProviderMalformedResponseError(
+            "resposta em formato inesperado",
+            observed_model=None,
+            observed_usage=None,
+            observed_finish_reason=None,
+        )
+
+    provider = _ScriptedProvider(script=[], timeout_seconds=5, max_retries=0)
+    provider._call_api = _call_api.__get__(provider)
+
+    result = await provider.complete(_request(model="scripted-model-explicit"))
+
+    assert result.status == "error"
+    assert result.requested_model == "scripted-model-explicit"
+    assert result.model == "scripted-model-explicit"
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_failure_never_marks_provider_reported():
+    """Regressão -- falha 100% local (API key ausente), sem NENHUMA
+    chamada de rede: `model_identity_source` NUNCA pode ser
+    provider_reported aqui, porque nenhuma resposta jamais existiu pra
+    observar (ver seção 6/13 do contrato desta slice: 'se uma falha
+    ocorre antes de qualquer resposta do provider, não invente uma
+    identidade provider-reported')."""
+    provider = _ScriptedProvider(script=[], timeout_seconds=5, max_retries=1)
+    provider._api_key = None
+
+    result = await provider.complete(_request(model="scripted-model-explicit"))
+
+    assert result.attempts == 0
+    assert result.model_identity_source != ModelIdentitySource.PROVIDER_REPORTED
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 @pytest.mark.asyncio

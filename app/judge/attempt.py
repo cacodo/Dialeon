@@ -25,7 +25,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.provider_models import PricingProvenance, ProviderErrorInfo, TokenUsage
+from app.models.provider_models import (
+    ModelIdentitySource,
+    PricingProvenance,
+    ProviderErrorInfo,
+    TokenUsage,
+)
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -50,6 +55,11 @@ class JudgeAttempt(BaseModel):
     # Etapa 13 (T03.A) — ver ProviderResponse (app/models/provider_models.py).
     requested_model: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    # Provenance de `model` -- ver ModelResponse.model_identity_source
+    # (app/models/domain.py) pra semântica completa (mesma disciplina:
+    # copiado verbatim de ProviderResponse.model_identity_source em toda
+    # tentativa NOVA, `None` só numa reconstrução histórica).
+    model_identity_source: ModelIdentitySource | None = None
 
     transport_status: Literal["success", "error"]
     transport_error: ProviderErrorInfo | None = None

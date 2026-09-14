@@ -12,7 +12,7 @@ from openai import (
     RateLimitError,
 )
 
-from app.models.provider_models import CompletionRequest, Message
+from app.models.provider_models import CompletionRequest, Message, ModelIdentitySource
 from app.providers.openai_provider import OpenAIProvider
 from app.providers.pricing import PricingRegistry
 
@@ -81,6 +81,40 @@ async def test_successful_completion_is_normalized():
     assert result.usage.input_tokens == 12
     assert result.usage.output_tokens == 3
     assert result.cost_usd is None  # "gpt-test" não tem taxa registrada — desconhecido
+
+
+# ---------------------------------------------------------------------------
+# Provenance de identidade de modelo (ModelIdentitySource) -- A.1/A.2 do
+# contrato desta slice.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_reports_model_marks_provider_reported():
+    provider = _provider()
+    provider._client.chat.completions.create = AsyncMock(
+        return_value=_FakeResponse("Brasília", model="gpt-5.5-2026-01-15")
+    )
+
+    result = await provider.complete(_request(model="gpt-5.5"))
+
+    assert result.requested_model == "gpt-5.5"
+    assert result.model == "gpt-5.5-2026-01-15"
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+
+
+@pytest.mark.asyncio
+async def test_provider_omits_model_marks_requested_fallback():
+    provider = _provider()
+    provider._client.chat.completions.create = AsyncMock(
+        return_value=_FakeResponse("Brasília", model=None)
+    )
+
+    result = await provider.complete(_request(model="gpt-5.5"))
+
+    assert result.requested_model == "gpt-5.5"
+    assert result.model == "gpt-5.5"
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 # ---------------------------------------------------------------------------

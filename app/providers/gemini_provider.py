@@ -62,7 +62,9 @@ class GeminiProvider(LLMProvider):
     def default_model(self) -> str:
         return self._default_model_name
 
-    async def _call_api(self, request: CompletionRequest) -> tuple[str, TokenUsage, str, str | None]:
+    async def _call_api(
+        self, request: CompletionRequest
+    ) -> tuple[str, TokenUsage, str | None, str | None]:
         # _require_api_key() NÃO é mais chamado aqui — LLMProvider.complete()
         # (base.py) já garante isso antes de chegar aqui (Etapa 9).
         model = request.model or self._default_model_name
@@ -103,10 +105,10 @@ class GeminiProvider(LLMProvider):
         except genai_errors.ServerError as exc:
             raise ProviderAPIError(f"gemini: erro de servidor: {exc}", retryable=True) from exc
 
-        return self._parse_response(response, model)
+        return self._parse_response(response)
 
     @staticmethod
-    def _parse_response(response, model: str) -> tuple[str, TokenUsage, str, str | None]:
+    def _parse_response(response) -> tuple[str, TokenUsage, str | None, str | None]:
         # Etapa 17A.1 (Objetivo A/B) — extraído ANTES da checagem de texto:
         # transporte teve sucesso, então usage_metadata/model_version/
         # finish_reason já são reais e confiáveis mesmo que o candidato não
@@ -142,9 +144,11 @@ class GeminiProvider(LLMProvider):
         # effective_model: o SDK real (google-genai, GenerateContentResponse)
         # expõe `model_version` — "Output only. The model version used to
         # generate the response" — a identidade EFETIVA, mesmo padrão já
-        # usado por OpenAI/Anthropic (response.model or model). Ausente ->
-        # cai pro modelo solicitado, nunca inventa uma identidade.
-        observed_model = getattr(response, "model_version", None) or model
+        # usado por OpenAI/Anthropic (response.model). Valor CRU aqui,
+        # nunca mesclado com o requested -- ver
+        # OpenAIProvider._parse_response. Ausente -> None, resolvido pro
+        # modelo solicitado só em `LLMProvider.complete()`.
+        observed_model = getattr(response, "model_version", None)
 
         # finish_reason vive em candidates[0] (um enum FinishReason) —
         # `.value` devolve a string nativa da API (ex.: "STOP",

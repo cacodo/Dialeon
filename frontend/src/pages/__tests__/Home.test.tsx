@@ -37,6 +37,7 @@ const completedResult = {
     limitations: ['Só uma rodada de debate.'],
     status: 'llm_composed' as const,
     editor_model: 'claude-sonnet-5',
+    editor_model_identity_source: 'provider_reported' as const,
     judge_confidence: 0.9,
   },
   accounting: {

@@ -32,7 +32,7 @@
 
 import { useState } from 'react'
 import type { ClaimAssessmentPublic, ClaimPublic } from '../api/types'
-import { formatClaimVerdict, formatSupportRatio } from '../api/formatting'
+import { formatClaimVerdict, formatModelIdentitySource, formatSupportRatio } from '../api/formatting'
 
 interface ClaimsListProps {
   claims: ClaimPublic[]
@@ -71,7 +71,8 @@ function ClaimCard({
           <ul className="claims-list__supporters">
             {claim.supporting_model_response_ids.map((support) => (
               <li key={support.model_response_id}>
-                {support.provider} / {support.model}
+                {support.provider} / {support.model} (
+                {formatModelIdentitySource(support.model_identity_source)})
               </li>
             ))}
           </ul>

@@ -28,6 +28,7 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.provider_models import (
+    ModelIdentitySource,
     PricingProvenance,
     ProviderErrorInfo,
     ProviderExecutionPolicy,
@@ -86,6 +87,10 @@ class ModelResponsePublic(BaseModel):
     provider: str
     requested_model: str
     model: str
+    # Provenance de `model` -- ver ModelIdentitySource
+    # (app/models/provider_models.py). `None` só pra runs persistidos
+    # antes desta coluna existir -- nunca substituído por inferência.
+    model_identity_source: ModelIdentitySource | None
     round_number: int
     status: Literal["success", "error"]
     response_text: str | None
@@ -153,6 +158,12 @@ class ClaimSupportPublic(BaseModel):
     model_response_id: str
     provider: str
     model: str
+    # Provenance de `model` -- ver ModelIdentitySource
+    # (app/models/provider_models.py). Exposta diretamente aqui (nunca
+    # exigindo um join com ModelResponsePublic pra descobrir uma
+    # provenance que este próprio registro já carrega) -- `None` só pra
+    # supports persistidos antes desta coluna existir.
+    model_identity_source: ModelIdentitySource | None
 
 
 class ClaimPublic(BaseModel):
@@ -200,6 +211,7 @@ class ClaimProcessingAttemptPublic(BaseModel):
     provider: str
     requested_model: str
     model: str
+    model_identity_source: ModelIdentitySource | None
     target_model_response_id: str | None
     target_claim_ids: list[str]
     transport_status: Literal["success", "error"]
@@ -256,6 +268,7 @@ class SourceAnalysisAttemptPublic(BaseModel):
     provider: str
     requested_model: str
     model: str
+    model_identity_source: ModelIdentitySource | None
     transport_status: Literal["success", "error"]
     transport_error: ProviderErrorInfo | None
     raw_output_text: str | None
@@ -321,6 +334,7 @@ class JudgeVerdictPublic(BaseModel):
     id: str
     evaluated_through_round: int
     judge_model: str
+    judge_model_identity_source: ModelIdentitySource | None
     claim_assessments: list[ClaimAssessmentPublic]
     best_arguments_by: dict[str, str]
     debate_limitations: list[str]
@@ -337,6 +351,7 @@ class JudgeAttemptPublic(BaseModel):
     provider: str
     requested_model: str
     model: str
+    model_identity_source: ModelIdentitySource | None
     transport_status: Literal["success", "error"]
     transport_error: ProviderErrorInfo | None
     raw_output_text: str | None
@@ -359,6 +374,7 @@ class EditorAttemptPublic(BaseModel):
     provider: str
     requested_model: str
     model: str
+    model_identity_source: ModelIdentitySource | None
     transport_status: Literal["success", "error"]
     transport_error: ProviderErrorInfo | None
     raw_output_text: str | None
@@ -386,6 +402,7 @@ class FinalAnswerPublic(BaseModel):
         "llm_planned", "llm_composed", "deterministic_from_verdict", "deterministic_no_verdict"
     ]
     editor_model: str | None
+    editor_model_identity_source: ModelIdentitySource | None
     judge_confidence: float | None
 
 

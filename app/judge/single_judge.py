@@ -211,6 +211,7 @@ class SingleJudge(JudgeStrategy):
             # presumido a partir de config — se a 1a tentativa falhou e a
             # 2a foi aceita, judge_model reflete a 2a (accepted_response).
             judge_model=accepted_response.model,
+            judge_model_identity_source=accepted_response.model_identity_source,
             claim_assessments=[
                 ClaimAssessment(
                     claim_id=draft.claim_id,
@@ -293,6 +294,7 @@ def _parse_rejected_attempt(
         provider=provider_response.provider,
         requested_model=provider_response.requested_model,
         model=provider_response.model,
+        model_identity_source=provider_response.model_identity_source,
         transport_status="success",
         transport_error=None,
         transport_attempts=provider_response.attempts,
@@ -314,6 +316,7 @@ def _accepted_attempt(attempt_number: int, provider_response: ProviderResponse) 
         provider=provider_response.provider,
         requested_model=provider_response.requested_model,
         model=provider_response.model,
+        model_identity_source=provider_response.model_identity_source,
         transport_status="success",
         transport_error=None,
         transport_attempts=provider_response.attempts,

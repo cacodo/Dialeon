@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.models.domain import ClaimSupport
+from app.models.provider_models import ModelIdentitySource
 from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 from app.storage.repository import _run_config_from_json
 from tests.storage.fixtures import (
@@ -84,6 +85,90 @@ async def test_claims_and_claim_support_preserved(repo):
     assert reloaded_claim.text == original_claim.text
     assert len(reloaded_claim.supporting_model_response_ids) == 2
     assert reloaded_claim.supporting_models == original_claim.supporting_models
+
+
+@pytest.mark.asyncio
+async def test_claim_support_provider_reported_roundtrip(repo):
+    """ClaimSupport regression matrix, C -- round-trip provider_reported."""
+    result = full_council_run_result()
+    original_claim = result.debate_result.claims[0]
+    diverged_support = original_claim.supporting_model_response_ids[0].model_copy(
+        update={"model_identity_source": ModelIdentitySource.PROVIDER_REPORTED}
+    )
+    updated_claim = original_claim.model_copy(
+        update={
+            "supporting_model_response_ids": [
+                diverged_support,
+                *original_claim.supporting_model_response_ids[1:],
+            ]
+        }
+    )
+    debate = result.debate_result.model_copy(update={"claims": [updated_claim]})
+    result = result.model_copy(update={"debate_result": debate})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = loaded.debate_result.claims[0].supporting_model_response_ids[0]
+    assert reloaded.model_response_id == diverged_support.model_response_id
+    assert reloaded.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+
+
+@pytest.mark.asyncio
+async def test_claim_support_requested_fallback_roundtrip(repo):
+    """ClaimSupport regression matrix, D -- round-trip requested_fallback."""
+    result = full_council_run_result()
+    original_claim = result.debate_result.claims[0]
+    diverged_support = original_claim.supporting_model_response_ids[0].model_copy(
+        update={"model_identity_source": ModelIdentitySource.REQUESTED_FALLBACK}
+    )
+    updated_claim = original_claim.model_copy(
+        update={
+            "supporting_model_response_ids": [
+                diverged_support,
+                *original_claim.supporting_model_response_ids[1:],
+            ]
+        }
+    )
+    debate = result.debate_result.model_copy(update={"claims": [updated_claim]})
+    result = result.model_copy(update={"debate_result": debate})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = loaded.debate_result.claims[0].supporting_model_response_ids[0]
+    assert reloaded.model_response_id == diverged_support.model_response_id
+    assert reloaded.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_claim_support_historical_none_roundtrips_as_none(repo):
+    """ClaimSupport regression matrix, E -- uma linha histórica (coluna
+    NULL, model presente) reconstrói como None no domínio/público, nunca
+    reinterpretada -- inclusive quando model == requested_model do
+    ModelResponse referenciado (equality nunca prova nada, ver
+    docstring de ModelIdentitySource)."""
+    result = full_council_run_result()
+    original_claim = result.debate_result.claims[0]
+    diverged_support = original_claim.supporting_model_response_ids[0].model_copy(
+        update={"model_identity_source": None}
+    )
+    updated_claim = original_claim.model_copy(
+        update={
+            "supporting_model_response_ids": [
+                diverged_support,
+                *original_claim.supporting_model_response_ids[1:],
+            ]
+        }
+    )
+    debate = result.debate_result.model_copy(update={"claims": [updated_claim]})
+    result = result.model_copy(update={"debate_result": debate})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = loaded.debate_result.claims[0].supporting_model_response_ids[0]
+    assert reloaded.model_identity_source is None
 
 
 @pytest.mark.asyncio
@@ -1146,6 +1231,130 @@ async def test_editor_attempt_requested_model_roundtrip(repo):
     assert reloaded.requested_model == "claude-sonnet-5-latest"
     assert reloaded.model == "claude-sonnet-5-20250601"
     assert reloaded.requested_model != reloaded.model
+
+
+# ---------------------------------------------------------------------------
+# Model identity provenance -- round-trip de model_identity_source em cada
+# tabela que persiste identidade de modelo (ModelIdentitySource), NULL
+# histórico, e não-backfill.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_model_response_provider_reported_roundtrip(repo):
+    result = full_council_run_result()
+    mr1 = result.debate_result.initial_result.responses[0]
+    diverged = mr1.model_copy(
+        update={"model_identity_source": ModelIdentitySource.PROVIDER_REPORTED}
+    )
+    responses = [diverged] + result.debate_result.initial_result.responses[1:]
+    initial = result.debate_result.initial_result.model_copy(update={"responses": responses})
+    debate = result.debate_result.model_copy(update={"initial_result": initial})
+    result = result.model_copy(update={"debate_result": debate})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = next(
+        r for r in loaded.debate_result.initial_result.responses if r.id == diverged.id
+    )
+    assert reloaded.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+
+
+@pytest.mark.asyncio
+async def test_model_response_requested_fallback_roundtrip(repo):
+    result = full_council_run_result()
+    mr1 = result.debate_result.initial_result.responses[0]
+    diverged = mr1.model_copy(
+        update={"model_identity_source": ModelIdentitySource.REQUESTED_FALLBACK}
+    )
+    responses = [diverged] + result.debate_result.initial_result.responses[1:]
+    initial = result.debate_result.initial_result.model_copy(update={"responses": responses})
+    debate = result.debate_result.model_copy(update={"initial_result": initial})
+    result = result.model_copy(update={"debate_result": debate})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = next(
+        r for r in loaded.debate_result.initial_result.responses if r.id == diverged.id
+    )
+    assert reloaded.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_model_response_historical_none_roundtrips_as_none_not_backfilled(repo):
+    """Uma linha com model_identity_source=None (histórica, coluna
+    existia mas nenhum valor foi persistido) reconstrói exatamente como
+    None -- nunca reinterpretada como requested_fallback só porque
+    `model == requested_model` bateria por acidente."""
+    result = full_council_run_result()
+    mr1 = result.debate_result.initial_result.responses[0]
+    diverged = mr1.model_copy(
+        update={
+            "model_identity_source": None,
+            "requested_model": mr1.model,  # bate por acidente -- não pode virar fallback
+        }
+    )
+    responses = [diverged] + result.debate_result.initial_result.responses[1:]
+    initial = result.debate_result.initial_result.model_copy(update={"responses": responses})
+    debate = result.debate_result.model_copy(update={"initial_result": initial})
+    result = result.model_copy(update={"debate_result": debate})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = next(
+        r for r in loaded.debate_result.initial_result.responses if r.id == diverged.id
+    )
+    assert reloaded.model_identity_source is None
+
+
+@pytest.mark.asyncio
+async def test_judge_verdict_and_final_answer_model_identity_source_roundtrip(repo):
+    """Cobre judge_verdicts/final_answers -- os dois usam nomes de
+    coluna próprios (judge_model_identity_source/
+    editor_model_identity_source), não o genérico model_identity_source."""
+    result = full_council_run_result()
+    judge = result.judge_result
+    verdict = judge.verdict.model_copy(
+        update={"judge_model_identity_source": ModelIdentitySource.REQUESTED_FALLBACK}
+    )
+    judge = judge.model_copy(update={"verdict": verdict})
+    editor = result.editor_result
+    final_answer = editor.final_answer.model_copy(
+        update={"editor_model_identity_source": ModelIdentitySource.REQUESTED_FALLBACK}
+    )
+    editor = editor.model_copy(update={"final_answer": final_answer})
+    result = result.model_copy(update={"judge_result": judge, "editor_result": editor})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.judge_result.verdict.judge_model_identity_source == (
+        ModelIdentitySource.REQUESTED_FALLBACK
+    )
+    assert loaded.editor_result.final_answer.editor_model_identity_source == (
+        ModelIdentitySource.REQUESTED_FALLBACK
+    )
+
+
+@pytest.mark.asyncio
+async def test_quorum_failure_preserves_model_identity_source_per_response(repo):
+    """Caminho de quórum insuficiente -- as respostas já produzidas
+    também persistem provenance de identidade de modelo (mesma disciplina
+    do caminho completed)."""
+    exc = quorum_failure_exception()
+    rc = run_config()
+
+    failure_id = await repo.save_quorum_failure(
+        exc, run_config=rc, started_at=now(), failed_at=now()
+    )
+    loaded = await repo.get_run(failure_id)
+
+    by_provider = {r.provider: r for r in loaded.round_result.responses}
+    assert by_provider["openai"].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+    assert by_provider["anthropic"].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 # ---------------------------------------------------------------------------

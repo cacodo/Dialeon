@@ -55,6 +55,77 @@ def test_get_run_audit_completed_full_detail():
     assert body["final_answer"]["answer_text"] == result.final_answer.answer_text
 
 
+def test_get_run_audit_model_identity_source_serialized_for_all_three_states():
+    """Provenance de identidade de modelo -- provider_reported,
+    requested_fallback e None (histórico) precisam ser distinguíveis na
+    superfície pública de audit, nunca colapsados entre si."""
+    result = full_council_run_result()
+    mr1 = result.debate_result.initial_result.responses[0]
+    from app.models.provider_models import ModelIdentitySource
+
+    diverged = mr1.model_copy(update={"model_identity_source": ModelIdentitySource.REQUESTED_FALLBACK})
+    mr_historical = result.debate_result.initial_result.responses[1].model_copy(
+        update={"model_identity_source": None}
+    )
+    initial = result.debate_result.initial_result.model_copy(
+        update={"responses": [diverged, mr_historical]}
+    )
+    # H -- ClaimSupport carrega sua PRÓPRIA provenance, não apenas
+    # ModelResponse -- os 3 estados também precisam sobreviver aqui,
+    # independentemente uns dos outros.
+    original_claim = result.debate_result.claims[0]
+    support_reported = original_claim.supporting_model_response_ids[0].model_copy(
+        update={"model_identity_source": ModelIdentitySource.PROVIDER_REPORTED}
+    )
+    support_fallback = original_claim.supporting_model_response_ids[1].model_copy(
+        update={"model_identity_source": ModelIdentitySource.REQUESTED_FALLBACK}
+    )
+    updated_claim = original_claim.model_copy(
+        update={"supporting_model_response_ids": [support_reported, support_fallback]}
+    )
+    debate = result.debate_result.model_copy(
+        update={"initial_result": initial, "claims": [updated_claim]}
+    )
+    verdict = result.judge_result.verdict.model_copy(
+        update={"judge_model_identity_source": ModelIdentitySource.PROVIDER_REPORTED}
+    )
+    judge = result.judge_result.model_copy(update={"verdict": verdict})
+    final_answer = result.editor_result.final_answer.model_copy(
+        update={"editor_model_identity_source": ModelIdentitySource.REQUESTED_FALLBACK}
+    )
+    editor = result.editor_result.model_copy(update={"final_answer": final_answer})
+    result = result.model_copy(
+        update={"debate_result": debate, "judge_result": judge, "editor_result": editor}
+    )
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_success, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}/audit")
+
+    body = resp.json()
+    responses_by_id = {r["id"]: r for r in body["initial_round"]["responses"]}
+    assert responses_by_id[diverged.id]["model_identity_source"] == "requested_fallback"
+    assert responses_by_id[mr_historical.id]["model_identity_source"] is None
+    # requested_model e model continuam campos distintos e ambos presentes
+    # -- provenance não colapsa/oculta nenhum dos dois.
+    assert responses_by_id[diverged.id]["requested_model"] == diverged.requested_model
+    assert responses_by_id[diverged.id]["model"] == diverged.model
+    assert body["judge_verdict"]["judge_model_identity_source"] == "provider_reported"
+    assert body["final_answer"]["editor_model_identity_source"] == "requested_fallback"
+
+    supports_by_response_id = {
+        s["model_response_id"]: s
+        for s in body["claims"][0]["supporting_model_response_ids"]
+    }
+    assert supports_by_response_id[support_reported.model_response_id]["model_identity_source"] == (
+        "provider_reported"
+    )
+    assert supports_by_response_id[support_fallback.model_response_id]["model_identity_source"] == (
+        "requested_fallback"
+    )
+
+
 def test_get_run_audit_claim_supporting_models_deduplicated():
     """Correção pós-revisão independente (HIGH 2) -- `ClaimPublic.supporting_models`
     (nova projeção pública, ver app/presentation/schemas.py) precisa

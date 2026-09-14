@@ -63,13 +63,19 @@ async def init_db(engine: AsyncEngine) -> None:
     T02.2: mesmo tratamento pra `provider_execution_policy_json`
     (`council_runs`/`quorum_failures`/`accepted_runs`) -- também sem
     backfill, ver docstring de
-    `_upgrade_legacy_provider_execution_policy`."""
+    `_upgrade_legacy_provider_execution_policy`.
+
+    Model identity provenance: mesmo tratamento pra
+    `model_identity_source`/`judge_model_identity_source`/
+    `editor_model_identity_source` -- também sem backfill, ver docstring
+    de `_upgrade_legacy_model_identity_source`."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_upgrade_legacy_had_uncertain_prior_attempts)
         await conn.run_sync(_upgrade_legacy_provider_finish_reason)
         await conn.run_sync(_upgrade_legacy_support_scope_model_count)
         await conn.run_sync(_upgrade_legacy_provider_execution_policy)
+        await conn.run_sync(_upgrade_legacy_model_identity_source)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -221,6 +227,59 @@ def _upgrade_legacy_provider_execution_policy(sync_conn) -> None:  # noqa: ANN00
         sync_conn.execute(
             text(f"ALTER TABLE {table_name} ADD COLUMN provider_execution_policy_json TEXT")
         )
+
+
+# (table_name, column_name) -- 6 tabelas usam o nome genérico
+# "model_identity_source" (copiado verbatim de
+# ProviderResponse.model_identity_source); judge_verdicts/final_answers
+# usam os nomes espelhados dos campos que eles mesmos já têm
+# (judge_model/editor_model), nunca o genérico "model_identity_source"
+# solto -- mesma disciplina de nomenclatura já aplicada aos próprios
+# campos de domínio (JudgeVerdict.judge_model_identity_source,
+# FinalAnswer.editor_model_identity_source). `claim_supports` (repair
+# pós-revisão) usa o nome genérico -- ver ClaimSupport.model_identity_source
+# (app/models/domain.py): sempre COPIADO verbatim do ModelResponse
+# referenciado por model_response_id, nunca uma segunda resolução.
+_MODEL_IDENTITY_SOURCE_COLUMNS = (
+    ("model_responses", "model_identity_source"),
+    ("claim_processing_attempts", "model_identity_source"),
+    ("source_analysis_attempts", "model_identity_source"),
+    ("judge_attempts", "model_identity_source"),
+    ("editor_attempts", "model_identity_source"),
+    ("claim_supports", "model_identity_source"),
+    ("judge_verdicts", "judge_model_identity_source"),
+    ("final_answers", "editor_model_identity_source"),
+)
+
+
+def _upgrade_legacy_model_identity_source(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- provenance de identidade de
+    modelo (distingue `model`/`judge_model`/`editor_model`
+    provider-reported de requested-model fallback, ver
+    `app.models.provider_models.ModelIdentitySource`). Mesma disciplina
+    de `_upgrade_legacy_provider_execution_policy`: só `ALTER TABLE`
+    quando a coluna genuinamente não existe (checagem via `PRAGMA
+    table_info`), nunca recalcula um valor já persistido.
+
+    SEM backfill, deliberadamente: `NULL` é o valor HONESTO pra toda
+    linha persistida antes desta coluna existir -- não existe forma de
+    provar retroativamente, a partir de nenhuma coluna já persistida
+    (inclusive `model == requested_model`, que nunca prova observação vs.
+    fallback -- ver docstring de `ModelIdentitySource`), se aquele
+    identificador foi efetivamente reportado pelo provider ou substituído
+    pelo requested. Inventar um valor aqui seria pior que deixar `NULL`.
+    SQLite usa `NULL` implicitamente pra linhas existentes quando um
+    `ALTER TABLE ADD COLUMN` não declara `DEFAULT` numa coluna nullable,
+    então nenhum `UPDATE` é necessário."""
+    inspector = sa_inspect(sync_conn)
+    for table_name, column_name in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        if table_name not in inspector.get_table_names():
+            continue  # tabela nova, create_all() já a criou com a coluna
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        if column_name in existing_columns:
+            continue  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
+
+        sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} TEXT"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

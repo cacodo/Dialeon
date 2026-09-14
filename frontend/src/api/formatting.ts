@@ -11,7 +11,24 @@ import type {
   ErrorCode,
   FinalAnswerStatus,
   JudgeOutcome,
+  ModelIdentitySource,
 } from './types'
+
+// Provenance de identidade de modelo (ver ModelIdentitySource, ./types.ts)
+// -- `null` é história persistida ANTES desta coluna existir, nunca
+// confundida com 'requested_fallback' (nunca inferida a partir de
+// model === requested_model).
+const MODEL_IDENTITY_SOURCE_LABELS: Record<ModelIdentitySource, string> = {
+  provider_reported: 'reportado pelo provider',
+  requested_fallback: 'fallback do modelo solicitado',
+}
+
+export function formatModelIdentitySource(source: ModelIdentitySource | null): string {
+  if (source === null) {
+    return 'não registrada (execução anterior a este registro)'
+  }
+  return MODEL_IDENTITY_SOURCE_LABELS[source] ?? source
+}
 
 /** UNKNOWN NÃO PODE SER FORMATADO COMO ZERO -- distinção explícita entre
  * os 3 estados reais (>0 conhecido, ===0 conhecido, null desconhecido). */

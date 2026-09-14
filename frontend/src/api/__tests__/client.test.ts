@@ -37,6 +37,7 @@ describe('apiClient', () => {
         limitations: [],
         status: 'llm_composed',
         editor_model: 'claude-sonnet-5',
+        editor_model_identity_source: 'provider_reported',
         judge_confidence: 0.9,
       },
       accounting: {

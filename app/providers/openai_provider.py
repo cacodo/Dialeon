@@ -59,7 +59,9 @@ class OpenAIProvider(LLMProvider):
     def default_model(self) -> str:
         return self._default_model_name
 
-    async def _call_api(self, request: CompletionRequest) -> tuple[str, TokenUsage, str, str | None]:
+    async def _call_api(
+        self, request: CompletionRequest
+    ) -> tuple[str, TokenUsage, str | None, str | None]:
         # _require_api_key() NÃO é mais chamado aqui — LLMProvider.complete()
         # (base.py) já garante que _call_api() nunca é invocado sem API key
         # configurada (Etapa 9 — permite distinguir estruturalmente falha
@@ -107,10 +109,10 @@ class OpenAIProvider(LLMProvider):
                 f"openai: status={exc.status_code}: {exc.message}", retryable=retryable
             ) from exc
 
-        return self._parse_response(response, model)
+        return self._parse_response(response)
 
     @staticmethod
-    def _parse_response(response, model: str) -> tuple[str, TokenUsage, str, str | None]:
+    def _parse_response(response) -> tuple[str, TokenUsage, str | None, str | None]:
         # Etapa 17A.1 (Objetivo A/B) — extraído ANTES da checagem de texto:
         # transporte teve sucesso (HTTP 200), então usage/model do nível
         # de topo já são reais e confiáveis mesmo que `choices` esteja
@@ -121,7 +123,11 @@ class OpenAIProvider(LLMProvider):
             input_tokens=response.usage.prompt_tokens if response.usage else None,
             output_tokens=response.usage.completion_tokens if response.usage else None,
         )
-        observed_model = getattr(response, "model", None) or model
+        # Provenance de identidade de modelo -- CRU, nunca mesclado com o
+        # requested aqui: a decisão fallback vs. provider_reported é
+        # responsabilidade única de `LLMProvider.complete()`
+        # (`_resolve_model_identity`, app/providers/base.py).
+        observed_model = getattr(response, "model", None)
         try:
             observed_finish_reason = response.choices[0].finish_reason
         except (IndexError, AttributeError):

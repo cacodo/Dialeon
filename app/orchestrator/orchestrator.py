@@ -39,6 +39,7 @@ from app.models.domain import ModelResponse
 from app.models.provider_models import (
     CompletionRequest,
     Message,
+    ModelIdentitySource,
     ProviderErrorInfo,
     ProviderErrorType,
     ProviderResponse,
@@ -151,6 +152,7 @@ def _to_model_response(response: ProviderResponse, round_number: int) -> ModelRe
         provider=response.provider,
         requested_model=response.requested_model,
         model=response.model,
+        model_identity_source=response.model_identity_source,
         round_number=round_number,
         status=response.status,
         response_text=response.text,
@@ -183,6 +185,10 @@ def _timeout_response(
         provider=provider_name,
         requested_model=requested_model,
         model=requested_model,
+        # Mesmo caso pré-request de LLMProvider.complete() (base.py):
+        # nenhum ProviderResponse próprio chegou a existir, então nenhuma
+        # identidade pôde ter sido observada -- sempre fallback.
+        model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
         status="error",
         text=None,
         usage=None,
@@ -224,6 +230,9 @@ def _unknown_error_response(
         provider=provider_name,
         requested_model=requested_model,
         model=requested_model,
+        # Mesma razão de _timeout_response acima -- nenhuma identidade
+        # pôde ter sido observada.
+        model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
         status="error",
         text=None,
         usage=None,

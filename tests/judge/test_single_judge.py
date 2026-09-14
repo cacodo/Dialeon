@@ -5,7 +5,7 @@ import json
 import pytest
 
 from app.judge.single_judge import SingleJudge
-from app.models.provider_models import TokenUsage
+from app.models.provider_models import ModelIdentitySource, TokenUsage
 from app.orchestrator.config import QuorumPolicy, RunConfig
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 from tests.judge.fixtures import debate_result, model_response, raw_claim
@@ -189,6 +189,80 @@ async def test_unresolved_is_accepted_as_valid_no_omission():
 
     assert result.verdict is not None
     assert result.verdict.claim_assessments[0].verdict == "unresolved"
+
+
+# ---------------------------------------------------------------------------
+# Model identity provenance -- production-path regression (repair pós-
+# revisão independente): prova que SingleJudge.judge() (não uma
+# construção manual de JudgeAttempt/JudgeVerdict) copia
+# model_identity_source do ProviderResponse REAL devolvido pelo
+# provider fake -- uma mutação que apagasse essa cópia faria estes
+# testes falharem.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_judge_attempt_and_verdict_copy_model_identity_source_from_provider_response():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    payload = _assessment_payload(c1.id)
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response(
+                "anthropic", payload, model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK
+            )
+        ],
+    )
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert result.verdict is not None
+    assert result.verdict.judge_model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+    assert result.attempts[-1].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_malformed_then_accepted_attempts_each_copy_their_own_model_identity_source():
+    """Cada JudgeAttempt (inclusive o REJEITADO por malformed) copia
+    model_identity_source do ProviderResponse da SUA PRÓPRIA tentativa,
+    nunca um valor global herdado da tentativa seguinte/anterior."""
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    good = _assessment_payload(c1.id)
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response(
+                "anthropic",
+                "isso não é json",
+                model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
+            ),
+            text_response(
+                "anthropic", good, model_identity_source=ModelIdentitySource.PROVIDER_REPORTED
+            ),
+        ],
+    )
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert result.attempts[0].parse_status == "malformed"
+    assert result.attempts[0].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+    assert result.attempts[1].parse_status == "accepted"
+    assert result.attempts[1].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+    assert result.verdict.judge_model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
 
 
 # ---------------------------------------------------------------------------

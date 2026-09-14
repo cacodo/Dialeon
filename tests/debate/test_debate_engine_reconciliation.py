@@ -23,6 +23,7 @@ import pytest
 from app.debate.claims import get_current_claims
 from app.debate.debate_engine import DebateEngine
 from app.models.provider_models import (
+    ModelIdentitySource,
     ProviderErrorInfo,
     ProviderErrorType,
     ProviderResponse,
@@ -57,6 +58,7 @@ def _ok(provider: str, text: str) -> ProviderResponse:
         provider=provider,
         requested_model="fake-model",
         model="fake-model",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         status="success",
         text=text,
         usage=TokenUsage(input_tokens=10, output_tokens=5),
@@ -401,6 +403,7 @@ async def test_support_scope_model_count_reflects_real_cross_round_union():
             provider="gemini",
             requested_model="fake-model",
             model="fake-model",
+            model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
             status="error",
             text=None,
             usage=None,
@@ -497,6 +500,7 @@ async def test_support_scope_model_count_uses_union_not_max_of_round_counts():
             provider="openai",
             requested_model="fake-model",
             model="modelo-v2",
+            model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
             status="success",
             text="resposta de crítica openai",
             usage=TokenUsage(input_tokens=10, output_tokens=5),
@@ -512,6 +516,7 @@ async def test_support_scope_model_count_uses_union_not_max_of_round_counts():
             provider="gemini",
             requested_model="fake-model",
             model="fake-model",
+            model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
             status="error",
             text=None,
             usage=None,

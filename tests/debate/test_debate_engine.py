@@ -5,7 +5,13 @@ import json
 import pytest
 
 from app.debate.debate_engine import DebateEngine
-from app.models.provider_models import ProviderErrorInfo, ProviderErrorType, ProviderResponse, TokenUsage
+from app.models.provider_models import (
+    ModelIdentitySource,
+    ProviderErrorInfo,
+    ProviderErrorType,
+    ProviderResponse,
+    TokenUsage,
+)
 from app.orchestrator.config import QuorumPolicy, RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
 from tests.debate.fakes import CallableProvider
@@ -36,6 +42,7 @@ def _ok(provider: str, text: str, input_tokens=10, output_tokens=5) -> ProviderR
         provider=provider,
         requested_model="fake-model",
         model="fake-model",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         status="success",
         text=text,
         usage=TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens),
@@ -50,6 +57,7 @@ def _err(provider: str) -> ProviderResponse:
         provider=provider,
         requested_model="fake-model",
         model="fake-model",
+        model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
         status="error",
         text=None,
         usage=None,

@@ -100,6 +100,7 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       id: 'verdict-1',
       evaluated_through_round: 1,
       judge_model: 'claude-sonnet-5',
+      judge_model_identity_source: 'provider_reported',
       claim_assessments: [
         { claim_id: 'c1', verdict: 'supported', explanation: 'bem sustentada pelo debate' },
       ],
@@ -116,6 +117,7 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       limitations: [],
       status: 'llm_planned',
       editor_model: 'claude-sonnet-5',
+      editor_model_identity_source: 'provider_reported',
       judge_confidence: 0.8,
     },
     accounting: {

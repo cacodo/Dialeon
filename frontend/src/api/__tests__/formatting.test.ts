@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { formatEstimatedCost, formatTokenCount, formatDebateOutcome, formatFinalAnswerStatus } from '../formatting'
+import {
+  formatEstimatedCost,
+  formatTokenCount,
+  formatDebateOutcome,
+  formatFinalAnswerStatus,
+  formatModelIdentitySource,
+} from '../formatting'
 
 describe('formatEstimatedCost', () => {
   it('formata custo desconhecido (null) sem virar zero', () => {
@@ -48,6 +54,24 @@ describe('formatFinalAnswerStatus', () => {
 
   it('llm_planned e llm_composed têm rótulos distintos', () => {
     expect(formatFinalAnswerStatus('llm_planned')).not.toBe(formatFinalAnswerStatus('llm_composed'))
+  })
+})
+
+describe('formatModelIdentitySource', () => {
+  it('distingue provider_reported de requested_fallback', () => {
+    const reported = formatModelIdentitySource('provider_reported')
+    const fallback = formatModelIdentitySource('requested_fallback')
+    expect(reported).not.toBe(fallback)
+    expect(reported.length).toBeGreaterThan(0)
+    expect(fallback.length).toBeGreaterThan(0)
+  })
+
+  it('null (histórico) nunca é confundido com requested_fallback', () => {
+    const historical = formatModelIdentitySource(null)
+    const fallback = formatModelIdentitySource('requested_fallback')
+    expect(historical).not.toBe(fallback)
+    expect(historical).not.toBe('requested_fallback')
+    expect(historical).not.toBe('provider_reported')
   })
 })
 

@@ -36,7 +36,12 @@ from app.models.domain import (
     JudgeVerdict,
     ModelResponse,
 )
-from app.models.provider_models import PricingProvenance, ProviderErrorInfo, TokenUsage
+from app.models.provider_models import (
+    ModelIdentitySource,
+    PricingProvenance,
+    ProviderErrorInfo,
+    TokenUsage,
+)
 from app.source_analysis.attempt import SourceAnalysisAttempt
 from app.source_analysis.models import (
     RejectedSourceEntry,
@@ -115,6 +120,14 @@ def _error_from_json(data: dict | None) -> ProviderErrorInfo | None:
     return ProviderErrorInfo(**data) if data is not None else None
 
 
+def _model_identity_source_to_column(source: ModelIdentitySource | None) -> str | None:
+    return source.value if source is not None else None
+
+
+def _model_identity_source_from_column(value: str | None) -> ModelIdentitySource | None:
+    return ModelIdentitySource(value) if value is not None else None
+
+
 # ---------------------------------------------------------------------------
 # ModelResponse
 # ---------------------------------------------------------------------------
@@ -137,6 +150,7 @@ def model_response_to_row(
         provider=mr.provider,
         requested_model=mr.requested_model,
         model=mr.model,
+        model_identity_source=_model_identity_source_to_column(mr.model_identity_source),
         status=mr.status,
         response_text=mr.response_text,
         usage_present=usage_present,
@@ -166,6 +180,7 @@ def model_response_from_row(row: ModelResponseRow) -> ModelResponse:
         provider=row.provider,
         requested_model=row.requested_model,
         model=row.model,
+        model_identity_source=_model_identity_source_from_column(row.model_identity_source),
         round_number=row.round_number,
         status=row.status,
         response_text=row.response_text,
@@ -223,10 +238,20 @@ def claim_support_rows(claim: Claim) -> list[ClaimSupportRow]:
             model_response_id=support.model_response_id,
             provider=support.provider,
             model=support.model,
+            model_identity_source=_model_identity_source_to_column(support.model_identity_source),
             position=position,
         )
         for position, support in enumerate(claim.supporting_model_response_ids)
     ]
+
+
+def claim_support_from_row(row: ClaimSupportRow) -> ClaimSupport:
+    return ClaimSupport(
+        model_response_id=row.model_response_id,
+        provider=row.provider,
+        model=row.model,
+        model_identity_source=_model_identity_source_from_column(row.model_identity_source),
+    )
 
 
 def claim_from_row(
@@ -271,6 +296,7 @@ def claim_processing_attempt_to_row(
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=_model_identity_source_to_column(attempt.model_identity_source),
         target_model_response_id=attempt.target_model_response_id,
         target_claim_ids_json=list(attempt.target_claim_ids),
         transport_status=attempt.transport_status,
@@ -300,6 +326,7 @@ def claim_processing_attempt_from_row(row: ClaimProcessingAttemptRow) -> ClaimPr
         provider=row.provider,
         requested_model=row.requested_model,
         model=row.model,
+        model_identity_source=_model_identity_source_from_column(row.model_identity_source),
         target_model_response_id=row.target_model_response_id,
         target_claim_ids=list(row.target_claim_ids_json),
         transport_status=row.transport_status,
@@ -376,6 +403,9 @@ def judge_verdict_to_row(verdict: JudgeVerdict, *, council_run_id: str) -> Judge
         council_run_id=council_run_id,
         evaluated_through_round=verdict.evaluated_through_round,
         judge_model=verdict.judge_model,
+        judge_model_identity_source=_model_identity_source_to_column(
+            verdict.judge_model_identity_source
+        ),
         best_arguments_by_json=dict(verdict.best_arguments_by),
         debate_limitations_json=list(verdict.debate_limitations),
         confidence=verdict.confidence,
@@ -406,6 +436,9 @@ def judge_verdict_from_row(
         id=row.id,
         evaluated_through_round=row.evaluated_through_round,
         judge_model=row.judge_model,
+        judge_model_identity_source=_model_identity_source_from_column(
+            row.judge_model_identity_source
+        ),
         claim_assessments=claim_assessments,
         best_arguments_by=dict(row.best_arguments_by_json),
         debate_limitations=list(row.debate_limitations_json),
@@ -431,6 +464,7 @@ def judge_attempt_to_row(attempt: JudgeAttempt, *, council_run_id: str) -> Judge
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=_model_identity_source_to_column(attempt.model_identity_source),
         transport_status=attempt.transport_status,
         transport_error_json=_error_to_json(attempt.transport_error),
         transport_attempts=attempt.transport_attempts,
@@ -456,6 +490,7 @@ def judge_attempt_from_row(row: JudgeAttemptRow) -> JudgeAttempt:
         provider=row.provider,
         requested_model=row.requested_model,
         model=row.model,
+        model_identity_source=_model_identity_source_from_column(row.model_identity_source),
         transport_status=row.transport_status,
         transport_error=_error_from_json(row.transport_error_json),
         transport_attempts=row.transport_attempts,
@@ -481,6 +516,7 @@ def editor_attempt_to_row(attempt: EditorAttempt, *, council_run_id: str) -> Edi
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=_model_identity_source_to_column(attempt.model_identity_source),
         transport_status=attempt.transport_status,
         transport_error_json=_error_to_json(attempt.transport_error),
         transport_attempts=attempt.transport_attempts,
@@ -506,6 +542,7 @@ def editor_attempt_from_row(row: EditorAttemptRow) -> EditorAttempt:
         provider=row.provider,
         requested_model=row.requested_model,
         model=row.model,
+        model_identity_source=_model_identity_source_from_column(row.model_identity_source),
         transport_status=row.transport_status,
         transport_error=_error_from_json(row.transport_error_json),
         transport_attempts=row.transport_attempts,
@@ -535,6 +572,9 @@ def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerR
         limitations_json=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
+        editor_model_identity_source=_model_identity_source_to_column(
+            fa.editor_model_identity_source
+        ),
         based_on_verdict_id=fa.based_on_verdict_id,
         judge_confidence=fa.judge_confidence,
         created_at=dt_to_naive_utc(fa.created_at),
@@ -548,6 +588,9 @@ def final_answer_from_row(row: FinalAnswerRow) -> FinalAnswer:
         limitations=list(row.limitations_json),
         status=row.status,
         editor_model=row.editor_model,
+        editor_model_identity_source=_model_identity_source_from_column(
+            row.editor_model_identity_source
+        ),
         based_on_verdict_id=row.based_on_verdict_id,
         judge_confidence=row.judge_confidence,
         created_at=dt_from_naive_utc(row.created_at),
@@ -570,6 +613,7 @@ def source_analysis_attempt_to_row(
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=_model_identity_source_to_column(attempt.model_identity_source),
         transport_status=attempt.transport_status,
         transport_error_json=_error_to_json(attempt.transport_error),
         transport_attempts=attempt.transport_attempts,
@@ -595,6 +639,7 @@ def source_analysis_attempt_from_row(row: SourceAnalysisAttemptRow) -> SourceAna
         provider=row.provider,
         requested_model=row.requested_model,
         model=row.model,
+        model_identity_source=_model_identity_source_from_column(row.model_identity_source),
         transport_status=row.transport_status,
         transport_error=_error_from_json(row.transport_error_json),
         transport_attempts=row.transport_attempts,

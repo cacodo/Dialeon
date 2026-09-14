@@ -15,6 +15,7 @@ from app.judge.attempt import JudgeAttempt
 from app.judge.result import JudgeResult
 from app.models.domain import Claim, ClaimAssessment, ClaimSupport, JudgeVerdict, ModelResponse
 from app.models.provider_models import (
+    ModelIdentitySource,
     PricingProvenance,
     ProviderErrorInfo,
     ProviderErrorType,
@@ -51,6 +52,7 @@ def model_response(provider: str = "openai", **overrides) -> ModelResponse:
     fields = dict(
         provider=provider,
         model="gpt-5.5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         round_number=1,
         status="success",
         response_text=f"resposta de {provider}",
@@ -69,6 +71,7 @@ def error_model_response(provider: str = "gemini", **overrides) -> ModelResponse
     fields = dict(
         provider=provider,
         model="gemini-3.7-flash",
+        model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
         round_number=1,
         status="error",
         usage=None,
@@ -125,9 +128,17 @@ def full_council_run_result(**overrides) -> CouncilRunResult:
     mr2 = model_response("anthropic", model="claude-sonnet-5")
     critique_mr = model_response("openai", round_number=2, response_text="resposta de crítica")
 
-    support1 = ClaimSupport(model_response_id=mr1.id, provider="openai", model="gpt-5.5")
+    support1 = ClaimSupport(
+        model_response_id=mr1.id,
+        provider="openai",
+        model="gpt-5.5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
+    )
     support2 = ClaimSupport(
-        model_response_id=mr2.id, provider="anthropic", model="claude-sonnet-5"
+        model_response_id=mr2.id,
+        provider="anthropic",
+        model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
     )
     c1 = claim(mr1.id, [support1, support2])
 
@@ -138,6 +149,7 @@ def full_council_run_result(**overrides) -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         target_model_response_id=mr1.id,
         transport_status="success",
         transport_attempts=1,
@@ -186,6 +198,7 @@ def full_council_run_result(**overrides) -> CouncilRunResult:
     verdict = JudgeVerdict(
         evaluated_through_round=2,
         judge_model="claude-sonnet-5",
+        judge_model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         claim_assessments=[
             ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="Consenso total.")
         ],
@@ -199,6 +212,7 @@ def full_council_run_result(**overrides) -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         transport_status="success",
         transport_attempts=1,
         raw_output_text="{}",
@@ -221,6 +235,7 @@ def full_council_run_result(**overrides) -> CouncilRunResult:
         limitations=["Só uma rodada de crítica."],
         status="llm_composed",
         editor_model="claude-sonnet-5",
+        editor_model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         based_on_verdict_id=verdict.id,
         judge_confidence=0.9,
     )
@@ -229,6 +244,7 @@ def full_council_run_result(**overrides) -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         transport_status="success",
         transport_attempts=1,
         raw_output_text="{}",
@@ -288,9 +304,17 @@ def very_rich_council_run_result() -> CouncilRunResult:
         "anthropic", model="claude-sonnet-5", round_number=2, response_text="crítica 2"
     )
 
-    support1 = ClaimSupport(model_response_id=mr1.id, provider="openai", model="gpt-5.5")
+    support1 = ClaimSupport(
+        model_response_id=mr1.id,
+        provider="openai",
+        model="gpt-5.5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
+    )
     support2 = ClaimSupport(
-        model_response_id=mr2.id, provider="anthropic", model="claude-sonnet-5"
+        model_response_id=mr2.id,
+        provider="anthropic",
+        model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
     )
     evidence = EvidenceRef(
         claim_id="placeholder",  # ajustado abaixo, depois que c1 existir
@@ -317,6 +341,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         target_model_response_id=mr1.id,
         transport_status="success",
         transport_attempts=1,
@@ -335,6 +360,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         target_model_response_id=mr1.id,
         transport_status="success",
         transport_attempts=1,
@@ -393,6 +419,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         transport_status="success",
         transport_attempts=1,
         raw_output_text="{bad",
@@ -408,6 +435,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         transport_status="success",
         transport_attempts=1,
         raw_output_text="{}",
@@ -420,6 +448,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
     verdict = JudgeVerdict(
         evaluated_through_round=2,
         judge_model="claude-sonnet-5",
+        judge_model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         claim_assessments=[
             ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="Primeira avaliação."),
             ClaimAssessment(
@@ -444,6 +473,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         transport_status="success",
         transport_attempts=1,
         raw_output_text="{bad",
@@ -459,6 +489,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         transport_status="success",
         transport_attempts=1,
         raw_output_text="{}",
@@ -473,6 +504,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         limitations=["Limitação 1.", "Limitação 2."],
         status="llm_composed",
         editor_model="claude-sonnet-5",
+        editor_model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         based_on_verdict_id=verdict.id,
         judge_confidence=0.85,
     )
@@ -495,6 +527,7 @@ def very_rich_council_run_result() -> CouncilRunResult:
         provider="anthropic",
         requested_model="claude-sonnet-5",
         model="claude-sonnet-5",
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
         transport_status="success",
         transport_attempts=1,
         raw_output_text="{...}",

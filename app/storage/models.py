@@ -197,6 +197,11 @@ class ModelResponseRow(Base):
     # handoff arquitetural).
     requested_model: Mapped[str]
     model: Mapped[str]
+    # Provenance de `model` -- ver ModelResponse.model_identity_source
+    # (app/models/domain.py). NULL só pra linhas persistidas ANTES desta
+    # coluna existir (ver `_upgrade_legacy_model_identity_source`,
+    # app/storage/database.py) -- nunca backfillado.
+    model_identity_source: Mapped[str | None]
     status: Mapped[str]
     response_text: Mapped[str | None]
     # True se um TokenUsage existia (mesmo com campos internos None,
@@ -273,6 +278,11 @@ class ClaimSupportRow(Base):
     )
     provider: Mapped[str]
     model: Mapped[str]
+    # Provenance de `model` -- ver ModelResponseRow.model_identity_source
+    # (app/storage/models.py). NULL só pra linhas persistidas ANTES desta
+    # coluna existir (ver `_upgrade_legacy_model_identity_source`,
+    # app/storage/database.py) -- nunca backfillado.
+    model_identity_source: Mapped[str | None]
     # Ordem de Claim.supporting_model_response_ids É semanticamente
     # significativa (Claim.supporting_models preserva "primeira
     # aparição", por design) -- preservada explicitamente aqui.
@@ -299,6 +309,8 @@ class ClaimProcessingAttemptRow(Base):
     # Etapa 13 (T03.A) — ver ModelResponseRow.requested_model acima.
     requested_model: Mapped[str]
     model: Mapped[str]
+    # Provenance de `model` -- ver ModelResponseRow.model_identity_source acima.
+    model_identity_source: Mapped[str | None]
     target_model_response_id: Mapped[str | None] = mapped_column(
         ForeignKey("model_responses.id")
     )
@@ -392,6 +404,8 @@ class SourceAnalysisAttemptRow(Base):
     provider: Mapped[str]
     requested_model: Mapped[str]
     model: Mapped[str]
+    # Provenance de `model` -- ver ModelResponseRow.model_identity_source acima.
+    model_identity_source: Mapped[str | None]
     transport_status: Mapped[str]
     transport_error_json: Mapped[dict | None] = mapped_column(JSON)
     transport_attempts: Mapped[int]
@@ -456,6 +470,9 @@ class JudgeVerdictRow(Base):
 
     evaluated_through_round: Mapped[int]
     judge_model: Mapped[str]
+    # Provenance de judge_model -- ver ModelResponseRow.model_identity_source
+    # acima.
+    judge_model_identity_source: Mapped[str | None]
     best_arguments_by_json: Mapped[dict] = mapped_column(JSON)
     debate_limitations_json: Mapped[list] = mapped_column(JSON)
     confidence: Mapped[float]
@@ -504,6 +521,8 @@ class JudgeAttemptRow(Base):
     # Etapa 13 (T03.A) — ver ModelResponseRow.requested_model acima.
     requested_model: Mapped[str]
     model: Mapped[str]
+    # Provenance de `model` -- ver ModelResponseRow.model_identity_source acima.
+    model_identity_source: Mapped[str | None]
     transport_status: Mapped[str]
     transport_error_json: Mapped[dict | None] = mapped_column(JSON)
     transport_attempts: Mapped[int]
@@ -540,6 +559,8 @@ class EditorAttemptRow(Base):
     # Etapa 13 (T03.A) — ver ModelResponseRow.requested_model acima.
     requested_model: Mapped[str]
     model: Mapped[str]
+    # Provenance de `model` -- ver ModelResponseRow.model_identity_source acima.
+    model_identity_source: Mapped[str | None]
     transport_status: Mapped[str]
     transport_error_json: Mapped[dict | None] = mapped_column(JSON)
     transport_attempts: Mapped[int]
@@ -575,6 +596,11 @@ class FinalAnswerRow(Base):
     limitations_json: Mapped[list] = mapped_column(JSON)
     status: Mapped[str]
     editor_model: Mapped[str | None]
+    # Provenance de editor_model -- ver ModelResponseRow.model_identity_source
+    # acima. Independente da nulidade de editor_model (ver
+    # FinalAnswer.editor_model_identity_source, app/editor/result.py) --
+    # nunca inferido/recalculado a partir dele.
+    editor_model_identity_source: Mapped[str | None]
     based_on_verdict_id: Mapped[str | None] = mapped_column(ForeignKey("judge_verdicts.id"))
     judge_confidence: Mapped[float | None]
     created_at: Mapped[datetime]

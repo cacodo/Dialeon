@@ -72,6 +72,7 @@ def model_response_public(mr: ModelResponse) -> ModelResponsePublic:
         provider=mr.provider,
         requested_model=mr.requested_model,
         model=mr.model,
+        model_identity_source=mr.model_identity_source,
         round_number=mr.round_number,
         status=mr.status,
         response_text=mr.response_text,
@@ -134,7 +135,10 @@ def claim_public(claim: Claim) -> ClaimPublic:
         status=claim.status,
         supporting_model_response_ids=[
             ClaimSupportPublic(
-                model_response_id=s.model_response_id, provider=s.provider, model=s.model
+                model_response_id=s.model_response_id,
+                provider=s.provider,
+                model=s.model,
+                model_identity_source=s.model_identity_source,
             )
             for s in claim.supporting_model_response_ids
         ],
@@ -157,6 +161,7 @@ def claim_processing_attempt_public(
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=attempt.model_identity_source,
         target_model_response_id=attempt.target_model_response_id,
         target_claim_ids=list(attempt.target_claim_ids),
         transport_status=attempt.transport_status,
@@ -181,6 +186,7 @@ def judge_verdict_public(verdict: JudgeVerdict | None) -> JudgeVerdictPublic | N
         id=verdict.id,
         evaluated_through_round=verdict.evaluated_through_round,
         judge_model=verdict.judge_model,
+        judge_model_identity_source=verdict.judge_model_identity_source,
         claim_assessments=[
             ClaimAssessmentPublic(
                 claim_id=a.claim_id, verdict=a.verdict, explanation=a.explanation
@@ -202,6 +208,7 @@ def judge_attempt_public(attempt: JudgeAttempt) -> JudgeAttemptPublic:
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=attempt.model_identity_source,
         transport_status=attempt.transport_status,
         transport_error=attempt.transport_error,
         raw_output_text=attempt.raw_output_text,
@@ -224,6 +231,7 @@ def editor_attempt_public(attempt: EditorAttempt) -> EditorAttemptPublic:
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=attempt.model_identity_source,
         transport_status=attempt.transport_status,
         transport_error=attempt.transport_error,
         raw_output_text=attempt.raw_output_text,
@@ -245,6 +253,7 @@ def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
         limitations=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
+        editor_model_identity_source=fa.editor_model_identity_source,
         judge_confidence=fa.judge_confidence,
     )
 
@@ -348,6 +357,7 @@ def source_analysis_attempt_public(attempt: SourceAnalysisAttempt) -> SourceAnal
         provider=attempt.provider,
         requested_model=attempt.requested_model,
         model=attempt.model,
+        model_identity_source=attempt.model_identity_source,
         transport_status=attempt.transport_status,
         transport_error=attempt.transport_error,
         raw_output_text=attempt.raw_output_text,

@@ -6,7 +6,7 @@ import pytest
 
 from app.debate.claim_extraction import extract_claims
 from app.models.domain import Claim, ClaimSupport, ModelResponse
-from app.models.provider_models import TokenUsage
+from app.models.provider_models import ModelIdentitySource, TokenUsage
 from tests.council.fixtures import run_config as _run_config
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 
@@ -88,12 +88,103 @@ async def test_extraction_produces_claims_correctly_linked():
 
 
 @pytest.mark.asyncio
+async def test_claim_support_and_processing_attempt_copy_their_own_model_identity_source():
+    """Production-path regression -- prova que extract_claims() (não uma
+    construção manual de ClaimSupport/ClaimProcessingAttempt) copia
+    model_identity_source de cada ProviderResponse REAL correto:
+    ClaimSupport.model_identity_source vem do ModelResponse SENDO
+    ANALISADO (`response`, o participante do debate); ClaimProcessingAttempt
+    .model_identity_source vem do ProviderResponse da CHAMADA DE EXTRAÇÃO
+    em si (`provider`, o claim processor) -- os dois são fontes
+    DISTINTAS, nunca conflados."""
+    payload = json.dumps({"claims": [{"text": "Brasília é a capital.", "revises_claim_id": None}]})
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response(
+                "anthropic", payload, model_identity_source=ModelIdentitySource.PROVIDER_REPORTED
+            )
+        ],
+    )
+    response = _response(model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK)
+
+    claims, attempts, _verifications = await extract_claims(
+        response, round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,)
+
+    assert claims[0].supporting_model_response_ids[0].model_identity_source == (
+        ModelIdentitySource.REQUESTED_FALLBACK
+    )
+    assert attempts[0].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+
+
+@pytest.mark.asyncio
+async def test_claim_support_matrix_a_fresh_provider_reported():
+    """ClaimSupport regression matrix, A -- ModelResponse com
+    model_identity_source=provider_reported produz um ClaimSupport com o
+    MESMO model, provider_reported, e o MESMO model_response_id."""
+    payload = json.dumps({"claims": [{"text": "Brasília é a capital.", "revises_claim_id": None}]})
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    response = _response(
+        model="gpt-5.5-2026-01-15", model_identity_source=ModelIdentitySource.PROVIDER_REPORTED
+    )
+
+    claims, _attempts, _verifications = await extract_claims(
+        response, round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,)
+
+    support = claims[0].supporting_model_response_ids[0]
+    assert support.model == response.model
+    assert support.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+    assert support.model_response_id == response.id
+
+
+@pytest.mark.asyncio
+async def test_claim_support_matrix_b_fresh_requested_fallback():
+    """ClaimSupport regression matrix, B -- ModelResponse com
+    model_identity_source=requested_fallback produz um ClaimSupport com o
+    MESMO model, requested_fallback, e o MESMO model_response_id."""
+    payload = json.dumps({"claims": [{"text": "Brasília é a capital.", "revises_claim_id": None}]})
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    response = _response(
+        model="gpt-5.5", model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK
+    )
+
+    claims, _attempts, _verifications = await extract_claims(
+        response, round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,)
+
+    support = claims[0].supporting_model_response_ids[0]
+    assert support.model == response.model
+    assert support.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+    assert support.model_response_id == response.id
+
+
+@pytest.mark.asyncio
 async def test_malformed_json_retries_once_then_succeeds():
     provider = ScriptedProvider(
         "anthropic",
         [
-            text_response("anthropic", "isto não é JSON"),
-            text_response("anthropic", '{"claims": []}'),
+            text_response(
+                "anthropic", "isto não é JSON",
+                model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
+            ),
+            text_response(
+                "anthropic", '{"claims": []}',
+                model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
+            ),
         ],
     )
     claims, attempts, _verifications = await extract_claims(
@@ -107,8 +198,13 @@ async def test_malformed_json_retries_once_then_succeeds():
     assert len(attempts) == 2
     assert attempts[0].parse_status == "malformed"
     assert attempts[0].attempt_number == 1
+    # LOW #2 -- a tentativa REJEITADA (malformed) copia a provenance da
+    # SUA PRÓPRIA ProviderResponse, nunca um valor global/default herdado
+    # da tentativa seguinte que a sucede.
+    assert attempts[0].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
     assert attempts[1].parse_status == "accepted"
     assert attempts[1].attempt_number == 2
+    assert attempts[1].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
 
 
 @pytest.mark.asyncio

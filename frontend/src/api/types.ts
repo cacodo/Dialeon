@@ -34,10 +34,21 @@ export interface ProviderExecutionPolicy {
   max_transport_attempts_per_completion: number
 }
 
+// Provenance FECHADA de um campo `model`/`judge_model`/`editor_model` --
+// distingue um identificador de modelo genuinamente REPORTADO pelo
+// provider de um substituto de fallback pro modelo solicitado (ver
+// app/models/provider_models.py:ModelIdentitySource). `null` é um
+// terceiro estado -- história persistida ANTES desta coluna existir --
+// nunca confundido com 'requested_fallback' (nunca inferido de
+// model === requested_model).
+export type ModelIdentitySource = 'provider_reported' | 'requested_fallback'
+
 export interface ModelResponsePublic {
   id: string
   provider: string
+  requested_model: string
   model: string
+  model_identity_source: ModelIdentitySource | null
   round_number: number
   status: 'success' | 'error'
   response_text: string | null
@@ -77,6 +88,7 @@ export interface ClaimSupportPublic {
   model_response_id: string
   provider: string
   model: string
+  model_identity_source: ModelIdentitySource | null
 }
 
 // Valores reais do dominio (app/models/domain.py) -- disputed/resolved/
@@ -115,7 +127,9 @@ export interface ClaimProcessingAttemptPublic {
   round_number: number
   attempt_number: number
   provider: string
+  requested_model: string
   model: string
+  model_identity_source: ModelIdentitySource | null
   target_model_response_id: string | null
   target_claim_ids: string[]
   transport_status: 'success' | 'error'
@@ -147,6 +161,7 @@ export interface JudgeVerdictPublic {
   id: string
   evaluated_through_round: number
   judge_model: string
+  judge_model_identity_source: ModelIdentitySource | null
   claim_assessments: ClaimAssessmentPublic[]
   best_arguments_by: Record<string, string>
   debate_limitations: string[]
@@ -159,7 +174,9 @@ export interface JudgeAttemptPublic {
   id: string
   attempt_number: number
   provider: string
+  requested_model: string
   model: string
+  model_identity_source: ModelIdentitySource | null
   transport_status: 'success' | 'error'
   transport_error: ProviderErrorInfo | null
   raw_output_text: string | null
@@ -176,7 +193,9 @@ export interface EditorAttemptPublic {
   id: string
   attempt_number: number
   provider: string
+  requested_model: string
   model: string
+  model_identity_source: ModelIdentitySource | null
   transport_status: 'success' | 'error'
   transport_error: ProviderErrorInfo | null
   raw_output_text: string | null
@@ -203,6 +222,7 @@ export interface FinalAnswerPublic {
   limitations: string[]
   status: FinalAnswerStatus
   editor_model: string | null
+  editor_model_identity_source: ModelIdentitySource | null
   judge_confidence: number | null
 }
 
@@ -388,6 +408,7 @@ export interface SourceAnalysisAttemptPublic {
   provider: string
   requested_model: string
   model: string
+  model_identity_source: ModelIdentitySource | null
   transport_status: 'success' | 'error'
   parse_status: 'accepted' | 'malformed' | 'not_attempted'
   parse_error_message: string | null

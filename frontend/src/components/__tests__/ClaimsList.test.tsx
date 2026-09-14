@@ -21,7 +21,7 @@ function dedupeProviderModel(supports: ClaimSupportPublic[]): string[] {
 
 function makeClaim(overrides: Partial<ClaimPublic>): ClaimPublic {
   const supporting_model_response_ids = overrides.supporting_model_response_ids ?? [
-    { model_response_id: 'mr-1', provider: 'openai', model: 'gpt-5.5' },
+    { model_response_id: 'mr-1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
   ]
   return {
     id: 'claim-1',
@@ -51,7 +51,7 @@ describe('ClaimsList — denominador de suporte', () => {
       round_introduced: 2,
       total_models_in_round: 1, // só 1 modelo participou da rodada em que essa claim foi introduzida
       supporting_model_response_ids: [
-        { model_response_id: 'mr-critique-1', provider: 'anthropic', model: 'claude-sonnet-5' },
+        { model_response_id: 'mr-critique-1', provider: 'anthropic', model: 'claude-sonnet-5', model_identity_source: null },
       ],
     })
 
@@ -70,8 +70,8 @@ describe('ClaimsList — denominador de suporte', () => {
       text: 'Claim da rodada inicial.',
       total_models_in_round: 3,
       supporting_model_response_ids: [
-        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5' },
-        { model_response_id: 'r2', provider: 'anthropic', model: 'claude-sonnet-5' },
+        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
+        { model_response_id: 'r2', provider: 'anthropic', model: 'claude-sonnet-5', model_identity_source: null },
       ],
     })
     const claimFromCritique = makeClaim({
@@ -80,7 +80,7 @@ describe('ClaimsList — denominador de suporte', () => {
       round_introduced: 2,
       total_models_in_round: 1,
       supporting_model_response_ids: [
-        { model_response_id: 'r3', provider: 'gemini', model: 'gemini-3.7-flash' },
+        { model_response_id: 'r3', provider: 'gemini', model: 'gemini-3.7-flash', model_identity_source: null },
       ],
     })
 
@@ -109,8 +109,8 @@ describe('ClaimsList — denominador de suporte', () => {
       support_scope_model_count: 3,
       merged_from_claim_ids: ['r1-claim', 'r2-claim'],
       supporting_model_response_ids: [
-        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5' },
-        { model_response_id: 'r2', provider: 'anthropic', model: 'claude-sonnet-5' },
+        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
+        { model_response_id: 'r2', provider: 'anthropic', model: 'claude-sonnet-5', model_identity_source: null },
       ],
     })
 
@@ -138,8 +138,8 @@ describe('ClaimsList — denominador de suporte', () => {
     const claim = makeClaim({
       total_models_in_round: 1,
       supporting_model_response_ids: [
-        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5' },
-        { model_response_id: 'r2', provider: 'openai', model: 'gpt-5.5' },
+        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
+        { model_response_id: 'r2', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
       ],
       // supporting_models já vem deduplicado pela API real -- makeClaim
       // computa isso automaticamente a partir de supporting_model_response_ids
@@ -160,8 +160,8 @@ describe('ClaimsList — denominador de suporte', () => {
     const claim = makeClaim({
       total_models_in_round: 2,
       supporting_model_response_ids: [
-        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5' },
-        { model_response_id: 'r2', provider: 'anthropic', model: 'claude-sonnet-5' },
+        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
+        { model_response_id: 'r2', provider: 'anthropic', model: 'claude-sonnet-5', model_identity_source: null },
       ],
       supporting_models: ['openai/gpt-5.5', 'anthropic/claude-sonnet-5'],
     })
@@ -177,7 +177,7 @@ describe('ClaimsList — denominador de suporte', () => {
       total_models_in_round: 3,
       support_scope_model_count: null,
       supporting_model_response_ids: [
-        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5' },
+        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
       ],
       supporting_models: ['openai/gpt-5.5'],
     })
@@ -195,8 +195,8 @@ describe('ClaimsList — denominador de suporte', () => {
       support_scope_model_count: 2,
       merged_from_claim_ids: ['r1-claim', 'r2-claim'],
       supporting_model_response_ids: [
-        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5' },
-        { model_response_id: 'r2', provider: 'openai', model: 'gpt-5.5' },
+        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
+        { model_response_id: 'r2', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
       ],
       supporting_models: ['openai/gpt-5.5'],
     })
@@ -206,5 +206,57 @@ describe('ClaimsList — denominador de suporte', () => {
 
     expect(await screen.findByText('1 de 2 participantes')).toBeInTheDocument()
     expect(screen.queryByText('1 de 1 participantes')).not.toBeInTheDocument()
+  })
+})
+
+describe('ClaimsList — provenance de identidade do modelo em ClaimSupport', () => {
+  it('mostra "reportado pelo provider" pra um support com model_identity_source=provider_reported', async () => {
+    const claim = makeClaim({
+      supporting_model_response_ids: [
+        {
+          model_response_id: 'r1',
+          provider: 'openai',
+          model: 'gpt-5.5',
+          model_identity_source: 'provider_reported',
+        },
+      ],
+    })
+
+    render(<ClaimsList claims={[claim]} assessmentsByClaimId={new Map()} />)
+    await userEvent.click(screen.getByRole('button', { name: /brasília é a capital/i }))
+
+    expect(await screen.findByText(/reportado pelo provider/i)).toBeInTheDocument()
+  })
+
+  it('mostra "fallback do modelo solicitado" pra um support com model_identity_source=requested_fallback', async () => {
+    const claim = makeClaim({
+      supporting_model_response_ids: [
+        {
+          model_response_id: 'r1',
+          provider: 'openai',
+          model: 'gpt-5.5',
+          model_identity_source: 'requested_fallback',
+        },
+      ],
+    })
+
+    render(<ClaimsList claims={[claim]} assessmentsByClaimId={new Map()} />)
+    await userEvent.click(screen.getByRole('button', { name: /brasília é a capital/i }))
+
+    expect(await screen.findByText(/fallback do modelo solicitado/i)).toBeInTheDocument()
+  })
+
+  it('histórico (null) renderiza honestamente "não registrada", nunca como fallback', async () => {
+    const claim = makeClaim({
+      supporting_model_response_ids: [
+        { model_response_id: 'r1', provider: 'openai', model: 'gpt-5.5', model_identity_source: null },
+      ],
+    })
+
+    render(<ClaimsList claims={[claim]} assessmentsByClaimId={new Map()} />)
+    await userEvent.click(screen.getByRole('button', { name: /brasília é a capital/i }))
+
+    expect(await screen.findByText(/não registrada/i)).toBeInTheDocument()
+    expect(screen.queryByText(/fallback do modelo solicitado/i)).not.toBeInTheDocument()
   })
 })

@@ -6,7 +6,7 @@ import httpx
 import pytest
 from anthropic import APIStatusError, AuthenticationError, RateLimitError
 
-from app.models.provider_models import CompletionRequest, Message
+from app.models.provider_models import CompletionRequest, Message, ModelIdentitySource
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.pricing import PricingRegistry
 
@@ -23,8 +23,10 @@ def _provider(max_retries: int = 0) -> AnthropicProvider:
     return provider
 
 
-def _request() -> CompletionRequest:
-    return CompletionRequest(messages=[Message(role="user", content="Explique TCP em uma frase.")])
+def _request(model: str | None = None) -> CompletionRequest:
+    return CompletionRequest(
+        messages=[Message(role="user", content="Explique TCP em uma frase.")], model=model
+    )
 
 
 def _fake_request():
@@ -66,6 +68,42 @@ async def test_successful_completion_is_normalized():
     assert result.provider == "anthropic"
     assert result.usage.input_tokens == 8
     assert result.usage.output_tokens == 4
+
+
+# ---------------------------------------------------------------------------
+# Provenance de identidade de modelo (ModelIdentitySource) -- B.3/B.4 do
+# contrato desta slice.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_reports_model_marks_provider_reported():
+    provider = _provider()
+    provider._client.messages.create = AsyncMock(
+        return_value=_FakeResponse(
+            [_FakeTextBlock("TCP garante entrega confiável.")], model="claude-sonnet-5-2026-01-15"
+        )
+    )
+
+    result = await provider.complete(_request(model="claude-sonnet-5"))
+
+    assert result.requested_model == "claude-sonnet-5"
+    assert result.model == "claude-sonnet-5-2026-01-15"
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
+
+
+@pytest.mark.asyncio
+async def test_provider_omits_model_marks_requested_fallback():
+    provider = _provider()
+    provider._client.messages.create = AsyncMock(
+        return_value=_FakeResponse([_FakeTextBlock("TCP garante entrega confiável.")], model=None)
+    )
+
+    result = await provider.complete(_request(model="claude-sonnet-5"))
+
+    assert result.requested_model == "claude-sonnet-5"
+    assert result.model == "claude-sonnet-5"
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 @pytest.mark.asyncio

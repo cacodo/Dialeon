@@ -5,7 +5,7 @@
 
 import { useState } from 'react'
 import type { ModelResponsePublic } from '../api/types'
-import { formatEstimatedCost, formatTokenCount } from '../api/formatting'
+import { formatEstimatedCost, formatModelIdentitySource, formatTokenCount } from '../api/formatting'
 
 interface ParticipantsResponsesProps {
   responses: ModelResponsePublic[]
@@ -53,6 +53,18 @@ function ResponseCard({ response }: { response: ModelResponsePublic }) {
           <div>
             <dt>Tentativas</dt>
             <dd>{response.attempts}</dd>
+          </div>
+          <div>
+            <dt>Modelo solicitado</dt>
+            <dd>{response.requested_model}</dd>
+          </div>
+          <div>
+            <dt>Modelo efetivo</dt>
+            <dd>{response.model}</dd>
+          </div>
+          <div>
+            <dt>Identidade do modelo</dt>
+            <dd>{formatModelIdentitySource(response.model_identity_source)}</dd>
           </div>
         </dl>
       )}

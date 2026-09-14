@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from google.genai import errors as genai_errors
 
-from app.models.provider_models import CompletionRequest, Message
+from app.models.provider_models import CompletionRequest, Message, ModelIdentitySource
 from app.providers.gemini_provider import GeminiProvider
 from app.providers.pricing import PricingRegistry
 
@@ -260,6 +260,7 @@ async def test_model_version_present_is_used_as_effective_model():
     )
     result = await provider.complete(_request())
     assert result.model == "gemini-3.7-flash"
+    assert result.model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
 
 
 @pytest.mark.asyncio
@@ -281,6 +282,13 @@ async def test_model_version_absent_falls_back_to_requested_model():
     # não pediu um model explícito (cai no default), mas são campos
     # distintos, nunca o mesmo valor por acidente de implementação.
     assert result.requested_model == "gemini-test"
+    # Provenance de identidade de modelo -- regressão (seção 16 do
+    # contrato desta slice): `model == requested_model` sozinho NUNCA
+    # prova fallback vs. observação (poderiam coincidir por acaso, ex.:
+    # o provider reportar de volta exatamente o modelo pedido).
+    # `model_identity_source` é a única prova real de que nenhuma
+    # identidade foi observada aqui.
+    assert result.model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 @pytest.mark.asyncio

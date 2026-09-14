@@ -575,3 +575,217 @@ async def test_t02_2_upgrade_does_not_touch_other_legacy_columns(tmp_path):
         columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
         assert "provider_execution_policy_json" in columns, table
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Model identity provenance -- model_identity_source (model_responses/
+# claim_processing_attempts/source_analysis_attempts/judge_attempts/
+# editor_attempts), judge_model_identity_source (judge_verdicts),
+# editor_model_identity_source (final_answers)
+# ---------------------------------------------------------------------------
+
+_MODEL_IDENTITY_SOURCE_COLUMNS = (
+    ("model_responses", "model_identity_source"),
+    ("claim_processing_attempts", "model_identity_source"),
+    ("source_analysis_attempts", "model_identity_source"),
+    ("judge_attempts", "model_identity_source"),
+    ("editor_attempts", "model_identity_source"),
+    ("claim_supports", "model_identity_source"),
+    ("judge_verdicts", "judge_model_identity_source"),
+    ("final_answers", "editor_model_identity_source"),
+)
+
+
+async def _make_pre_model_identity_source_db(db_path: str) -> None:
+    """Cria o schema ATUAL e remove só as colunas de
+    model_identity_source das 8 tabelas afetadas -- simula fielmente um
+    banco criado antes desta slice (upgrades independentes, mesma
+    disciplina de `_make_pre_t02_2_db`). Repair pós-revisão independente
+    (LOW #1) -- esta tupla é uma cópia INTENCIONALMENTE independente da
+    de `app/storage/database.py` (mesma disciplina de
+    `_TABLES_AND_ATTEMPTS_COLUMN`/`_PROVIDER_EXECUTION_POLICY_TABLES`
+    acima -- importar a tupla de produção tornaria o teste tautológico:
+    um bug na lista de produção nunca seria pego). `claim_supports`
+    estava ausente aqui até este repair -- fazia
+    `test_..._all_eight_tables` iterar só 7 pares (nunca provava nada
+    sobre `claim_supports`) e os testes de história/idempotência de
+    `claim_supports` inserirem numa tabela que NUNCA teve a coluna
+    removida (a asserção `IS NULL` passava pelo motivo ERRADO -- a
+    coluna nunca tinha sido tocada pelo upgrader de verdade)."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_model_identity_source_database_gets_columns_added_to_all_eight_tables(tmp_path):
+    db_path = str(tmp_path / "pre_model_identity_source.db")
+    await _make_pre_model_identity_source_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        columns_before = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert column not in columns_before, table
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        columns_after = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert column in columns_after, table
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_model_identity_source_row_gets_null_never_backfilled_from_equality(tmp_path):
+    """Uma linha `model_responses` persistida antes desta coluna existir
+    -- com `model == requested_model` (o caso que uma inferência ingênua
+    tentaria usar como prova de fallback) -- precisa reconstruir com
+    `model_identity_source=NULL` depois do upgrade, NUNCA
+    'requested_fallback' inferido dessa igualdade (ver docstring de
+    `ModelIdentitySource`/`_upgrade_legacy_model_identity_source`)."""
+    db_path = str(tmp_path / "pre_model_identity_source_with_row.db")
+    await _make_pre_model_identity_source_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    # model == requested_model = "gpt-5.5" -- exatamente o caso que uma
+    # inferência ingênua por igualdade tentaria usar como prova de
+    # fallback. had_uncertain_prior_attempts precisa ser explícito aqui
+    # (diferente de `_insert_model_response`): esta tabela já nasceu com
+    # a coluna (create_all, NOT NULL sem DEFAULT) -- só as colunas de
+    # model_identity_source foram removidas por `_make_pre_model_identity_source_db`.
+    conn.execute(
+        "INSERT INTO model_responses (id, council_run_id, round_number, position, provider, "
+        "requested_model, model, status, usage_present, latency_ms, attempts, "
+        "had_uncertain_prior_attempts, created_at) "
+        "VALUES ('mr-legacy-1','run1',1,0,'openai','gpt-5.5','gpt-5.5','success',0,100,"
+        "1,0,'2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    (model_identity_source,) = conn.execute(
+        "SELECT model_identity_source FROM model_responses WHERE id = 'mr-legacy-1'"
+    ).fetchone()
+    conn.close()
+    assert model_identity_source is None
+
+
+@pytest.mark.asyncio
+async def test_model_identity_source_upgrade_does_not_touch_other_legacy_columns(tmp_path):
+    """Upgrades independentes -- adicionar as colunas de
+    model_identity_source não deve tocar nenhum dos upgrades legados já
+    testados isoladamente acima."""
+    db_path = str(tmp_path / "pre_model_identity_source_full_legacy.db")
+    await _make_legacy_db(db_path)  # remove had_uncertain_prior_attempts
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_finish_reason")
+    conn.execute("ALTER TABLE claims DROP COLUMN support_scope_model_count")
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_execution_policy_json")
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "had_uncertain_prior_attempts" in columns, table
+        assert "provider_finish_reason" in columns, table
+    claims_columns = {c[1] for c in conn.execute("PRAGMA table_info(claims)")}
+    assert "support_scope_model_count" in claims_columns
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "provider_execution_policy_json" in columns, table
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert column in columns, table
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_model_identity_source_upgrade_is_idempotent_across_repeated_init_db(tmp_path):
+    """G -- rodar init_db() várias vezes sobre um banco pré-slice nunca
+    duplica/recalcula as colunas de model_identity_source (mesma
+    disciplina de `test_init_db_repeated_is_safe_and_idempotent`)."""
+    db_path = str(tmp_path / "pre_model_identity_source_idempotent.db")
+    await _make_pre_model_identity_source_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    conn.execute(
+        "INSERT INTO claim_supports (claim_id, model_response_id, provider, model, position) "
+        "VALUES ('claim1', 'mr-legacy-1', 'openai', 'gpt-5.5', 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    for _ in range(3):
+        engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+        await init_db(engine)
+        await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert column in columns, table
+    (value,) = conn.execute(
+        "SELECT model_identity_source FROM claim_supports WHERE claim_id = 'claim1'"
+    ).fetchone()
+    count = conn.execute("SELECT COUNT(*) FROM claim_supports").fetchone()[0]
+    conn.close()
+    assert value is None  # nunca recalculado/backfillado
+    assert count == 1  # nenhuma duplicação
+
+
+@pytest.mark.asyncio
+async def test_pre_model_identity_source_claim_support_row_gets_null(tmp_path):
+    """E -- uma linha `claim_supports` persistida antes desta coluna
+    existir (model presente, sem nenhuma referência a
+    model_identity_source) reconstrói com model_identity_source=NULL no
+    nível do schema -- ver round-trip completo domínio/público em
+    tests/storage/test_repository.py e tests/api/test_get_run_audit.py."""
+    db_path = str(tmp_path / "pre_model_identity_source_claim_support.db")
+    await _make_pre_model_identity_source_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    conn.execute(
+        "INSERT INTO claim_supports (claim_id, model_response_id, provider, model, position) "
+        "VALUES ('claim1', 'mr-legacy-1', 'openai', 'gpt-5.5', 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    (model_identity_source,) = conn.execute(
+        "SELECT model_identity_source FROM claim_supports WHERE claim_id = 'claim1'"
+    ).fetchone()
+    conn.close()
+    assert model_identity_source is None

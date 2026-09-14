@@ -17,7 +17,7 @@ from app.editor.compose import (
 )
 from app.editor.schemas import EditorPlan
 from app.models.domain import ClaimAssessment
-from app.models.provider_models import TokenUsage
+from app.models.provider_models import ModelIdentitySource, TokenUsage
 from app.orchestrator.config import QuorumPolicy, RunConfig
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 from tests.editor.fixtures import (
@@ -105,6 +105,35 @@ async def test_llm_planned_full_flow():
     assert "crítica com cobertura parcial" in result.final_answer.answer_text
     assert len(result.attempts) == 1
     assert result.attempts[0].parse_status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_editor_attempt_and_final_answer_copy_model_identity_source_from_provider_response():
+    """Production-path regression -- prova que Editor.compose() (não uma
+    construção manual de EditorAttempt/FinalAnswer) copia
+    model_identity_source do ProviderResponse REAL devolvido pelo
+    provider fake."""
+    c1 = raw_claim("Brasília é a capital.", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(v)
+
+    payload = _plan_payload()
+    provider = ScriptedProvider(
+        "anthropic",
+        [text_response("anthropic", payload, model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK)],
+    )
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert result.final_answer.editor_model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+    assert result.attempts[-1].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
 
 
 @pytest.mark.asyncio
@@ -400,7 +429,16 @@ async def test_malformed_json_retries_then_succeeds():
 
     good = _plan_payload()
     provider = ScriptedProvider(
-        "anthropic", [text_response("anthropic", "isso não é json"), text_response("anthropic", good)]
+        "anthropic",
+        [
+            text_response(
+                "anthropic", "isso não é json",
+                model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK,
+            ),
+            text_response(
+                "anthropic", good, model_identity_source=ModelIdentitySource.PROVIDER_REPORTED
+            ),
+        ],
     )
     editor = Editor({"anthropic": provider})
 
@@ -414,7 +452,12 @@ async def test_malformed_json_retries_then_succeeds():
     assert result.final_answer.status == "llm_planned"
     assert len(result.attempts) == 2
     assert result.attempts[0].parse_status == "malformed"
+    # LOW #2 -- a tentativa REJEITADA (malformed) copia a provenance da
+    # SUA PRÓPRIA ProviderResponse, nunca um valor global/default herdado
+    # da tentativa seguinte que a sucede.
+    assert result.attempts[0].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
     assert result.attempts[1].parse_status == "accepted"
+    assert result.attempts[1].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
 
 
 @pytest.mark.asyncio

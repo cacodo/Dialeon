@@ -468,6 +468,7 @@ class Editor:
             limitations=list(verdict.debate_limitations),
             status="llm_planned",
             editor_model=accepted_response.model,
+            editor_model_identity_source=accepted_response.model_identity_source,
             based_on_verdict_id=verdict.id,
             judge_confidence=verdict.confidence,
         )
@@ -794,6 +795,7 @@ def _parse_rejected_attempt(
         provider=provider_response.provider,
         requested_model=provider_response.requested_model,
         model=provider_response.model,
+        model_identity_source=provider_response.model_identity_source,
         transport_status="success",
         transport_error=None,
         transport_attempts=provider_response.attempts,
@@ -815,6 +817,7 @@ def _accepted_attempt(attempt_number: int, provider_response: ProviderResponse) 
         provider=provider_response.provider,
         requested_model=provider_response.requested_model,
         model=provider_response.model,
+        model_identity_source=provider_response.model_identity_source,
         transport_status="success",
         transport_error=None,
         transport_attempts=provider_response.attempts,

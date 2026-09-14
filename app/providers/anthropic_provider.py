@@ -42,7 +42,9 @@ class AnthropicProvider(LLMProvider):
     def default_model(self) -> str:
         return self._default_model_name
 
-    async def _call_api(self, request: CompletionRequest) -> tuple[str, TokenUsage, str, str | None]:
+    async def _call_api(
+        self, request: CompletionRequest
+    ) -> tuple[str, TokenUsage, str | None, str | None]:
         # _require_api_key() NÃO é mais chamado aqui — LLMProvider.complete()
         # (base.py) já garante isso antes de chegar aqui (Etapa 9).
         model = request.model or self._default_model_name
@@ -73,10 +75,10 @@ class AnthropicProvider(LLMProvider):
                 f"anthropic: status={exc.status_code}: {exc.message}", retryable=retryable
             ) from exc
 
-        return self._parse_response(response, model)
+        return self._parse_response(response)
 
     @staticmethod
-    def _parse_response(response, model: str) -> tuple[str, TokenUsage, str, str | None]:
+    def _parse_response(response) -> tuple[str, TokenUsage, str | None, str | None]:
         # Etapa 17A.1 (Objetivo A/B) — extraído ANTES da checagem de texto,
         # com sua própria proteção defensiva: transporte teve sucesso (HTTP
         # 200), então usage/model/stop_reason já são reais e confiáveis no
@@ -87,7 +89,9 @@ class AnthropicProvider(LLMProvider):
             input_tokens=getattr(getattr(response, "usage", None), "input_tokens", None),
             output_tokens=getattr(getattr(response, "usage", None), "output_tokens", None),
         )
-        observed_model = getattr(response, "model", None) or model
+        # Provenance de identidade de modelo -- CRU, ver mesma nota em
+        # OpenAIProvider._parse_response.
+        observed_model = getattr(response, "model", None)
         observed_finish_reason = getattr(response, "stop_reason", None)
 
         try:

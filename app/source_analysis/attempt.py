@@ -20,7 +20,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.provider_models import PricingProvenance, ProviderErrorInfo, TokenUsage
+from app.models.provider_models import (
+    ModelIdentitySource,
+    PricingProvenance,
+    ProviderErrorInfo,
+    TokenUsage,
+)
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -42,6 +47,9 @@ class SourceAnalysisAttempt(BaseModel):
     provider: str = Field(min_length=1)
     requested_model: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    # Provenance de `model` -- ver ModelResponse.model_identity_source
+    # (app/models/domain.py) pra semântica completa.
+    model_identity_source: ModelIdentitySource | None = None
 
     transport_status: Literal["success", "error"]
     transport_error: ProviderErrorInfo | None = None
