@@ -7,6 +7,7 @@ from app.presentation.schemas import (
     AccountingSummary,
     ClaimAssessmentPublic,
     ClaimPublic,
+    ClaimReconciliationOutcomePublic,
     CompletedRunAudit,
     CompletedRunResponse,
     DebateOutcome,
@@ -20,6 +21,7 @@ from app.presentation.schemas import (
     RoundAccountingPublic,
     RunConfigPublic,
     SourceAnalysisOutcome,
+    SourceJudgeReconciliationResultPublic,
     ValidSourceRelationPublic,
 )
 
@@ -153,6 +155,7 @@ def _completed_run_audit(**overrides) -> CompletedRunAudit:
         final_answer=_final_answer(),
         accounting=_accounting(),
         provider_execution_policy=None,
+        reconciliation=None,
     )
     fields.update(overrides)
     return CompletedRunAudit(**fields)
@@ -687,3 +690,44 @@ def test_cli_json_mode_unaffected_by_bidi_control_in_excerpt():
 
     dumped = json.loads(audit.model_dump_json())
     assert dumped["source_analysis"]["claim_results"][0]["excerpt"] == malicious
+
+
+# ---------------------------------------------------------------------------
+# Hardening (revisão focada) -- wording NEUTRO do estado genérico "mixed"/
+# source_channel_conflict precisa continuar neutro na saída HUMANA real do
+# CLI (não só nos dicionários de rótulo isolados). Caso representativo:
+# uma relação válida (supports) coexistindo com uma entrada rejeitada pra
+# MESMA claim -- "mixed" aqui NÃO significa que a fonte se contradiz, só
+# que a análise não reduziu os resultados a um único estado coerente.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_reconciliation() -> SourceJudgeReconciliationResultPublic:
+    return SourceJudgeReconciliationResultPublic(
+        contract_version="source_judge_reconciliation_v1",
+        status="complete",
+        claim_outcomes=[
+            ClaimReconciliationOutcomePublic(
+                claim_id="c1",
+                judge_verdict_id="verdict-1",
+                source_claim_result_ids=("rel-1", "rejected-1"),
+                source_state="mixed",
+                channel_relationship="source_channel_conflict",
+            )
+        ],
+    )
+
+
+def test_human_run_audit_mixed_reconciliation_uses_neutral_wording():
+    audit = _completed_run_audit(reconciliation=_mixed_reconciliation())
+
+    text = output.human_run_audit(audit)
+
+    assert "análise da fonte não redutível a um estado único" in text
+    # Nunca atribui a anomalia ao TEXTO da fonte, nunca implica conflito
+    # direcional (supports+contradicts observados), nunca implica
+    # autoconflito/falsidade da fonte.
+    assert "conflito interno na fonte" not in text
+    assert "a fonte contém resultados conflitantes" not in text
+    assert "a fonte se contradiz" not in text
+    assert "fonte estabelece" not in text

@@ -13,12 +13,28 @@ from app.editor.compose import (
     Editor,
     _bounded_question_excerpt,
     _bucket_for_verdict,
+    _first_excerpt,
     _render_final_answer_text,
+    _render_reconciliation_suffix,
+    _source_results_by_id,
 )
 from app.editor.schemas import EditorPlan
+from app.debate.claims import get_current_claims
+from app.debate.result import DebateResult
+from app.judge.result import JudgeResult
 from app.models.domain import ClaimAssessment
 from app.models.provider_models import ModelIdentitySource, TokenUsage
 from app.orchestrator.config import QuorumPolicy, RunConfig
+from app.reconciliation.errors import ReconciliationError
+from app.reconciliation.models import (
+    ChannelRelationship,
+    ClaimReconciliationOutcome,
+    SourceChannelState,
+    SourceJudgeReconciliationResult,
+)
+from app.reconciliation.reconcile import reconcile_source_and_judge
+from app.source_analysis.models import RejectedSourceEntry
+from app.source_analysis.result import SourceAnalysisResult
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 from tests.editor.fixtures import (
     debate_result,
@@ -29,6 +45,18 @@ from tests.editor.fixtures import (
     source_relation,
     verdict,
 )
+
+
+def _reconcile(
+    dr: DebateResult, jr: JudgeResult, sa: SourceAnalysisResult | None = None
+) -> SourceJudgeReconciliationResult:
+    """Constrói a reconciliação REAL via a única implementação de
+    produção (app/reconciliation/reconcile.py) -- os testes de
+    renderização nunca constroem um SourceJudgeReconciliationResult à
+    mão, pra provar que o Editor consome exatamente o que o pipeline real
+    produziria (ver seção 26 do contrato desta slice: "renderer uses
+    reconciliation rather than last-write-wins relation lookup")."""
+    return reconcile_source_and_judge(get_current_claims(dr.claims), jr, sa)
 
 
 def _run_config(**overrides) -> RunConfig:
@@ -814,9 +842,13 @@ async def test_supports_relation_appears_alongside_judge_assessment():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
-    assert "Relação com a fonte fornecida: a fonte apoia esta afirmação." in result.final_answer.answer_text
+    assert (
+        "Relação com a fonte fornecida: a fonte aponta na MESMA direção da avaliação do debate."
+        in result.final_answer.answer_text
+    )
     assert "a escola possuía 240 alunos" in result.final_answer.answer_text
     # o veredito do Judge continua presente, intacto, ANTES da linha de fonte
     assert "Avaliação: sustentada pelo debate. dado do enunciado" in result.final_answer.answer_text
@@ -855,12 +887,16 @@ async def test_contradicts_relation_appears_alongside_judge_assessment():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     text = result.final_answer.answer_text
     # I -- as duas dimensões coexistem, nenhuma reescreve a outra
     assert "Avaliação: sustentada pelo debate. Os dados fornecidos tratam apenas" in text
-    assert "Relação com a fonte fornecida: a fonte contradiz esta afirmação." in text
+    assert (
+        "Relação com a fonte fornecida: a fonte aponta na direção OPOSTA à avaliação do debate."
+        in text
+    )
     assert 'Trecho da fonte: "a instituição foi fundada em 2003"' in text
     # F -- o veredito do Judge não virou "rejected"/"contradicted" só
     # porque a fonte contradiz
@@ -883,6 +919,7 @@ async def test_unresolved_relation_never_becomes_support_or_contradiction():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     text = result.final_answer.answer_text
@@ -937,6 +974,7 @@ async def test_skipped_source_analysis_leaves_final_answer_unchanged():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     assert "Relação com a fonte fornecida" not in result.final_answer.answer_text
@@ -962,32 +1000,37 @@ async def test_rejected_source_entry_is_never_rendered_as_valid_evidence():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     assert "Relação com a fonte fornecida" not in result.final_answer.answer_text
 
 
-@pytest.mark.asyncio
-async def test_source_relation_for_unmatched_claim_id_is_silently_ignored():
-    """Seção 6 -- uma relação cujo claim_id não bate com nenhuma claim
-    avaliada pelo Judge (lineage/merge) nunca é anexada por fuzzy
-    matching -- degrada pra "sem relação", nunca erro nem tentativa de
-    reconciliação semântica."""
+def test_source_relation_for_unmatched_claim_id_fails_closed_at_reconciliation():
+    """Repair #1 (revisão adversarial) -- substitui o comportamento
+    antigo desta suíte ("silenciosamente ignorado"): uma relação cujo
+    claim_id não é mais corrente (lineage/merge, ou dado manual/
+    persistido anômalo) NÃO pode mais desaparecer sem rastro --
+    `reconcile_source_and_judge` agora recusa produzir um resultado que
+    descartaria esse registro real, levantando `ReconciliationError` ANTES
+    do Editor sequer receber a reconciliação (ver
+    tests/reconciliation/test_reconcile.py pra cobertura exaustiva desta
+    regra; este teste só confirma que o caminho de integração real do
+    Editor -- `_reconcile`, o mesmo helper usado por todo este arquivo --
+    propaga a mesma falha, nunca ignora silenciosamente)."""
     c1 = raw_claim("A", "resp-1", provider="openai")
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
     dr = debate_result([c1], [model_response("openai")])
     jr = judge_result(v)
-    sa = source_analysis_result([source_relation("claim-id-que-nao-foi-avaliada", "contradicts")])
-
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", _plan_payload())])
-    editor = Editor({"anthropic": provider})
-    result = await editor.compose(
-        dr, jr, _run_config(),
-        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
-        source_analysis_result=sa,
+    sa = source_analysis_result(
+        [
+            source_relation("claim-id-que-nao-foi-avaliada", "contradicts"),
+            RejectedSourceEntry(claim_id=c1.id, reason="omitted_by_model"),
+        ]
     )
 
-    assert "Relação com a fonte fornecida" not in result.final_answer.answer_text
+    with pytest.raises(ReconciliationError):
+        _reconcile(dr, jr, sa)
 
 
 @pytest.mark.asyncio
@@ -1014,6 +1057,7 @@ async def test_source_relation_excerpt_stays_byte_faithful_in_final_answer():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     assert excerpt_with_control_bytes in result.final_answer.answer_text
@@ -1059,6 +1103,7 @@ async def test_source_relation_rendering_matches_between_success_and_fallback():
     success_result = await success_editor.compose(
         dr, jr, rc, prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     fallback_provider = ScriptedProvider("anthropic", [transport_error_response("anthropic")])
@@ -1066,10 +1111,14 @@ async def test_source_relation_rendering_matches_between_success_and_fallback():
     fallback_result = await fallback_editor.compose(
         dr, jr, rc, prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     assert success_result.final_answer.answer_text == fallback_result.final_answer.answer_text
-    assert "Relação com a fonte fornecida: a fonte apoia esta afirmação." in success_result.final_answer.answer_text
+    assert (
+        "Relação com a fonte fornecida: a fonte aponta na MESMA direção da avaliação do debate."
+        in success_result.final_answer.answer_text
+    )
 
 
 @pytest.mark.asyncio
@@ -1090,10 +1139,14 @@ async def test_budget_exhausted_fallback_also_includes_source_relation():
         prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
         prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     assert result.final_answer.status == "deterministic_from_verdict"
-    assert "Relação com a fonte fornecida: a fonte contradiz esta afirmação." in result.final_answer.answer_text
+    assert (
+        "Relação com a fonte fornecida: a fonte aponta na direção OPOSTA à avaliação do debate."
+        in result.final_answer.answer_text
+    )
     assert 'Trecho da fonte: "trecho contrário"' in result.final_answer.answer_text
 
 
@@ -1129,6 +1182,7 @@ async def test_editor_plan_is_unaffected_by_source_analysis_presence():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     assert result.attempts[0].parse_status == "malformed"
@@ -1151,7 +1205,7 @@ def test_short_question_direct_opening_unchanged():
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
     plan = EditorPlan(opening_style="direct", closing_style="concise")
 
-    text = _render_final_answer_text("Qual a capital do Brasil?", v, [c1], plan, {})
+    text = _render_final_answer_text("Qual a capital do Brasil?", v, [c1], plan, None, {})
 
     assert text.startswith("Resultado da avaliação do debate:")
     assert "Qual a capital do Brasil?" not in text
@@ -1164,7 +1218,7 @@ def test_short_question_contextual_opening_stays_readable_and_unchanged():
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
     plan = EditorPlan(opening_style="contextual", closing_style="concise")
 
-    text = _render_final_answer_text("Qual a capital do Brasil?", v, [c1], plan, {})
+    text = _render_final_answer_text("Qual a capital do Brasil?", v, [c1], plan, None, {})
 
     assert 'Em resposta à pergunta "Qual a capital do Brasil?", segue' in text
     assert _CONTEXTUAL_OPENING_TRUNCATION_MARKER not in text
@@ -1178,7 +1232,7 @@ def test_long_single_line_question_is_bounded_in_contextual_opening():
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
     plan = EditorPlan(opening_style="contextual", closing_style="concise")
 
-    text = _render_final_answer_text(long_question, v, [c1], plan, {})
+    text = _render_final_answer_text(long_question, v, [c1], plan, None, {})
     opening_line = text.splitlines()[0]
 
     assert long_question not in text
@@ -1200,7 +1254,7 @@ def test_long_multiline_question_does_not_dump_all_lines():
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
     plan = EditorPlan(opening_style="contextual", closing_style="concise")
 
-    text = _render_final_answer_text(multiline_question, v, [c1], plan, {})
+    text = _render_final_answer_text(multiline_question, v, [c1], plan, None, {})
     opening_line = text.splitlines()[0]
 
     assert "Linha 19" not in text
@@ -1226,7 +1280,7 @@ def test_structured_requirements_prompt_is_not_echoed_wholesale():
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
     plan = EditorPlan(opening_style="contextual", closing_style="concise")
 
-    text = _render_final_answer_text(requirements_question, v, [c1], plan, {})
+    text = _render_final_answer_text(requirements_question, v, [c1], plan, None, {})
     opening_line = text.splitlines()[0]
 
     assert requirements_question not in text
@@ -1247,8 +1301,8 @@ def test_bounded_excerpt_is_deterministic_for_identical_input():
     c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
     plan = EditorPlan(opening_style="contextual", closing_style="concise")
-    text_a = _render_final_answer_text(question, v, [c1], plan, {})
-    text_b = _render_final_answer_text(question, v, [c1], plan, {})
+    text_a = _render_final_answer_text(question, v, [c1], plan, None, {})
+    text_b = _render_final_answer_text(question, v, [c1], plan, None, {})
     assert text_a == text_b
 
 
@@ -1324,11 +1378,13 @@ async def test_bounded_opening_coexists_with_source_relation_rendering_unchanged
         dr, jr, _run_config(question=long_question),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     assert long_question not in result.final_answer.answer_text
-    assert "Relação com a fonte fornecida: a fonte apoia esta afirmação." in (
-        result.final_answer.answer_text
+    assert (
+        "Relação com a fonte fornecida: a fonte aponta na MESMA direção da avaliação do debate."
+        in result.final_answer.answer_text
     )
     assert 'Trecho da fonte: "trecho relevante"' in result.final_answer.answer_text
 
@@ -1457,7 +1513,7 @@ def test_single_supported_claim_only_bucket_a_heading_appears():
     c1 = raw_claim("Uma claim sustentada.", "resp-1", provider="openai")
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
 
-    text = _render_final_answer_text("pergunta", v, [c1], _plan(), {})
+    text = _render_final_answer_text("pergunta", v, [c1], _plan(), None, {})
 
     assert _BUCKET_A_HEADING in text
     assert _BUCKET_B_HEADING not in text
@@ -1469,7 +1525,7 @@ def test_single_rejected_claim_only_bucket_b_heading_appears():
     c1 = raw_claim("Uma claim rejeitada.", "resp-1", provider="openai")
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="rejected", explanation="motivo")])
 
-    text = _render_final_answer_text("pergunta", v, [c1], _plan(), {})
+    text = _render_final_answer_text("pergunta", v, [c1], _plan(), None, {})
 
     assert _BUCKET_B_HEADING in text
     assert _BUCKET_A_HEADING not in text
@@ -1491,7 +1547,7 @@ def test_supported_and_partially_supported_share_bucket_a_in_order():
         ]
     )
 
-    text = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), {})
+    text = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), None, {})
 
     assert _BUCKET_B_HEADING not in text
     pos_heading = text.index(_BUCKET_A_HEADING)
@@ -1519,7 +1575,7 @@ def test_conflicting_unresolved_rejected_share_bucket_b_in_order():
         ]
     )
 
-    text = _render_final_answer_text("pergunta", v, [c1, c2, c3], _plan(), {})
+    text = _render_final_answer_text("pergunta", v, [c1, c2, c3], _plan(), None, {})
 
     assert _BUCKET_A_HEADING not in text
     pos_heading = text.index(_BUCKET_B_HEADING)
@@ -1545,7 +1601,7 @@ def test_mixed_verdicts_bucket_a_before_bucket_b_each_claim_once():
         ]
     )
 
-    text = _render_final_answer_text("pergunta", v, [c1, c2, c3, c4], _plan(), {})
+    text = _render_final_answer_text("pergunta", v, [c1, c2, c3, c4], _plan(), None, {})
 
     pos_a_heading = text.index(_BUCKET_A_HEADING)
     pos_b_heading = text.index(_BUCKET_B_HEADING)
@@ -1586,7 +1642,7 @@ def test_interleaved_judge_order_preserved_within_each_bucket():
     )
 
     text = _render_final_answer_text(
-        "pergunta", v, [c_a1, c_b1, c_a2, c_b2], _plan(), {}
+        "pergunta", v, [c_a1, c_b1, c_a2, c_b2], _plan(), None, {}
     )
 
     # dentro do bucket A: A-Zulu antes de A-Alpha (ordem do Judge, nunca
@@ -1608,7 +1664,7 @@ def test_verdict_labels_and_explanations_unchanged_inside_claim_blocks():
         [ClaimAssessment(claim_id=c1.id, verdict="conflicting", explanation="motivo específico")]
     )
 
-    text = _render_final_answer_text("pergunta", v, [c1], _plan(), {})
+    text = _render_final_answer_text("pergunta", v, [c1], _plan(), None, {})
 
     assert "Avaliação: com posições conflitantes, não resolvida. motivo específico" in text
 
@@ -1627,7 +1683,17 @@ async def test_bucketed_answer_preserves_supports_relation_on_correct_claim():
     )
     dr = debate_result([c1, c2], [model_response("openai")])
     jr = judge_result(v)
-    sa = source_analysis_result([source_relation(c1.id, "supports", excerpt="trecho de apoio")])
+    # c2 precisa de sua PRÓPRIA entrada (mesma garantia real do analyzer --
+    # toda claim corrente sempre tem um resultado quando a análise
+    # conclui, ver app/source_analysis/analyzer.py::_build_claim_results)
+    # -- nunca deixada sem NENHUM resultado, que violaria essa garantia e
+    # faria reconcile_source_and_judge falhar fechado.
+    sa = source_analysis_result(
+        [
+            source_relation(c1.id, "supports", excerpt="trecho de apoio"),
+            RejectedSourceEntry(claim_id=c2.id, reason="omitted_by_model"),
+        ]
+    )
 
     provider = ScriptedProvider("anthropic", [text_response("anthropic", _plan_payload())])
     editor = Editor({"anthropic": provider})
@@ -1635,6 +1701,7 @@ async def test_bucketed_answer_preserves_supports_relation_on_correct_claim():
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     text = result.final_answer.answer_text
@@ -1644,7 +1711,10 @@ async def test_bucketed_answer_preserves_supports_relation_on_correct_claim():
     # a relação aparece DEPOIS do bloco de c1 e ANTES do bloco de c2
     # (c1 está no bucket A, c2 no bucket B, em seções separadas)
     assert pos_c1 < pos_relation < pos_c2
-    assert "Relação com a fonte fornecida: a fonte apoia esta afirmação." in text
+    assert (
+        "Relação com a fonte fornecida: a fonte aponta na MESMA direção da avaliação do debate."
+        in text
+    )
 
 
 @pytest.mark.asyncio
@@ -1661,8 +1731,14 @@ async def test_bucketed_answer_preserves_contradicts_relation_on_correct_claim()
     )
     dr = debate_result([c1, c2], [model_response("openai")])
     jr = judge_result(v)
+    # c2 precisa de sua PRÓPRIA entrada -- mesma razão do teste de supports
+    # acima (garantia real do analyzer, nunca uma claim corrente sem
+    # nenhum resultado quando a análise conclui).
     sa = source_analysis_result(
-        [source_relation(c1.id, "contradicts", excerpt="trecho contrário")]
+        [
+            source_relation(c1.id, "contradicts", excerpt="trecho contrário"),
+            RejectedSourceEntry(claim_id=c2.id, reason="omitted_by_model"),
+        ]
     )
 
     provider = ScriptedProvider("anthropic", [text_response("anthropic", _plan_payload())])
@@ -1671,17 +1747,23 @@ async def test_bucketed_answer_preserves_contradicts_relation_on_correct_claim()
         dr, jr, _run_config(),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
         source_analysis_result=sa,
+        reconciliation=_reconcile(dr, jr, sa),
     )
 
     text = result.final_answer.answer_text
     # c1 (unresolved -> bucket B) continua carregando a relação de
     # contradição, mesmo que c2 (supported -> bucket A) seja renderizada
-    # numa seção ANTES dela -- a relação nunca "migra" de claim.
+    # numa seção ANTES dela -- a relação nunca "migra" de claim. Judge
+    # unresolved + source contradicts -> SOURCE_ADDS_DIRECTION (o debate
+    # não decidiu, a fonte acrescenta uma direção que ele não tinha).
     pos_c1 = text.index("Claim contradita pela fonte.")
     pos_relation = text.index('Trecho da fonte: "trecho contrário"')
     assert pos_c1 < pos_relation
     assert text.index(_BUCKET_B_HEADING) < pos_c1
-    assert "Relação com a fonte fornecida: a fonte contradiz esta afirmação." in text
+    assert (
+        "Relação com a fonte fornecida: o debate não decidiu esta afirmação, "
+        "mas ela é contradita pela fonte fornecida." in text
+    )
     # c2 (bucket A, renderizada ANTES de c1 nesta configuração de
     # veredictos) nunca ganha a relação de c1 -- a relação aparece
     # exatamente uma vez no texto inteiro, presa ao bloco de c1.
@@ -1695,7 +1777,7 @@ def test_direct_opening_unchanged_by_bucketing():
     c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
 
-    text = _render_final_answer_text("pergunta", v, [c1], _plan("direct"), {})
+    text = _render_final_answer_text("pergunta", v, [c1], _plan("direct"), None, {})
 
     assert text.startswith("Resultado da avaliação do debate:")
     assert _BUCKET_A_HEADING in text
@@ -1709,7 +1791,7 @@ def test_contextual_opening_bounded_behavior_preserved_with_buckets():
     c1 = raw_claim("Uma claim.", "resp-1", provider="openai")
     v = verdict([ClaimAssessment(claim_id=c1.id, verdict="rejected", explanation="ok")])
 
-    text = _render_final_answer_text(long_question, v, [c1], _plan("contextual"), {})
+    text = _render_final_answer_text(long_question, v, [c1], _plan("contextual"), None, {})
     opening_line = text.splitlines()[0]
 
     assert long_question not in text
@@ -1726,9 +1808,9 @@ def test_limitation_closing_unchanged_by_bucketing():
         debate_limitations=["cobertura parcial do debate"],
     )
 
-    concise_text = _render_final_answer_text("pergunta", v, [c1], _plan("direct", "concise"), {})
+    concise_text = _render_final_answer_text("pergunta", v, [c1], _plan("direct", "concise"), None, {})
     focused_text = _render_final_answer_text(
-        "pergunta", v, [c1], _plan("direct", "limitations_focused"), {}
+        "pergunta", v, [c1], _plan("direct", "limitations_focused"), None, {}
     )
 
     assert "Limitações do debate:\n- cobertura parcial do debate" in concise_text
@@ -1811,8 +1893,8 @@ def test_bucketed_rendering_is_deterministic_for_identical_input():
         ]
     )
 
-    text_a = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), {})
-    text_b = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), {})
+    text_a = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), None, {})
+    text_b = _render_final_answer_text("pergunta", v, [c1, c2], _plan(), None, {})
 
     assert text_a == text_b
 
@@ -1831,7 +1913,7 @@ def test_claim_block_count_matches_assessment_count_regardless_of_bucketing():
     ]
     v = verdict(assessments)
 
-    text = _render_final_answer_text("pergunta", v, [c1, c2, c3], _plan(), {})
+    text = _render_final_answer_text("pergunta", v, [c1, c2, c3], _plan(), None, {})
 
     claim_block_count = sum(
         1 for line in text.splitlines() if line.startswith("- ")
@@ -1847,3 +1929,345 @@ def test_bucket_headings_never_imply_truth_or_importance():
         lowered = heading.lower()
         for term in forbidden_terms:
             assert term not in lowered
+
+
+def test_build_editor_request_does_not_accept_source_analysis_or_reconciliation():
+    """Seção 1/13 do contrato -- estrutural: `build_editor_request` (o
+    ÚNICO ponto que monta o prompt real da LLM Editor) nunca teve, e
+    continua sem ter, nenhum parâmetro de Source Analysis/reconciliação."""
+    import inspect
+
+    from app.editor.context import build_editor_request
+
+    signature = inspect.signature(build_editor_request)
+    assert "source_analysis_result" not in signature.parameters
+    assert "reconciliation" not in signature.parameters
+
+
+def test_editor_context_module_never_imports_source_analysis_or_reconciliation():
+    import inspect
+
+    import app.editor.context as context_module
+
+    source = inspect.getsource(context_module)
+    assert "source_analysis" not in source.lower()
+    assert "reconciliation" not in source.lower()
+
+
+# ---------------------------------------------------------------------------
+# Repair #3 (revisão adversarial) -- fronteira de provenance PRÓPRIA do
+# Editor pra resolução de excerto: mesmo que `validate_reconciliation_coherence`
+# já devesse ter rejeitado uma reconciliação incoerente antes de chegar
+# aqui, `_first_excerpt` NUNCA confia cegamente no que recebe. Testes
+# diretos contra a função privada (bypassando deliberadamente a validação
+# de coerência via tampering, exatamente como o probe adversarial fez).
+# ---------------------------------------------------------------------------
+
+
+def _outcome(**overrides) -> ClaimReconciliationOutcome:
+    fields = dict(
+        claim_id="claim-a",
+        judge_verdict_id="verdict-1",
+        source_claim_result_ids=("rel-a",),
+        source_state=SourceChannelState.SUPPORTS,
+        channel_relationship=ChannelRelationship.DIRECTIONALLY_ALIGNED,
+    )
+    fields.update(overrides)
+    return ClaimReconciliationOutcome(**fields)
+
+
+def test_first_excerpt_rejects_relation_belonging_to_another_claim():
+    """Reprodução direta do probe Codex: outcome da claim A referencia
+    uma ValidSourceRelation real, mas que pertence à claim B --
+    EXCERPT-FROM-B nunca pode ser aceito sob claim A."""
+    rel_b = source_relation("claim-b", "supports", excerpt="trecho da claim B")
+    outcome = _outcome(claim_id="claim-a", source_claim_result_ids=(rel_b.id,))
+    results_by_id = _source_results_by_id(source_analysis_result([rel_b]))
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_rejects_supports_outcome_referencing_contradicts_relation():
+    rel = source_relation("claim-a", "contradicts", excerpt="trecho contraditório")
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(rel.id,),
+        source_state=SourceChannelState.SUPPORTS,
+        channel_relationship=ChannelRelationship.DIRECTIONALLY_ALIGNED,
+    )
+    results_by_id = _source_results_by_id(source_analysis_result([rel]))
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_rejects_contradicts_outcome_referencing_supports_relation():
+    rel = source_relation("claim-a", "supports", excerpt="trecho de apoio")
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(rel.id,),
+        source_state=SourceChannelState.CONTRADICTS,
+        channel_relationship=ChannelRelationship.IN_TENSION,
+    )
+    results_by_id = _source_results_by_id(source_analysis_result([rel]))
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_rejects_missing_referenced_id():
+    outcome = _outcome(source_claim_result_ids=("id-que-nao-existe",))
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, {})
+
+
+def test_first_excerpt_rejects_rejected_entry_id_where_directional_excerpt_expected():
+    rejected = RejectedSourceEntry(claim_id="claim-a", reason="omitted_by_model")
+    outcome = _outcome(source_claim_result_ids=(rejected.id,))
+    results_by_id = _source_results_by_id(source_analysis_result([rejected]))
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_accepts_coherent_relation_and_returns_its_excerpt():
+    rel = source_relation("claim-a", "supports", excerpt="trecho correto")
+    outcome = _outcome(claim_id="claim-a", source_claim_result_ids=(rel.id,))
+    results_by_id = _source_results_by_id(source_analysis_result([rel]))
+
+    assert _first_excerpt(outcome, results_by_id) == "trecho correto"
+
+
+def test_first_excerpt_skips_coherent_entry_with_no_excerpt_to_a_later_one():
+    """Ausência de excerto NÃO é uma violação de provenance -- avança pro
+    próximo id coerente em vez de falhar. `ValidSourceRelation` real
+    sempre preenche excerpt pra supports/contradicts (ver
+    `_excerpt_matches_relation`); o `model_copy` abaixo simula
+    defensivamente um dado anômalo só pra exercitar este ramo (nunca
+    produzido pelo pipeline real)."""
+    rel_without_excerpt = source_relation("claim-a", "supports").model_copy(
+        update={"excerpt": None, "excerpt_start": None, "excerpt_end": None}
+    )
+    rel_with_excerpt = source_relation("claim-a", "supports", excerpt="trecho final")
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(rel_without_excerpt.id, rel_with_excerpt.id),
+    )
+    # Monta o lookup diretamente (sem passar pelo container
+    # SourceAnalysisResult, que revalida a relação anômala construída
+    # acima e rejeitaria antes mesmo de chegar em `_first_excerpt`).
+    results_by_id = {rel_without_excerpt.id: rel_without_excerpt, rel_with_excerpt.id: rel_with_excerpt}
+
+    assert _first_excerpt(outcome, results_by_id) == "trecho final"
+
+
+def test_first_excerpt_returns_none_for_non_directional_source_state():
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(),
+        source_state=SourceChannelState.NOT_SUPPLIED,
+        channel_relationship=ChannelRelationship.NOT_COMPARABLE,
+    )
+
+    assert _first_excerpt(outcome, {}) is None
+
+
+# ---------------------------------------------------------------------------
+# Seção 14 (revisão adversarial) -- o renderizador NUNCA vira uma segunda
+# fonte de mapeamento Judge x source_state: `_render_reconciliation_suffix`
+# só lê `outcome.channel_relationship` já resolvido -- nunca recebe
+# judge_verdict como parâmetro, nunca recalcula a classificação por conta
+# própria.
+# ---------------------------------------------------------------------------
+
+
+def test_render_reconciliation_suffix_has_no_judge_verdict_parameter():
+    """Estrutural -- a assinatura da função não aceita NENHUM dado de
+    veredito do Judge; só pode consumir o relacionamento já resolvido."""
+    import inspect
+
+    signature = inspect.signature(_render_reconciliation_suffix)
+    params = set(signature.parameters)
+    assert params == {"outcome", "source_results_by_id"}
+
+
+def test_render_reconciliation_suffix_never_references_judge_verdict_value():
+    """Estrutural -- o corpo da função nunca lê nenhum atributo de
+    veredito do Judge (ex.: `.verdict`), só `channel_relationship`/
+    `source_state` já resolvidos do outcome -- prova que não existe uma
+    segunda tabela semântica Judge x source_state escondida aqui."""
+    import inspect
+
+    source = inspect.getsource(_render_reconciliation_suffix)
+    assert ".verdict" not in source
+    assert "judge_verdict_value" not in source
+
+
+@pytest.mark.parametrize(
+    "relationship,must_contain",
+    [
+        (ChannelRelationship.DIRECTIONALLY_ALIGNED, "MESMA direção"),
+        (ChannelRelationship.IN_TENSION, "direção OPOSTA"),
+        (ChannelRelationship.SOURCE_CHANNEL_CONFLICT, "não puderam ser reduzidas"),
+    ],
+)
+def test_render_reconciliation_suffix_follows_supplied_relationship_alone(
+    relationship, must_contain
+):
+    """A renderização segue EXCLUSIVAMENTE o `channel_relationship` já
+    fornecido no outcome -- nunca recomputado a partir de um veredito do
+    Judge que a função nem recebe como parâmetro. Usa `channel_relationship`
+    diretamente (sem qualquer JudgeVerdict/assessment envolvido nesta
+    chamada) pra provar que o resultado depende só do que foi suprido."""
+    is_mixed = relationship == ChannelRelationship.SOURCE_CHANNEL_CONFLICT
+    rel1 = source_relation("claim-a", "supports", excerpt="trecho 1")
+    results_by_id = {rel1.id: rel1}
+    ids: tuple[str, ...] = (rel1.id,)
+    if is_mixed:
+        rel2 = source_relation("claim-a", "contradicts", excerpt="trecho 2")
+        results_by_id[rel2.id] = rel2
+        ids = (rel1.id, rel2.id)
+
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=ids,
+        source_state=SourceChannelState.MIXED if is_mixed else SourceChannelState.SUPPORTS,
+        channel_relationship=relationship,
+    )
+    suffix = _render_reconciliation_suffix(outcome, results_by_id)
+
+    assert suffix is not None
+    assert must_contain in suffix
+
+
+# ---------------------------------------------------------------------------
+# Repair F3 (revisão focada) -- `_first_excerpt` NUNCA pode devolver um
+# excerto válido encontrado ANTES de uma referência malformada mais
+# adiante na mesma lista ter sido validada. A implementação anterior
+# retornava assim que encontrava o primeiro excerto não-nulo, pulando a
+# validação de qualquer id posterior -- "valid-first / later-invalid"
+# escapava sem erro. Estes testes falham contra essa implementação
+# antiga e passam contra o repair (validação completa antes de
+# retornar).
+# ---------------------------------------------------------------------------
+
+
+def test_first_excerpt_valid_first_then_missing_id_fails_closed():
+    """A: excerto válido no primeiro id não pode escapar antes do
+    segundo id (inexistente) ser validado."""
+    rel_a = source_relation("claim-a", "supports", excerpt="excerto válido")
+    outcome = _outcome(
+        claim_id="claim-a", source_claim_result_ids=(rel_a.id, "id-que-nao-existe")
+    )
+    results_by_id = {rel_a.id: rel_a}
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_valid_first_then_rejected_entry_fails_closed():
+    """B: excerto válido no primeiro id não pode escapar antes do
+    segundo id (RejectedSourceEntry) ser validado."""
+    rel_a = source_relation("claim-a", "supports", excerpt="excerto válido")
+    rejected = RejectedSourceEntry(claim_id="claim-a", reason="omitted_by_model")
+    outcome = _outcome(claim_id="claim-a", source_claim_result_ids=(rel_a.id, rejected.id))
+    results_by_id = {rel_a.id: rel_a, rejected.id: rejected}
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_valid_first_then_cross_claim_relation_fails_closed():
+    """C: excerto válido no primeiro id não pode escapar antes do
+    segundo id (relação real, mas pertencente à claim B) ser validado."""
+    rel_a = source_relation("claim-a", "supports", excerpt="excerto válido")
+    rel_b = source_relation("claim-b", "supports", excerpt="EXCERPT-FROM-B")
+    outcome = _outcome(claim_id="claim-a", source_claim_result_ids=(rel_a.id, rel_b.id))
+    results_by_id = {rel_a.id: rel_a, rel_b.id: rel_b}
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_valid_first_then_opposite_direction_fails_closed():
+    """D: excerto válido no primeiro id não pode escapar antes do
+    segundo id (mesma claim, mas direção contradicts) ser validado."""
+    rel_supports = source_relation("claim-a", "supports", excerpt="excerto válido")
+    rel_contradicts = source_relation("claim-a", "contradicts", excerpt="excerto oposto")
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(rel_supports.id, rel_contradicts.id),
+        source_state=SourceChannelState.SUPPORTS,
+    )
+    results_by_id = {rel_supports.id: rel_supports, rel_contradicts.id: rel_contradicts}
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)
+
+
+def test_first_excerpt_two_coherent_same_direction_both_validate_returns_first():
+    """E (controle positivo): duas relações coerentes e válidas na mesma
+    direção -- ambas validam, o excerto devolvido é o do PRIMEIRO id."""
+    rel_first = source_relation("claim-a", "supports", excerpt="FIRST")
+    rel_second = source_relation("claim-a", "supports", excerpt="SECOND")
+    outcome = _outcome(claim_id="claim-a", source_claim_result_ids=(rel_first.id, rel_second.id))
+    results_by_id = {rel_first.id: rel_first, rel_second.id: rel_second}
+
+    assert _first_excerpt(outcome, results_by_id) == "FIRST"
+
+
+def test_first_excerpt_first_has_excerpt_second_does_not_returns_first():
+    """F (controle positivo): primeira referência coerente tem excerto,
+    segunda (também coerente) não tem -- ambas validam, devolve FIRST."""
+    rel_first = source_relation("claim-a", "supports", excerpt="FIRST")
+    rel_second_no_excerpt = source_relation("claim-a", "supports").model_copy(
+        update={"excerpt": None, "excerpt_start": None, "excerpt_end": None}
+    )
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(rel_first.id, rel_second_no_excerpt.id),
+    )
+    results_by_id = {rel_first.id: rel_first, rel_second_no_excerpt.id: rel_second_no_excerpt}
+
+    assert _first_excerpt(outcome, results_by_id) == "FIRST"
+
+
+def test_first_excerpt_first_has_no_excerpt_second_does_returns_second():
+    """G (controle positivo): primeira referência coerente NÃO tem
+    excerto, segunda (também coerente) tem -- ambas validam, devolve
+    SECOND (o primeiro excerto USÁVEL encontrado na ordem)."""
+    rel_first_no_excerpt = source_relation("claim-a", "supports").model_copy(
+        update={"excerpt": None, "excerpt_start": None, "excerpt_end": None}
+    )
+    rel_second = source_relation("claim-a", "supports", excerpt="SECOND")
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(rel_first_no_excerpt.id, rel_second.id),
+    )
+    results_by_id = {rel_first_no_excerpt.id: rel_first_no_excerpt, rel_second.id: rel_second}
+
+    assert _first_excerpt(outcome, results_by_id) == "SECOND"
+
+
+def test_first_excerpt_first_valid_third_malformed_fails_closed():
+    """H: três referências coerentes/parcialmente coerentes onde a
+    primeira tem excerto e a TERCEIRA é malformada -- prova que um
+    repair que só valida "mais um elemento" (mas ainda para cedo) não
+    passaria neste teste."""
+    rel_first = source_relation("claim-a", "supports", excerpt="FIRST")
+    rel_second = source_relation("claim-a", "supports", excerpt="SECOND")
+    rel_third_cross_claim = source_relation("claim-b", "supports", excerpt="EXCERPT-FROM-B")
+    outcome = _outcome(
+        claim_id="claim-a",
+        source_claim_result_ids=(rel_first.id, rel_second.id, rel_third_cross_claim.id),
+    )
+    results_by_id = {
+        rel_first.id: rel_first,
+        rel_second.id: rel_second,
+        rel_third_cross_claim.id: rel_third_cross_claim,
+    }
+
+    with pytest.raises(ReconciliationError):
+        _first_excerpt(outcome, results_by_id)

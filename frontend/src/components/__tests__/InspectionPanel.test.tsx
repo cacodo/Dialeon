@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { InspectionPanel } from '../InspectionPanel'
 import { apiClient } from '../../api/client'
@@ -127,6 +127,19 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       has_unknown_accounting_components: false,
     },
     provider_execution_policy: null,
+    reconciliation: {
+      contract_version: 'source_judge_reconciliation_v1',
+      status: 'complete',
+      claim_outcomes: [
+        {
+          claim_id: 'c1',
+          judge_verdict_id: 'verdict-1',
+          source_claim_result_ids: ['rel-1'],
+          source_state: 'supports',
+          channel_relationship: 'directionally_aligned',
+        },
+      ],
+    },
     ...overrides,
   }
 }
@@ -145,10 +158,16 @@ describe('InspectionPanel — Answer First / inspeção progressiva (patch de vi
     render(<InspectionPanel runId="run-1" />)
     await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
 
-    expect(await screen.findByRole('heading', { name: /análise da fonte/i })).toBeInTheDocument()
-    expect(screen.getByText(/apoia esta afirmação/i)).toBeInTheDocument()
+    const sourceAnalysisHeading = await screen.findByRole('heading', { name: /análise da fonte/i })
+    expect(sourceAnalysisHeading).toBeInTheDocument()
+    const sourceAnalysisSection = sourceAnalysisHeading.closest('section')
+    expect(sourceAnalysisSection).not.toBeNull()
+    expect(within(sourceAnalysisSection as HTMLElement).getByText(/apoia esta afirmação/i)).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /afirmações/i })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /julgamento/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /^julgamento$/i })).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: /reconciliação entre julgamento e fonte/i }),
+    ).toBeInTheDocument()
   })
 
   it('G: quando nenhuma fonte foi fornecida, a seção mostra isso honestamente, sem esconder a seção', async () => {

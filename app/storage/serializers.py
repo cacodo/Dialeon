@@ -22,6 +22,7 @@ a ser `None` quando os dois estão nulos.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from app.debate.numeric_verification import ArithmeticAssertion, DeterministicVerificationAttempt
 from app.debate.processing_record import ClaimProcessingAttempt
@@ -42,6 +43,12 @@ from app.models.provider_models import (
     ProviderErrorInfo,
     TokenUsage,
 )
+from app.reconciliation.models import (
+    ChannelRelationship,
+    ClaimReconciliationOutcome,
+    SourceChannelState,
+    SourceJudgeReconciliationResult,
+)
 from app.source_analysis.attempt import SourceAnalysisAttempt
 from app.source_analysis.models import (
     RejectedSourceEntry,
@@ -52,6 +59,8 @@ from app.storage.models import (
     ClaimAssessmentRow,
     ClaimMergeRow,
     ClaimProcessingAttemptRow,
+    ClaimReconciliationOutcomeRow,
+    ClaimReconciliationSourceResultRow,
     ClaimRow,
     ClaimSupportRow,
     DeterministicVerificationAttemptRow,
@@ -62,6 +71,7 @@ from app.storage.models import (
     ModelResponseRow,
     SourceAnalysisAttemptRow,
     SourceClaimAnalysisResultRow,
+    SourceJudgeReconciliationRow,
 )
 
 
@@ -719,5 +729,85 @@ def source_claim_analysis_result_from_row(
         claim_id=row.claim_id,
         reason=row.reason,
         raw_entry=row.raw_entry_json,
+        created_at=dt_from_naive_utc(row.created_at),
+    )
+
+
+# ---------------------------------------------------------------------------
+# SourceJudgeReconciliationResult (Cross-Channel Reconciliation V1)
+# ---------------------------------------------------------------------------
+
+
+def source_judge_reconciliation_rows(
+    reconciliation: SourceJudgeReconciliationResult, *, council_run_id: str
+) -> tuple[
+    SourceJudgeReconciliationRow,
+    list[ClaimReconciliationOutcomeRow],
+    list[ClaimReconciliationSourceResultRow],
+]:
+    """Devolve os 3 níveis da árvore de uma vez -- o chamador
+    (`CouncilRepository.save_success`) decide a ordem de `session.add()`
+    (raiz -> outcomes -> source-result links, mesma disciplina topológica
+    de FK do resto do módulo). `outcome_id` é um id de armazenamento
+    PRÓPRIO (gerado aqui, nunca parte do domínio -- `ClaimReconciliationOutcome`
+    não tem `id` -- ver app/reconciliation/models.py): existe só pra dar à
+    tabela de junção algo estável pra referenciar, nunca reconstituído de
+    volta no domínio (a reconstrução usa `claim_id`, a chave natural)."""
+    reconciliation_row = SourceJudgeReconciliationRow(
+        id=reconciliation.id,
+        council_run_id=council_run_id,
+        contract_version=reconciliation.contract_version,
+        status=reconciliation.status,
+        created_at=dt_to_naive_utc(reconciliation.created_at),
+    )
+    outcome_rows: list[ClaimReconciliationOutcomeRow] = []
+    source_result_rows: list[ClaimReconciliationSourceResultRow] = []
+    for position, outcome in enumerate(reconciliation.claim_outcomes):
+        outcome_id = str(uuid4())
+        outcome_rows.append(
+            ClaimReconciliationOutcomeRow(
+                id=outcome_id,
+                reconciliation_id=reconciliation.id,
+                claim_id=outcome.claim_id,
+                position=position,
+                judge_verdict_id=outcome.judge_verdict_id,
+                source_state=outcome.source_state.value,
+                channel_relationship=outcome.channel_relationship.value,
+            )
+        )
+        for result_position, source_result_id in enumerate(outcome.source_claim_result_ids):
+            source_result_rows.append(
+                ClaimReconciliationSourceResultRow(
+                    outcome_id=outcome_id,
+                    source_claim_result_id=source_result_id,
+                    position=result_position,
+                )
+            )
+    return reconciliation_row, outcome_rows, source_result_rows
+
+
+def source_judge_reconciliation_from_rows(
+    row: SourceJudgeReconciliationRow,
+    outcome_rows: list[ClaimReconciliationOutcomeRow],
+    source_result_ids_by_outcome_id: dict[str, list[str]],
+) -> SourceJudgeReconciliationResult:
+    """Inverso exato de `source_judge_reconciliation_rows`. `outcome_rows`
+    precisa já vir ORDENADO por `position` (ORDER BY, ver
+    CouncilRepository) -- mesma disciplina do resto do módulo, a ordem de
+    retorno do SQL nunca é contrato de persistência sozinha."""
+    return SourceJudgeReconciliationResult(
+        id=row.id,
+        contract_version=row.contract_version,
+        status=row.status,
+        claim_outcomes=[
+            ClaimReconciliationOutcome(
+                claim_id=o.claim_id,
+                judge_verdict_id=o.judge_verdict_id,
+                source_claim_result_ids=tuple(source_result_ids_by_outcome_id.get(o.id, [])),
+                source_state=SourceChannelState(o.source_state),
+                channel_relationship=ChannelRelationship(o.channel_relationship),
+            )
+            for o in outcome_rows
+        ],
         created_at=dt_from_naive_utc(row.created_at),
     )

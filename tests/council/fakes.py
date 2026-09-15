@@ -5,6 +5,7 @@ from app.editor.result import EditorResult
 from app.judge.result import JudgeResult
 from app.judge.strategy import JudgeStrategy
 from app.orchestrator.config import RunConfig
+from app.reconciliation.models import SourceJudgeReconciliationResult
 from app.source_analysis.result import SourceAnalysisResult
 
 
@@ -93,6 +94,9 @@ class FakeEditor:
         # source_analysis_result chega ao Editor sem precisar duplicar
         # lógica de renderização aqui.
         self.source_analysis_result_calls: list[SourceAnalysisResult | None] = []
+        # Cross-Channel Reconciliation V1 -- idem, pra
+        # `reconciliation` (ver tests/council/test_runner.py).
+        self.reconciliation_calls: list[SourceJudgeReconciliationResult | None] = []
 
     async def compose(
         self,
@@ -104,12 +108,14 @@ class FakeEditor:
         prior_output_tokens: int = 0,
         prior_cost_usd: float = 0.0,
         source_analysis_result: SourceAnalysisResult | None = None,
+        reconciliation: SourceJudgeReconciliationResult | None = None,
     ) -> EditorResult:
         self.calls.append((debate_result, judge_result, run_config))
         self.prior_accounting_calls.append(
             (prior_input_tokens, prior_output_tokens, prior_cost_usd)
         )
         self.source_analysis_result_calls.append(source_analysis_result)
+        self.reconciliation_calls.append(reconciliation)
         if self._exc is not None:
             raise self._exc
         assert self._result is not None

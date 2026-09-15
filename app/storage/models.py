@@ -606,6 +606,87 @@ class FinalAnswerRow(Base):
     created_at: Mapped[datetime]
 
 
+class SourceJudgeReconciliationRow(Base):
+    """Cross-Channel Reconciliation V1 -- raiz da árvore de reconciliação
+    determinística Source<->Judge (ver app/reconciliation/models.py).
+    Tabela NOVA (não uma coluna adicionada a tabela existente) -- entra
+    em `Base.metadata.create_all()` de graça, sem precisar de nenhum
+    `_upgrade_legacy_*` (app/storage/database.py): uma linha ausente pra
+    um `council_run_id` histórico já reconstrói honestamente como
+    `None`, nunca `not_comparable` (ver docstring de
+    `SourceJudgeReconciliationResult`)."""
+
+    __tablename__ = "source_judge_reconciliations"
+    __table_args__ = (UniqueConstraint("council_run_id"),)
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    council_run_id: Mapped[str] = mapped_column(ForeignKey("council_runs.id"))
+    contract_version: Mapped[str]
+    status: Mapped[str]  # "complete" | "judge_unavailable"
+    created_at: Mapped[datetime]
+
+
+class ClaimReconciliationOutcomeRow(Base):
+    """Um `ClaimReconciliationOutcome` por claim corrente -- ver
+    app/reconciliation/models.py. `judge_verdict_id` NULLABLE (sem FK
+    forçada -- `NULL` é honesto quando `status='judge_unavailable'`,
+    nunca um veredito fabricado)."""
+
+    __tablename__ = "claim_reconciliation_outcomes"
+    __table_args__ = (
+        Index("ix_claim_reconciliation_outcomes_reconciliation_id", "reconciliation_id"),
+        # Repair #9 (revisão adversarial) -- uma reconciliação nunca tem
+        # dois outcomes pra mesma claim, nem dois outcomes na mesma
+        # posição -- constraints estruturais que o storage já assume
+        # (ver SourceJudgeReconciliationResult._no_duplicate_claim_outcomes
+        # e a ordem de `claim_outcomes`), agora aplicadas pelo próprio
+        # banco.
+        UniqueConstraint("reconciliation_id", "claim_id"),
+        UniqueConstraint("reconciliation_id", "position"),
+    )
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    reconciliation_id: Mapped[str] = mapped_column(
+        ForeignKey("source_judge_reconciliations.id")
+    )
+    claim_id: Mapped[str] = mapped_column(ForeignKey("claims.id"))
+    # Ordem de SourceJudgeReconciliationResult.claim_outcomes (=
+    # get_current_claims no momento da reconciliação) -- mesma disciplina
+    # de toda outra lista persistida desde a Etapa 10.
+    position: Mapped[int] = mapped_column(default=0)
+
+    judge_verdict_id: Mapped[str | None] = mapped_column(ForeignKey("judge_verdicts.id"))
+    source_state: Mapped[str]
+    channel_relationship: Mapped[str]
+
+
+class ClaimReconciliationSourceResultRow(Base):
+    """Junção que preserva a ordem EXATA de
+    `ClaimReconciliationOutcome.source_claim_result_ids` -- nunca um
+    último-a-escrever-vence, nunca um id descartado (ver seção 8 do
+    contrato desta slice). Mesma disciplina de `ClaimMergeRow`
+    (par de FKs + position)."""
+
+    __tablename__ = "claim_reconciliation_source_results"
+    __table_args__ = (
+        # Repair #9 (revisão adversarial) -- um outcome nunca tem dois
+        # links na mesma posição (a PK composta abaixo já impede o
+        # mesmo source_claim_result_id duas vezes pro mesmo outcome --
+        # ver ClaimReconciliationOutcome._no_duplicate_source_result_ids
+        # -- mas não impede, por si só, duas linhas com posições
+        # colidindo).
+        UniqueConstraint("outcome_id", "position"),
+    )
+
+    outcome_id: Mapped[str] = mapped_column(
+        ForeignKey("claim_reconciliation_outcomes.id"), primary_key=True
+    )
+    source_claim_result_id: Mapped[str] = mapped_column(
+        ForeignKey("source_claim_analysis_results.id"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(default=0)
+
+
 class QuorumFailureRow(Base):
     __tablename__ = "quorum_failures"
 

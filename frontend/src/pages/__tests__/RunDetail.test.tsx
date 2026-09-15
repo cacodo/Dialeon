@@ -190,6 +190,11 @@ describe('RunDetail', () => {
       final_answer: completedRun.final_answer,
       accounting: completedRun.accounting,
       provider_execution_policy: completedRun.provider_execution_policy,
+      reconciliation: {
+        contract_version: 'source_judge_reconciliation_v1',
+        status: 'complete',
+        claim_outcomes: [],
+      },
     })
     renderDetail('run-1')
 

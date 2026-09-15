@@ -31,10 +31,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.council.result import CouncilRunResult
+from app.debate.claims import get_current_claims
 from app.debate.debate_engine import DebateEngine
 from app.editor.compose import Editor
 from app.judge.strategy import JudgeStrategy
 from app.orchestrator.config import RunConfig
+from app.reconciliation.reconcile import (
+    reconcile_source_and_judge,
+    validate_reconciliation_coherence,
+)
 from app.source_analysis.analyzer import SourceAnalyzer
 
 
@@ -88,6 +93,17 @@ class CouncilRunner:
         anexar a relação com a fonte (quando existe) ao lado da avaliação
         do Judge, nunca pra mudar veredito/composição de plano.
 
+        Cross-Channel Reconciliation V1: um QUINTO estágio roda DEPOIS do
+        `Judge` e ANTES do `Editor` -- `reconcile_source_and_judge`
+        (app/reconciliation/reconcile.py), função PURA (sem chamada de
+        provider, sem custo) que classifica DETERMINISTICAMENTE como o
+        canal Judge e o canal Source Analysis se relacionam, por claim
+        corrente. Nem `Judge` nem `SourceAnalyzer` sabem que isto existe
+        -- só `Editor.compose()` recebe o resultado (`reconciliation=`),
+        pro renderizador determinístico consumir em vez de re-derivar a
+        relação por conta própria (ver app/editor/compose.py). Não
+        adiciona nenhuma chamada de provider, não afeta accounting.
+
         Patch de revisão do Stage 16 (blocker de accounting): `Judge`
         continua cego ao CONTEÚDO de Source Analysis, mas precisa saber
         quanto ela REALMENTE consumiu — `prior_*` carrega só os 3 números
@@ -132,6 +148,30 @@ class CouncilRunner:
         prior_output_for_editor = prior_output_for_judge + judge_result.judge_output_tokens
         prior_cost_for_editor = prior_cost_for_judge + judge_result.judge_cost_usd
 
+        # Cross-Channel Reconciliation V1 -- roda DEPOIS do Judge e ANTES
+        # do Editor (ver app/reconciliation/reconcile.py). Função PURA:
+        # nenhuma chamada de provider, nenhum prompt, nenhum custo -- só
+        # classifica fatos que os dois canais anteriores já produziram.
+        # `current_claims` é o MESMO conjunto que Judge/Editor já usam
+        # (`get_current_claims(debate_result.claims)`), recalculado aqui
+        # porque nenhum estágio anterior devolve essa lista pronta.
+        current_claims = get_current_claims(debate_result.claims)
+        reconciliation = reconcile_source_and_judge(
+            current_claims, judge_result, source_analysis_result
+        )
+        # Repair #2B (revisão adversarial) -- valida o resultado que
+        # ACABOU de ser construído contra os EXATOS inputs desta
+        # execução, ANTES do Editor consumi-lo. Redundante por
+        # construção neste ponto específico (o mesmo
+        # `reconcile_source_and_judge` que acabou de rodar é a própria
+        # implementação de referência), mas é a MESMA chamada usada na
+        # fronteira de persistência (`CouncilRepository.save_success`) --
+        # protege ambas as fronteiras com um único validador, nunca duas
+        # implementações que podem divergir.
+        validate_reconciliation_coherence(
+            reconciliation, current_claims, judge_result, source_analysis_result
+        )
+
         editor_result = await self._editor.compose(
             debate_result,
             judge_result,
@@ -140,6 +180,7 @@ class CouncilRunner:
             prior_output_tokens=prior_output_for_editor,
             prior_cost_usd=prior_cost_for_editor,
             source_analysis_result=source_analysis_result,
+            reconciliation=reconciliation,
         )
 
         completed_at = _now()
@@ -151,6 +192,7 @@ class CouncilRunner:
             source_analysis_result=source_analysis_result,
             judge_result=judge_result,
             editor_result=editor_result,
+            reconciliation=reconciliation,
             started_at=started_at,
             completed_at=completed_at,
         )

@@ -26,6 +26,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.council.result import CouncilRunResult
+from app.debate.claims import get_current_claims
 from app.debate.result import CritiqueResult, DebateResult
 from app.editor.result import EditorResult
 from app.judge.result import JudgeResult
@@ -36,12 +37,16 @@ from app.orchestrator.budget import sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
 from app.orchestrator.result import InitialResponsesResult, RoundResult
+from app.reconciliation.errors import ReconciliationError
+from app.reconciliation.reconcile import validate_reconciliation_coherence
 from app.storage.database import session_scope
 from app.storage.models import (
     AcceptedRunRow,
     ClaimAssessmentRow,
     ClaimMergeRow,
     ClaimProcessingAttemptRow,
+    ClaimReconciliationOutcomeRow,
+    ClaimReconciliationSourceResultRow,
     ClaimRow,
     ClaimSupportRow,
     CouncilRunRow,
@@ -54,6 +59,7 @@ from app.storage.models import (
     QuorumFailureRow,
     SourceAnalysisAttemptRow,
     SourceClaimAnalysisResultRow,
+    SourceJudgeReconciliationRow,
 )
 from app.storage.records import (
     AcceptedRunRecord,
@@ -88,6 +94,8 @@ from app.storage.serializers import (
     source_analysis_attempt_to_row,
     source_claim_analysis_result_from_row,
     source_claim_analysis_result_to_row,
+    source_judge_reconciliation_from_rows,
+    source_judge_reconciliation_rows,
 )
 
 
@@ -234,11 +242,39 @@ class CouncilRepository:
         não têm um, e o campo fica `None`), lido AQUI, na MESMA
         transação, ANTES do DELETE que finaliza a linha de aceite -- a
         linha de aceite é a fonte de provenance, nunca `Settings`
-        atual/um valor recalculado."""
+        atual/um valor recalculado.
+
+        Cross-Channel Reconciliation V1, Repair #4 (revisão adversarial)
+        -- `result.reconciliation=None` é rejeitado ANTES de qualquer
+        `session.add()` (nenhuma transação chega a abrir): é reservado
+        EXCLUSIVAMENTE pra reconstrução de execuções históricas
+        persistidas antes deste slice existir (ver docstring de
+        `SourceJudgeReconciliationResult`) -- uma escrita NOVA sem
+        reconciliação concreta ficaria indistinguível de histórico
+        genuíno na leitura. Um teste que precisa modelar estado
+        histórico deve criar as linhas diretamente no nível de
+        storage/schema (ver `tests/storage/fixtures.py`), nunca através
+        deste caminho. `validate_reconciliation_coherence` (mesmo
+        validador chamado em `app/council/runner.py`, logo após a
+        construção) roda ANTES de qualquer escrita, pela mesma razão --
+        um `CouncilRunResult` montado manualmente/incoerente nunca vira
+        estado canônico persistido."""
         debate = result.debate_result
         source_analysis = result.source_analysis_result
         judge = result.judge_result
         editor = result.editor_result
+
+        if result.reconciliation is None:
+            raise ReconciliationError(
+                "save_success recusa persistir uma execução NOVA com "
+                "reconciliation=None -- reconciliação concreta é obrigatória "
+                "pra toda escrita nova (None é reservado exclusivamente pra "
+                "reconstrução de execuções históricas persistidas antes deste "
+                "slice existir)"
+            )
+        validate_reconciliation_coherence(
+            result.reconciliation, get_current_claims(debate.claims), judge, source_analysis
+        )
 
         async with session_scope(self._session_factory) as session:
             accepted_row = await session.get(AcceptedRunRow, result.id)
@@ -356,6 +392,22 @@ class CouncilRepository:
 
             for attempt in editor.attempts:
                 session.add(editor_attempt_to_row(attempt, council_run_id=result.id))
+
+            # Cross-Channel Reconciliation V1 -- `result.reconciliation` é
+            # garantidamente concreto aqui (checado/validado no topo
+            # deste método, ANTES da transação abrir -- ver Repair #4).
+            # Ordem topológica: raiz -> outcomes -> links de
+            # source-result, mesma FK-imediata do resto do método.
+            reconciliation_row, outcome_rows, source_result_rows = (
+                source_judge_reconciliation_rows(
+                    result.reconciliation, council_run_id=result.id
+                )
+            )
+            session.add(reconciliation_row)
+            await session.flush()
+            session.add_all(outcome_rows)
+            await session.flush()
+            session.add_all(source_result_rows)
 
             # T02.4 -- finaliza a MESMA transação atômica que grava o
             # terminal "completed": a linha de aceite (se existir --
@@ -785,6 +837,63 @@ class CouncilRepository:
             cumulative_budget_exceeded=row.editor_cumulative_budget_exceeded,
         )
 
+        # Cross-Channel Reconciliation V1 -- `None` SÓ quando nenhuma
+        # linha `source_judge_reconciliations` existe pra este
+        # `council_run_id` (execução persistida ANTES deste slice
+        # existir). NUNCA reinterpretado como "not_comparable" (ver
+        # docstring de SourceJudgeReconciliationResult) -- ausência
+        # histórica de reconciliação estruturada é um fato diferente de
+        # "os canais foram comparados e achados não-comparáveis".
+        reconciliation = None
+        reconciliation_row = (
+            await session.execute(
+                select(SourceJudgeReconciliationRow).where(
+                    SourceJudgeReconciliationRow.council_run_id == row.id
+                )
+            )
+        ).scalar_one_or_none()
+        if reconciliation_row is not None:
+            outcome_rows = (
+                (
+                    await session.execute(
+                        select(ClaimReconciliationOutcomeRow)
+                        .where(
+                            ClaimReconciliationOutcomeRow.reconciliation_id
+                            == reconciliation_row.id
+                        )
+                        .order_by(ClaimReconciliationOutcomeRow.position)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            source_result_link_rows = (
+                (
+                    await session.execute(
+                        select(ClaimReconciliationSourceResultRow)
+                        .where(
+                            ClaimReconciliationSourceResultRow.outcome_id.in_(
+                                [o.id for o in outcome_rows]
+                            )
+                        )
+                        .order_by(
+                            ClaimReconciliationSourceResultRow.outcome_id,
+                            ClaimReconciliationSourceResultRow.position,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            ) if outcome_rows else []
+            source_result_ids_by_outcome_id: dict[str, list[str]] = defaultdict(list)
+            for link in source_result_link_rows:
+                source_result_ids_by_outcome_id[link.outcome_id].append(
+                    link.source_claim_result_id
+                )
+            reconciliation = source_judge_reconciliation_from_rows(
+                reconciliation_row, outcome_rows, source_result_ids_by_outcome_id
+            )
+
         council_run_result = CouncilRunResult(
             id=row.id,
             run_config=_run_config_from_json(row.run_config_json),
@@ -792,6 +901,7 @@ class CouncilRepository:
             source_analysis_result=source_analysis_result,
             judge_result=judge_result,
             editor_result=editor_result,
+            reconciliation=reconciliation,
             started_at=dt_from_naive_utc(row.started_at),
             completed_at=dt_from_naive_utc(row.completed_at),
         )

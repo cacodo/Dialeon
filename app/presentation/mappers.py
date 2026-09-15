@@ -17,6 +17,7 @@ from app.presentation.schemas import (
     ClaimAssessmentPublic,
     ClaimProcessingAttemptPublic,
     ClaimPublic,
+    ClaimReconciliationOutcomePublic,
     ClaimSupportPublic,
     CompletedRunAudit,
     CompletedRunResponse,
@@ -43,9 +44,11 @@ from app.presentation.schemas import (
     SourceAnalysisAttemptPublic,
     SourceAnalysisOutcome,
     SourceClaimAnalysisResultPublic,
+    SourceJudgeReconciliationResultPublic,
     ValidSourceRelationPublic,
 )
 from app.council.result import CouncilRunResult
+from app.reconciliation.models import SourceJudgeReconciliationResult
 from app.debate.numeric_verification import DeterministicVerificationAttempt
 from app.models.provider_models import ProviderExecutionPolicy
 from app.debate.processing_record import ClaimProcessingAttempt
@@ -413,6 +416,30 @@ def source_analysis_outcome_public(
     )
 
 
+def reconciliation_public(
+    reconciliation: SourceJudgeReconciliationResult | None,
+) -> SourceJudgeReconciliationResultPublic | None:
+    """Cross-Channel Reconciliation V1. `None` só pra execuções
+    persistidas antes deste slice existir -- ver docstring de
+    `SourceJudgeReconciliationResultPublic`."""
+    if reconciliation is None:
+        return None
+    return SourceJudgeReconciliationResultPublic(
+        contract_version=reconciliation.contract_version,
+        status=reconciliation.status,
+        claim_outcomes=[
+            ClaimReconciliationOutcomePublic(
+                claim_id=o.claim_id,
+                judge_verdict_id=o.judge_verdict_id,
+                source_claim_result_ids=o.source_claim_result_ids,
+                source_state=o.source_state,
+                channel_relationship=o.channel_relationship,
+            )
+            for o in reconciliation.claim_outcomes
+        ],
+    )
+
+
 def completed_run_audit(
     result: CouncilRunResult, *, provider_execution_policy: ProviderExecutionPolicy | None
 ) -> CompletedRunAudit:
@@ -455,6 +482,7 @@ def completed_run_audit(
         final_answer=final_answer_public(editor.final_answer),
         accounting=accounting_summary(result),
         provider_execution_policy=provider_execution_policy,
+        reconciliation=reconciliation_public(result.reconciliation),
     )
 
 

@@ -365,6 +365,10 @@ export interface CompletedRunAudit {
   final_answer: FinalAnswerPublic
   accounting: AccountingSummary
   provider_execution_policy: ProviderExecutionPolicy | null
+  // Cross-Channel Reconciliation V1 -- null SÓ em execuções persistidas
+  // antes deste recurso existir; nunca reinterpretado como
+  // status="judge_unavailable" nem como nenhum channel_relationship.
+  reconciliation: SourceJudgeReconciliationResultPublic | null
 }
 
 export interface QuorumFailureAudit {
@@ -448,6 +452,41 @@ export interface SourceAnalysisOutcome {
   cumulative_budget_exceeded: boolean
   attempts: SourceAnalysisAttemptPublic[]
   claim_results: SourceClaimAnalysisResultPublic[]
+}
+
+// Cross-Channel Reconciliation V1 -- classificação DETERMINÍSTICA (sem LLM)
+// do RELACIONAMENTO entre o canal Judge e o canal Source Analysis por
+// claim corrente. Nunca é um veredito de verdade, nunca dá autoridade
+// à fonte sobre o Judge.
+export type SourceChannelState =
+  | 'not_supplied'
+  | 'analysis_unavailable'
+  | 'entry_rejected'
+  | 'supports'
+  | 'contradicts'
+  | 'unresolved'
+  | 'mixed'
+
+export type ChannelRelationship =
+  | 'directionally_aligned'
+  | 'in_tension'
+  | 'source_adds_direction'
+  | 'source_unresolved'
+  | 'source_channel_conflict'
+  | 'not_comparable'
+
+export interface ClaimReconciliationOutcomePublic {
+  claim_id: string
+  judge_verdict_id: string | null
+  source_claim_result_ids: string[]
+  source_state: SourceChannelState
+  channel_relationship: ChannelRelationship
+}
+
+export interface SourceJudgeReconciliationResultPublic {
+  contract_version: 'source_judge_reconciliation_v1'
+  status: 'complete' | 'judge_unavailable'
+  claim_outcomes: ClaimReconciliationOutcomePublic[]
 }
 
 export type ErrorCode =

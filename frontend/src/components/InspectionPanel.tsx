@@ -11,6 +11,7 @@ import { ClaimsList } from './ClaimsList'
 import { DeliberationOutcomes } from './DeliberationOutcomes'
 import { JudgmentView } from './JudgmentView'
 import { ParticipantsResponses } from './ParticipantsResponses'
+import { ReconciliationView } from './ReconciliationView'
 import { SourceAnalysisView } from './SourceAnalysisView'
 
 interface InspectionPanelProps {
@@ -107,6 +108,11 @@ export function InspectionPanel({ runId }: InspectionPanelProps) {
           <section aria-labelledby="source-analysis-heading">
             <h2 id="source-analysis-heading">Análise da fonte</h2>
             <SourceAnalysisView sourceAnalysis={audit.source_analysis} claims={audit.claims} />
+          </section>
+
+          <section aria-labelledby="reconciliation-heading">
+            <h2 id="reconciliation-heading">Reconciliação entre julgamento e fonte</h2>
+            <ReconciliationView reconciliation={audit.reconciliation} claims={audit.claims} />
           </section>
 
           <section aria-labelledby="deliberation-heading">

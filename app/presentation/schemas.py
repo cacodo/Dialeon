@@ -35,6 +35,7 @@ from app.models.provider_models import (
     TokenUsage,
 )
 from app.orchestrator.config import _normalize_and_validate_source_text
+from app.reconciliation.models import ChannelRelationship, SourceChannelState
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -639,6 +640,46 @@ class SourceAnalysisOutcome(BaseModel):
     claim_results: list[SourceClaimAnalysisResultPublic]
 
 
+class ClaimReconciliationOutcomePublic(BaseModel):
+    """Cross-Channel Reconciliation V1 -- resultado por-claim-corrente.
+    Referencia registros canônicos só por ID (`source_claim_result_ids`)
+    -- nunca duplica texto de claim/explicação do Judge/excerto de fonte
+    (já disponíveis via `claims`/`judge_verdict`/`source_analysis` no
+    mesmo `CompletedRunAudit`)."""
+
+    model_config = _CONFIG
+
+    claim_id: str
+    judge_verdict_id: str | None
+    source_claim_result_ids: tuple[str, ...]
+    source_state: SourceChannelState
+    channel_relationship: ChannelRelationship
+
+
+class SourceJudgeReconciliationResultPublic(BaseModel):
+    """Cross-Channel Reconciliation V1 -- contrato `contract_version`.
+    Distingue explicitamente os 3 estados possíveis no nível de
+    `CompletedRunAudit.reconciliation`:
+
+    - Este campo é `None`: execução histórica persistida ANTES deste
+      slice existir -- reconciliação estruturada nunca foi computada,
+      NUNCA reinterpretado como `status="judge_unavailable"` nem como
+      nenhum `channel_relationship="not_comparable"` por claim.
+    - `status="complete"`: Judge disponível, toda claim corrente tem uma
+      comparação direcional (ou `not_comparable`/`source_unresolved`/
+      `source_channel_conflict` quando aplicável).
+    - `status="judge_unavailable"`: Judge indisponível pra esta execução
+      -- toda claim corrente ainda recebe um outcome, com
+      `channel_relationship="not_comparable"` e `source_state` honesto
+      (nunca apagado só porque o Judge falhou)."""
+
+    model_config = _CONFIG
+
+    contract_version: Literal["source_judge_reconciliation_v1"]
+    status: Literal["complete", "judge_unavailable"]
+    claim_outcomes: list[ClaimReconciliationOutcomePublic]
+
+
 class CompletedRunAudit(BaseModel):
     model_config = _CONFIG
 
@@ -664,6 +705,9 @@ class CompletedRunAudit(BaseModel):
     accounting: AccountingSummary
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
     provider_execution_policy: ProviderExecutionPolicy | None
+    # Cross-Channel Reconciliation V1 -- ver docstring de
+    # SourceJudgeReconciliationResultPublic pros 3 estados distintos.
+    reconciliation: SourceJudgeReconciliationResultPublic | None
 
 
 class QuorumFailureAudit(BaseModel):

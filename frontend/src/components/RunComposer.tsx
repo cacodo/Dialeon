@@ -95,7 +95,9 @@ export function RunComposer({
             disabled={submitting}
           />
           <p className="run-composer__source-hint">
-            A fonte é usada só para auditoria nesta versão -- não altera a resposta final.
+            A fonte é comparada com as afirmações do debate como um canal independente do
+            julgamento -- não altera a avaliação do juiz, mas o relacionamento entre os dois pode
+            aparecer na resposta final.
           </p>
         </div>
       )}

@@ -286,6 +286,48 @@ def _human_source_analysis_lines(source_analysis: Any) -> list[str]:
     return lines
 
 
+# Cross-Channel Reconciliation V1 -- rótulos de RELACIONAMENTO ENTRE
+# CANAIS, mesma disciplina de `_SOURCE_RELATION_LABELS` acima: nunca
+# verdade, nunca autoridade. Ver app/reconciliation/models.py.
+_CHANNEL_RELATIONSHIP_LABELS: dict[str, str] = {
+    "directionally_aligned": "alinhado com o debate",
+    "in_tension": "em tensão com o debate",
+    "source_adds_direction": "acrescenta direção onde o debate não decidiu",
+    "source_unresolved": "fonte também indeterminada",
+    # Repair #5 (revisão adversarial) -- "mixed" cobre qualquer
+    # combinação incoerente de entradas do lado da fonte (não só
+    # supports+contradicts), e a anomalia é da ANÁLISE de fonte
+    # (processo), nunca do texto da fonte -- nunca "conflito interno na
+    # fonte" (atribuiria conflito ao texto/à fonte em si).
+    "source_channel_conflict": "análise da fonte não redutível a um estado único",
+    "not_comparable": "não comparável",
+}
+
+
+def _human_reconciliation_lines(reconciliation: Any) -> list[str]:
+    """Cross-Channel Reconciliation V1 -- resumo compacto (mesma
+    disciplina de `_human_source_analysis_lines` acima). `None` é o
+    valor HONESTO pra execuções persistidas antes deste recurso existir
+    -- NUNCA confundido com nenhum `channel_relationship` real (nem
+    "not_comparable", que é um FATO computado, não ausência de
+    computação)."""
+    if reconciliation is None:
+        return [
+            "reconciliação_fonte_julgamento: não registrada "
+            "(execução anterior a este recurso)"
+        ]
+
+    counts: dict[str, int] = {}
+    for outcome in reconciliation.claim_outcomes:
+        key = outcome.channel_relationship
+        counts[key] = counts.get(key, 0) + 1
+    summary = ", ".join(
+        f"{_CHANNEL_RELATIONSHIP_LABELS.get(key, key)}: {count}" for key, count in counts.items()
+    )
+    status_line = f"reconciliação_fonte_julgamento: {reconciliation.status}"
+    return [f"{status_line} -- {summary}" if summary else status_line]
+
+
 def human_run_audit(audit: Any) -> str:
     """Resumo compacto -- não uma réplica exaustiva de toda a árvore de
     auditoria (isso é o que `--json` é para). Mostra só o que já é
@@ -304,6 +346,7 @@ def human_run_audit(audit: Any) -> str:
             f"contabilidade_completa: {'não' if audit.accounting.has_unknown_accounting_components else 'sim'}",
         ]
         lines.extend(_human_source_analysis_lines(audit.source_analysis))
+        lines.extend(_human_reconciliation_lines(audit.reconciliation))
         lines.append(_human_provider_execution_policy_line(audit.provider_execution_policy))
         return "\n".join(lines)
 

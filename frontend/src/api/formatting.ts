@@ -5,6 +5,7 @@
 // (EXPLAIN FROM PROVENANCE, DO NOT INVENT POST-HOC REASONING).
 
 import type {
+  ChannelRelationship,
   ClaimVerdict,
   DebateOutcome,
   EditorOutcome,
@@ -12,6 +13,7 @@ import type {
   FinalAnswerStatus,
   JudgeOutcome,
   ModelIdentitySource,
+  SourceChannelState,
 } from './types'
 
 // Provenance de identidade de modelo (ver ModelIdentitySource, ./types.ts)
@@ -173,4 +175,44 @@ export function formatSourceRejectionReason(
   reason: 'omitted_by_model' | 'duplicate_claim_id' | 'invalid_entry',
 ): string {
   return SOURCE_REJECTION_REASON_LABELS[reason] ?? reason
+}
+
+// Cross-Channel Reconciliation V1 -- rótulos descrevem só o RELACIONAMENTO
+// estrutural entre os canais Judge e Source Analysis pra uma claim, nunca
+// um veredito de verdade e nunca autoridade da fonte sobre o Judge
+// (CHANNEL RELATIONSHIP != JUDGE VERDICT != TRUTH).
+// Repair #5 (revisão adversarial) -- "mixed"/source_channel_conflict cobrem
+// QUALQUER combinação de entradas canônicas do lado da fonte que não seja
+// redutível a um único estado coerente (não só supports+contradicts --
+// também supports+unresolved, direcional+rejeitada, etc.). A anomalia é
+// da ANÁLISE DE FONTE (o processo), nunca do texto da fonte em si, que
+// pode ser perfeitamente coerente -- por isso o wording nunca diz "a
+// fonte contém/produziu resultados conflitantes" nem "conflito interno
+// na fonte" (ambos atribuiriam o conflito ao texto/à fonte).
+const SOURCE_CHANNEL_STATE_LABELS: Record<SourceChannelState, string> = {
+  not_supplied: 'Nenhuma fonte foi fornecida nesta execução.',
+  analysis_unavailable: 'A análise da fonte não pôde ser concluída.',
+  entry_rejected: 'A análise da fonte não produziu uma relação válida para esta afirmação.',
+  supports: 'A fonte apoia esta afirmação.',
+  contradicts: 'A fonte contradiz esta afirmação.',
+  unresolved: 'A análise não conseguiu determinar a relação da fonte com esta afirmação.',
+  mixed: 'A análise da fonte produziu entradas que não puderam ser reduzidas a um único estado coerente para esta afirmação.',
+}
+
+export function formatSourceChannelState(state: SourceChannelState): string {
+  return SOURCE_CHANNEL_STATE_LABELS[state] ?? state
+}
+
+const CHANNEL_RELATIONSHIP_LABELS: Record<ChannelRelationship, string> = {
+  directionally_aligned: 'Julgamento e fonte apontam na mesma direção.',
+  in_tension: 'Julgamento e fonte apontam em direções opostas.',
+  source_adds_direction: 'O julgamento não deu direção; a fonte acrescenta uma direção.',
+  source_unresolved: 'A fonte não conseguiu determinar uma direção para esta afirmação.',
+  source_channel_conflict:
+    'A análise da fonte produziu entradas que não puderam ser reduzidas a um único estado coerente.',
+  not_comparable: 'Julgamento e fonte não são comparáveis nesta execução.',
+}
+
+export function formatChannelRelationship(relationship: ChannelRelationship): string {
+  return CHANNEL_RELATIONSHIP_LABELS[relationship] ?? relationship
 }

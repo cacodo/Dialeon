@@ -7,8 +7,9 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
 
-from app.models.domain import ClaimSupport
+from app.models.domain import ClaimAssessment, ClaimSupport
 from app.models.provider_models import ModelIdentitySource
+from app.reconciliation.errors import ReconciliationError
 from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 from app.storage.repository import _run_config_from_json
 from tests.storage.fixtures import (
@@ -20,6 +21,7 @@ from tests.storage.fixtures import (
     provider_execution_policy,
     quorum_failure_exception,
     run_config,
+    with_recomputed_reconciliation,
 )# ---------------------------------------------------------------------------
 # SUCCESS — save + load
 # ---------------------------------------------------------------------------
@@ -192,7 +194,24 @@ async def test_claim_lineage_parent_and_merged_preserved(repo):
     debate_result = result.debate_result.model_copy(
         update={"claims": [base_claim, second_claim, merged]}
     )
-    result = result.model_copy(update={"debate_result": debate_result})
+    # base_claim/second_claim deixam de ser correntes (merged_from_claim_ids
+    # de `merged` as referencia) -- o veredito original só avaliava
+    # base_claim.id (a claim única da fixture-base), que não é mais
+    # corrente. Reconciliação exige avaliação pra TODA claim corrente
+    # (aqui, só "merged-claim-id") -- reaponta o mesmo veredito pra ela.
+    verdict = result.judge_result.verdict.model_copy(
+        update={
+            "claim_assessments": [
+                ClaimAssessment(claim_id=merged.id, verdict="supported", explanation="Consenso.")
+            ]
+        }
+    )
+    judge_result = result.judge_result.model_copy(update={"verdict": verdict})
+    result = with_recomputed_reconciliation(
+        result.model_copy(
+            update={"debate_result": debate_result, "judge_result": judge_result}
+        )
+    )
 
     await repo.save_success(result)
     loaded = (await repo.get_run(result.id)).council_run_result
@@ -241,7 +260,24 @@ async def test_reconciliation_claim_support_scope_model_count_preserved(repo):
     debate_result = result.debate_result.model_copy(
         update={"claims": [base_claim, round2_claim, reconciled]}
     )
-    result = result.model_copy(update={"debate_result": debate_result})
+    # base_claim/round2_claim deixam de ser correntes (merged_from_claim_ids
+    # de `reconciled` as referencia) -- reaponta o veredito pra a única
+    # claim corrente resultante.
+    verdict = result.judge_result.verdict.model_copy(
+        update={
+            "claim_assessments": [
+                ClaimAssessment(
+                    claim_id=reconciled.id, verdict="supported", explanation="Consenso."
+                )
+            ]
+        }
+    )
+    judge_result = result.judge_result.model_copy(update={"verdict": verdict})
+    result = with_recomputed_reconciliation(
+        result.model_copy(
+            update={"debate_result": debate_result, "judge_result": judge_result}
+        )
+    )
 
     await repo.save_success(result)
     loaded = (await repo.get_run(result.id)).council_run_result
@@ -923,6 +959,58 @@ async def test_save_success_rolls_back_completely_on_failure(repo):
 
 
 @pytest.mark.asyncio
+async def test_save_success_rejects_new_write_with_reconciliation_none(repo):
+    """Repair #4 (revisão adversarial) -- `reconciliation=None` é
+    reservado EXCLUSIVAMENTE pra reconstrução de execuções históricas
+    persistidas antes deste slice existir; uma escrita NOVA sem
+    reconciliação concreta é recusada ANTES de qualquer `session.add()`
+    (nenhuma transação chega a abrir)."""
+    result = full_council_run_result().model_copy(update={"reconciliation": None})
+
+    with pytest.raises(ReconciliationError):
+        await repo.save_success(result)
+
+    # nada foi persistido -- nem o council_run em si.
+    assert await repo.get_run(result.id) is None
+
+
+@pytest.mark.asyncio
+async def test_save_success_rejects_new_write_with_incoherent_reconciliation(repo):
+    """Repair #4/#2B -- uma reconciliação estruturalmente presente mas
+    incoerente com os dados reais desta execução (aqui: judge_verdict_id
+    referenciando um veredito que não é o real) também é recusada ANTES
+    de qualquer escrita -- `validate_reconciliation_coherence` roda na
+    fronteira de persistência, não só no runner."""
+    result = full_council_run_result()
+    tampered_outcome = result.reconciliation.claim_outcomes[0].model_copy(
+        update={"judge_verdict_id": "veredito-que-nao-e-o-real"}
+    )
+    tampered_reconciliation = result.reconciliation.model_copy(
+        update={"claim_outcomes": [tampered_outcome]}
+    )
+    result = result.model_copy(update={"reconciliation": tampered_reconciliation})
+
+    with pytest.raises(ReconciliationError):
+        await repo.save_success(result)
+
+    assert await repo.get_run(result.id) is None
+
+
+@pytest.mark.asyncio
+async def test_save_success_accepts_new_write_with_valid_v1_reconciliation(repo):
+    """Contraparte positiva dos dois testes acima -- uma reconciliação
+    concreta e coerente (o caso comum, produzida pelo pipeline real)
+    persiste normalmente."""
+    result = full_council_run_result()
+
+    await repo.save_success(result)
+
+    loaded = (await repo.get_run(result.id)).council_run_result
+    assert loaded.reconciliation is not None
+    assert loaded.reconciliation.status == "complete"
+
+
+@pytest.mark.asyncio
 async def test_save_quorum_failure_rolls_back_completely_on_failure(repo):
     """Duas ModelResponse com o MESMO id na mesma falha de quórum violam
     a PK de model_responses -- força um erro de integridade real na hora
@@ -1491,7 +1579,24 @@ async def test_deterministic_verification_attempts_preserve_exact_list_order(rep
             "numeric_verification_attempts": ordered_attempts,
         }
     )
-    result = result.model_copy(update={"debate_result": debate})
+    # c_z/c_a/c_m são claims correntes novas (nenhuma superseded/merged) --
+    # reconciliação exige avaliação do Judge pra TODA claim corrente,
+    # então o veredito original (só sobre a claim única da fixture-base)
+    # precisa ser estendido pra cobri-las também.
+    extra_assessments = [
+        ClaimAssessment(claim_id=c.id, verdict="supported", explanation="ok")
+        for c in (c_z, c_a, c_m)
+    ]
+    verdict = result.judge_result.verdict.model_copy(
+        update={
+            "claim_assessments": list(result.judge_result.verdict.claim_assessments)
+            + extra_assessments
+        }
+    )
+    judge_result = result.judge_result.model_copy(update={"verdict": verdict})
+    result = with_recomputed_reconciliation(
+        result.model_copy(update={"debate_result": debate, "judge_result": judge_result})
+    )
 
     await repo.save_success(result)
     loaded = (await repo.get_run(result.id)).council_run_result

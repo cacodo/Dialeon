@@ -4,6 +4,8 @@ from fastapi.testclient import TestClient
 
 from app.api.app import create_app
 from app.config import Settings
+from app.debate.claims import get_current_claims
+from app.reconciliation.reconcile import reconcile_source_and_judge
 from tests.api.helpers import make_components_factory
 from tests.storage.fixtures import full_council_run_result, now, quorum_failure_exception, run_config
 
@@ -78,7 +80,16 @@ def test_audit_judge_verdict_unavailable_reason_preserved():
             "fallback_reason": "judge_verdict_unavailable",
         }
     )
-    result = result.model_copy(update={"judge_result": judge, "editor_result": editor})
+    # A reconciliação original foi calculada contra o judge_result real (com
+    # veredito); depois de forçarmos verdict=None aqui, ela precisa ser
+    # recalculada -- do contrário `judge_verdict_id` referencia um
+    # JudgeVerdictRow que nunca é persistido, e a FK falha.
+    reconciliation = reconcile_source_and_judge(
+        get_current_claims(result.debate_result.claims), judge, result.source_analysis_result
+    )
+    result = result.model_copy(
+        update={"judge_result": judge, "editor_result": editor, "reconciliation": reconciliation}
+    )
 
     app = create_app(settings=_settings(), components_factory=make_components_factory())
     with TestClient(app) as client:

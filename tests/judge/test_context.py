@@ -433,3 +433,47 @@ def test_judge_prompt_preserves_provenance_not_verdict_language():
         max_output_tokens_per_call=1024,
     )
     assert "não que a claim em linguagem natural foi mapeada" in request.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Cross-Channel Reconciliation V1 -- regressão de source-blindness (seção 1
+# do contrato): Source Analysis/reconciliação NUNCA entram no prompt do
+# Judge. Estrutural (fonte real do módulo), não só comportamental -- prova
+# que ninguém reintroduz um parâmetro/import de source por acidente.
+# ---------------------------------------------------------------------------
+
+
+def test_build_judge_request_does_not_accept_source_analysis_result():
+    import inspect
+
+    from app.judge.context import build_judge_request as _build
+
+    signature = inspect.signature(_build)
+    assert "source_analysis_result" not in signature.parameters
+    assert "reconciliation" not in signature.parameters
+
+
+def test_judge_context_module_never_imports_source_analysis():
+    import inspect
+
+    import app.judge.context as context_module
+
+    source = inspect.getsource(context_module)
+    assert "source_analysis" not in source.lower()
+    assert "reconciliation" not in source.lower()
+
+
+def test_judge_prompt_never_mentions_source_text_content():
+    """Ainda que alguém passasse um `source_text` gigante pro RunConfig
+    da execução, o prompt do Judge (que nem recebe RunConfig inteiro,
+    só `question`) estruturalmente não tem como incluí-lo."""
+    claim = raw_claim("Uma claim qualquer.", "resp-1")
+    dr = debate_result([claim], [model_response("openai")])
+    request = build_judge_request(
+        question="pergunta", debate_result=dr, current_claims=[claim],
+        max_output_tokens_per_call=1024,
+    )
+    full_prompt = (request.system_prompt or "") + "".join(m.content for m in request.messages)
+    assert "source_text" not in full_prompt
+    assert "análise de fonte" not in full_prompt.lower()
+    assert "fonte fornecida" not in full_prompt.lower()

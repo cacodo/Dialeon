@@ -31,6 +31,7 @@ from app.debate.result import DebateResult
 from app.editor.result import EditorResult, FinalAnswer
 from app.judge.result import JudgeResult
 from app.orchestrator.config import RunConfig
+from app.reconciliation.models import SourceJudgeReconciliationResult
 from app.source_analysis.result import SourceAnalysisResult
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
@@ -68,6 +69,20 @@ class CouncilRunResult(BaseModel):
     source_analysis_result: SourceAnalysisResult | None
     judge_result: JudgeResult
     editor_result: EditorResult
+    # Cross-Channel Reconciliation V1 -- classificação DETERMINÍSTICA de
+    # como o canal Judge e o canal Source Analysis se relacionam, por
+    # claim corrente (ver app/reconciliation/models.py). Custa ZERO
+    # tokens/dólares (função pura, sem chamada de provider) -- por isso
+    # nunca entra nos `@computed_field` de accounting abaixo.
+    #
+    # `None` aqui significa EXCLUSIVAMENTE "execução persistida antes
+    # deste slice existir" -- toda execução NOVA que chega a este ponto
+    # do pipeline (depois do Judge, ver app/council/runner.py) sempre tem
+    # um `SourceJudgeReconciliationResult` concreto, mesmo sem fonte e/ou
+    # sem veredito do Judge (`status="judge_unavailable"` nesse caso,
+    # nunca `None`). NUNCA reinterpretado como "not_comparable" -- ver
+    # docstring de `SourceJudgeReconciliationResult`.
+    reconciliation: SourceJudgeReconciliationResult | None = None
     started_at: datetime
     completed_at: datetime
 

@@ -812,3 +812,17 @@ async def test_malformed_judge_output_without_truncation_signal_still_retries():
     assert len(result.attempts) == 2
     assert result.attempts[0].parse_status == "malformed"
     assert result.attempts[1].parse_status == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# Cross-Channel Reconciliation V1 -- regressão de source-blindness (seção 1
+# do contrato).
+# ---------------------------------------------------------------------------
+
+
+def test_single_judge_judge_does_not_accept_source_analysis_result_or_reconciliation():
+    import inspect
+
+    signature = inspect.signature(SingleJudge.judge)
+    assert "source_analysis_result" not in signature.parameters
+    assert "reconciliation" not in signature.parameters

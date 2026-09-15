@@ -50,24 +50,32 @@ app/judge/single_judge.py), uma camada acima desta. A Etapa 17B garante
 que a camada de apresentação não ESCALA/reinterpreta o Judge; não garante
 que o próprio Judge é internamente consistente.
 
-Patch de apresentação com fonte (pós-diagnóstico de run real) -- SOURCE
-RELATION != JUDGE VERDICT != TRUTH: `_render_final_answer_text` agora
-também recebe (opcionalmente) `SourceAnalysisResult.claim_results` e,
-quando existe uma `ValidSourceRelation` VÁLIDA (nunca uma
-`RejectedSourceEntry`, ver `_source_relations_by_claim_id` abaixo) pra
-uma claim que o Judge avaliou, renderiza uma linha ADICIONAL logo
-abaixo da avaliação do Judge -- nunca substituindo, nunca alterando o
+Cross-Channel Reconciliation V1 (substitui o patch de apresentação com
+fonte anterior) -- CHANNEL RELATIONSHIP != JUDGE VERDICT != TRUTH:
+`_render_final_answer_text` agora recebe (opcionalmente) um
+`SourceJudgeReconciliationResult` JÁ RESOLVIDO por
+`app/reconciliation/reconcile.py` (chamado uma única vez em
+`app/council/runner.py`, depois do Judge, antes do Editor) -- este
+módulo NUNCA re-deriva a classificação de relacionamento por conta
+própria, só lê `outcome.channel_relationship`/`outcome.source_state` já
+prontos e escolhe o TEMPLATE fixo correspondente (ver
+`_render_reconciliation_suffix` abaixo). Quando o relacionamento é
+"materialmente útil" (ver docstring daquela função pra quais estados são
+intencionalmente audit-only), uma linha ADICIONAL é anexada logo abaixo
+da avaliação do Judge -- nunca substituindo, nunca alterando o
 rótulo/explicação do Judge. `Judge` continua inteiramente cego a Source
 Analysis (nenhuma mudança em `app/judge/`); `EditorPlan` continua sem
-nenhum campo relacionado a fonte (a LLM Editor nunca vê nem escolhe
-nada sobre isso); a linha de relação é template FIXO desta função,
-igual a todo o resto do renderizador -- não introduz nenhuma autoridade
-epistêmica nova, só comunica um segundo fato JÁ COMPUTADO (a relação
-entre a claim e a fonte fornecida) ao lado do veredito do Judge, que o
-usuário explicitamente pode ter pedido pra diferenciar (ver caso real:
-claim sobre ano de fundação, Judge diz "indeterminável pelo debate",
-Source Analysis diz "a fonte contradiz" -- as duas coexistem no texto
-final, nenhuma reescreve a outra).
+nenhum campo relacionado a fonte/reconciliação (a LLM Editor nunca vê
+nem escolhe nada sobre isso); a linha de relacionamento é template FIXO
+desta função, igual a todo o resto do renderizador -- não introduz
+nenhuma autoridade epistêmica nova, só comunica um segundo fato JÁ
+CLASSIFICADO (como os dois canais se relacionam) ao lado do veredito do
+Judge (ver caso real: claim sobre ano de fundação, Judge diz
+"indeterminável pelo debate", Source Analysis diz "a fonte contradiz" --
+`SOURCE_ADDS_DIRECTION` -- as duas coexistem no texto final, nenhuma
+reescreve a outra). `source_analysis_result` continua recebido só pra
+resolver o EXCERTO exato de um `source_claim_result_id` já referenciado
+pelo outcome -- nunca pra reclassificar nada.
 
 Bounded contextual opening (patch de legibilidade pós-diagnóstico de run
 real) -- `EditorPlan.opening_style="contextual"` antepunha a `question`
@@ -192,7 +200,14 @@ from app.models.provider_models import ProviderResponse
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.providers.base import LLMProvider, transport_error_common_fields
-from app.source_analysis.models import ValidSourceRelation
+from app.reconciliation.errors import ReconciliationError
+from app.reconciliation.models import (
+    ChannelRelationship,
+    ClaimReconciliationOutcome,
+    SourceChannelState,
+    SourceJudgeReconciliationResult,
+)
+from app.source_analysis.models import SourceClaimAnalysisResult, ValidSourceRelation
 from app.source_analysis.result import SourceAnalysisResult
 from app.structured_output import strip_single_json_code_fence
 
@@ -278,18 +293,59 @@ _JUDGE_REASON_LABELS: dict[str, str] = {
     "judge_output_invalid": "a avaliação final não pôde ser interpretada corretamente",
 }
 
-# Patch de apresentação com fonte -- rótulos de RELAÇÃO com a fonte,
-# nunca de verdade externa (mesma disciplina de app/cli/output.py e do
-# frontend, ver app/source_analysis/models.py): "apoia"/"contradiz"
-# descrevem o que a análise encontrou entre a claim e o texto da fonte
-# fornecida pelo usuário -- nunca se a claim é verdadeira/falsa/provada.
-# "unresolved" É OMITIDO DE PROPÓSITO (nenhuma entrada aqui) -- sinal
-# nulo, renderizar uma linha extra pra "a fonte não decide" deixaria
-# toda claim sem relação clara ainda mais verbosa sem acrescentar
-# informação real (ver `_render_source_relation_suffix`).
-_SOURCE_RELATION_PRESENTATION_LABELS: dict[str, str] = {
-    "supports": "apoia esta afirmação",
-    "contradicts": "contradiz esta afirmação",
+# Cross-Channel Reconciliation V1 -- rótulos de RELACIONAMENTO ENTRE
+# CANAIS, nunca de verdade externa (mesma disciplina de app/cli/output.py
+# e do frontend, ver app/reconciliation/models.py): descrevem COMO o
+# Judge e a fonte se relacionam -- nunca se a claim é
+# verdadeira/falsa/provada, nunca qual dos dois canais está "certo".
+#
+# Estados intencionalmente AUDIT-ONLY nesta função (nenhuma linha em
+# `answer_text`, mas continuam expostos no resultado estruturado/audit,
+# ver app/presentation/schemas.py::SourceJudgeReconciliationResultPublic):
+# - SOURCE_UNRESOLVED: sinal nulo -- a fonte também não decidiu nada,
+#   renderizar uma linha extra pra "a fonte não decide" deixaria toda
+#   claim sem relação clara ainda mais verbosa sem acrescentar
+#   informação real (mesma disciplina do antigo "unresolved omitido").
+# - NOT_COMPARABLE: sem fonte utilizável -- o caso mais comum (nenhuma
+#   fonte fornecida); imprimir uma linha aqui pra TODA claim seria ruído
+#   puro pro caso mais frequente do produto.
+_RELATIONSHIP_RENDER_TEMPLATES: dict[ChannelRelationship, str] = {
+    ChannelRelationship.DIRECTIONALLY_ALIGNED: (
+        "\n  Relação com a fonte fornecida: a fonte aponta na MESMA direção "
+        "da avaliação do debate."
+    ),
+    ChannelRelationship.IN_TENSION: (
+        "\n  Relação com a fonte fornecida: a fonte aponta na direção OPOSTA "
+        "à avaliação do debate."
+    ),
+    # Repair #5 (revisão adversarial) -- "mixed"/SOURCE_CHANNEL_CONFLICT
+    # cobre QUALQUER combinação de entradas canônicas do lado da fonte
+    # que não seja redutível a um único estado coerente -- não SÓ
+    # supports+contradicts (inclui supports+unresolved,
+    # direcional+rejected, unresolved+rejected, etc., ver
+    # app/reconciliation/reconcile.py::_reduce_source_group). A redação
+    # anterior ("a fonte contém resultados conflitantes") superespecifica
+    # pra um conflito direcional que pode nem existir, e atribui a
+    # anomalia à FONTE em si -- a atribuição correta é à ANÁLISE DE
+    # FONTE (o processo que produziu entradas incoerentes), nunca ao
+    # texto da fonte, que pode ser perfeitamente coerente. Wording
+    # NEUTRO exigido: nunca "conflito interno na fonte", nunca "resultados
+    # conflitantes para esta afirmação" atribuído à fonte.
+    ChannelRelationship.SOURCE_CHANNEL_CONFLICT: (
+        "\n  Relação com a fonte fornecida: a análise da fonte produziu "
+        "entradas que não puderam ser reduzidas a um único estado coerente "
+        "para esta afirmação, e não pôde ser usada para comparação aqui."
+    ),
+}
+
+# SOURCE_ADDS_DIRECTION só ocorre quando source_state é SUPPORTS/CONTRADICTS
+# (ver ChannelRelationship/VALID_RELATIONSHIPS_WHEN_COMPLETE) -- o Judge não
+# deu direção nenhuma (conflicting/unresolved), então a frase PRECISA dizer
+# qual direção a fonte acrescenta (nunca "mesma"/"oposta", que pressupõem
+# uma direção do Judge que não existe aqui).
+_SOURCE_ADDS_DIRECTION_LABELS: dict[SourceChannelState, str] = {
+    SourceChannelState.SUPPORTS: "apoiada pela fonte fornecida",
+    SourceChannelState.CONTRADICTS: "contradita pela fonte fornecida",
 }
 
 _OPENING_DIRECT = "Resultado da avaliação do debate:"
@@ -345,18 +401,19 @@ class Editor:
         prior_output_tokens: int,
         prior_cost_usd: float,
         source_analysis_result: SourceAnalysisResult | None = None,
+        reconciliation: SourceJudgeReconciliationResult | None = None,
     ) -> EditorResult:
         # `prior_*` (patch de revisão do Stage 16): consumo REAL acumulado
         # de Debate + Source Analysis (se houve) + Judge -- já inclui
         # Judge aqui (diferente do que Judge recebe, que é só
         # Debate+Source Analysis).
         #
-        # Patch de apresentação com fonte -- `source_analysis_result` é
-        # NOVO aqui (default None preserva toda chamada existente sem
-        # fonte), mas o Editor LLM/`EditorPlan` continuam TÃO cegos a
-        # Source Analysis quanto antes: só o RENDERIZADOR determinístico
-        # (`_render_final_answer_text`) o recebe, via
-        # `source_relations_by_claim_id` abaixo -- nunca entra em
+        # Cross-Channel Reconciliation V1 -- `source_analysis_result`/
+        # `reconciliation` são NOVOS aqui (default None preserva toda
+        # chamada existente sem fonte/reconciliação), mas o Editor LLM/
+        # `EditorPlan` continuam TÃO cegos a Source Analysis/reconciliação
+        # quanto antes: só o RENDERIZADOR determinístico
+        # (`_render_final_answer_text`) os recebe -- nunca entra em
         # `build_editor_request`/no prompt da LLM.
         if judge_result.verdict is None:
             return self._no_verdict_result(
@@ -366,11 +423,12 @@ class Editor:
                 prior_input_tokens=prior_input_tokens,
                 prior_output_tokens=prior_output_tokens,
                 prior_cost_usd=prior_cost_usd,
+                reconciliation=reconciliation,
             )
 
         verdict = judge_result.verdict
         current_claims = get_current_claims(debate_result.claims)
-        source_relations_by_claim_id = _source_relations_by_claim_id(source_analysis_result)
+        source_results_by_id = _source_results_by_id(source_analysis_result)
 
         input_before, output_before, cost_before = (
             prior_input_tokens,
@@ -381,7 +439,11 @@ class Editor:
         if compute_budget_exceeded(input_before, output_before, cost_before, run_config):
             return EditorResult(
                 final_answer=self._deterministic_from_verdict_answer(
-                    run_config.question, verdict, current_claims, source_relations_by_claim_id
+                    run_config.question,
+                    verdict,
+                    current_claims,
+                    reconciliation,
+                    source_results_by_id,
                 ),
                 attempts=[],
                 fallback_reason="budget_exhausted_before_editor",
@@ -452,7 +514,11 @@ class Editor:
             )
             return EditorResult(
                 final_answer=self._deterministic_from_verdict_answer(
-                    run_config.question, verdict, current_claims, source_relations_by_claim_id
+                    run_config.question,
+                    verdict,
+                    current_claims,
+                    reconciliation,
+                    source_results_by_id,
                 ),
                 attempts=attempts,
                 fallback_reason=reason,
@@ -461,7 +527,12 @@ class Editor:
             )
 
         answer_text = _render_final_answer_text(
-            run_config.question, verdict, current_claims, parsed, source_relations_by_claim_id
+            run_config.question,
+            verdict,
+            current_claims,
+            parsed,
+            reconciliation,
+            source_results_by_id,
         )
         final_answer = FinalAnswer(
             answer_text=answer_text,
@@ -490,18 +561,39 @@ class Editor:
         prior_input_tokens: int,
         prior_output_tokens: int,
         prior_cost_usd: float,
+        reconciliation: SourceJudgeReconciliationResult | None = None,
     ) -> EditorResult:
         current_claims = get_current_claims(debate_result.claims)
         reason_text = _JUDGE_REASON_LABELS.get(
             judge_result.verdict_unavailable_reason or "", "a avaliação final não foi concluída"
         )
+        # Repair pós-revisão independente (seção 15 do contrato desta
+        # slice) -- este branch costumava SUPRIMIR qualquer relação de
+        # fonte válida só porque o Judge falhou; `reconciliation` agora
+        # torna isso explícito, e o comportamento muda: uma claim com
+        # source_state direcional (supports/contradicts) ganha uma nota
+        # ESCOPADA À ANÁLISE DE FONTE, nunca apresentada como substituto
+        # de um veredito do Judge (ver `_render_source_only_note`).
+        outcomes_by_claim_id = (
+            {o.claim_id: o for o in reconciliation.claim_outcomes}
+            if reconciliation is not None
+            else {}
+        )
 
         if current_claims:
-            claim_lines = "\n".join(f"- {c.text}" for c in current_claims)
+            claim_lines = []
+            for claim in current_claims:
+                line = f"- {claim.text}"
+                outcome = outcomes_by_claim_id.get(claim.id)
+                if outcome is not None:
+                    note = _render_source_only_note(outcome.source_state)
+                    if note is not None:
+                        line += f"\n  {note}"
+                claim_lines.append(line)
             answer_text = (
                 f"A avaliação final não pôde ser concluída: {reason_text}. As seguintes "
                 "afirmações foram levantadas pelos modelos participantes, mas não foram "
-                f"avaliadas:\n{claim_lines}"
+                "avaliadas:\n" + "\n".join(claim_lines)
             )
         else:
             answer_text = (
@@ -535,18 +627,19 @@ class Editor:
         question: str,
         verdict: JudgeVerdict,
         current_claims: list[Claim],
-        source_relations_by_claim_id: dict[str, ValidSourceRelation],
+        reconciliation: SourceJudgeReconciliationResult | None,
+        source_results_by_id: dict[str, SourceClaimAnalysisResult],
     ) -> FinalAnswer:
         """Fallback (transporte/parse/budget) -- usa o MESMO
         `_render_final_answer_text` do caminho de sucesso, com
         `_DEFAULT_PLAN`, nunca um renderizador próprio (Etapa 17B): não
         pode haver dois textos possíveis pro mesmo veredito dependendo
-        só de qual caminho de execução foi seguido. `source_relations_by_claim_id`
-        segue o mesmo princípio (patch de apresentação com fonte): o
-        fallback mostra exatamente a mesma relação de fonte que o
-        caminho de sucesso mostraria pro mesmo veredito."""
+        só de qual caminho de execução foi seguido. `reconciliation`
+        segue o mesmo princípio (Cross-Channel Reconciliation V1): o
+        fallback mostra exatamente o mesmo relacionamento entre canais
+        que o caminho de sucesso mostraria pro mesmo veredito."""
         answer_text = _render_final_answer_text(
-            question, verdict, current_claims, _DEFAULT_PLAN, source_relations_by_claim_id
+            question, verdict, current_claims, _DEFAULT_PLAN, reconciliation, source_results_by_id
         )
         return FinalAnswer(
             answer_text=answer_text,
@@ -557,45 +650,119 @@ class Editor:
         )
 
 
-def _source_relations_by_claim_id(
+def _source_results_by_id(
     source_analysis_result: SourceAnalysisResult | None,
-) -> dict[str, ValidSourceRelation]:
-    """Só `ValidSourceRelation` -- NUNCA `RejectedSourceEntry` (ver
-    app/source_analysis/models.py: rejeitada não é uma relação
-    epistêmica, é a aplicação dizendo que não confiou no que a análise
-    devolveu; nunca apresentada como evidência válida aqui). `{}`
-    (nenhuma relação) quando `source_analysis_result` é `None` (nenhuma
-    fonte fornecida) ou tem `skipped_reason` preenchido (análise pulada/
-    falhada -- e por construção não tem `claim_results` nesse caso, ver
-    `SourceAnalysisResult._claim_results_only_when_not_skipped`) --
-    ausência de fonte validada nunca produz nenhuma linha nova, o texto
-    final fica exatamente como seria sem este patch.
-
-    Chave = `claim_id`, o MESMO identificador estruturado que
-    `ClaimAssessment.claim_id` usa -- nunca fuzzy matching por texto.
-    Uma relação cujo `claim_id` não bate com nenhuma claim que o Judge
-    avaliou (claim revisada/fundida, id desconhecido) simplesmente nunca
-    é procurada no dict por `_render_final_answer_text` -- degrada pra
-    "nenhuma relação pra esta claim", nunca uma tentativa de
-    reconciliação semântica."""
-    if source_analysis_result is None or source_analysis_result.skipped_reason is not None:
+) -> dict[str, SourceClaimAnalysisResult]:
+    """Lookup CRU por id -- usado só pra resolver o EXCERTO exato de um
+    `source_claim_result_id` já referenciado por um
+    `ClaimReconciliationOutcome` (ver `_first_excerpt` abaixo). NUNCA usado
+    pra (re)classificar relacionamento -- isso é responsabilidade exclusiva
+    de `app/reconciliation/reconcile.py`, já resolvida antes deste módulo
+    ser chamado. `{}` quando não há análise de fonte nenhuma."""
+    if source_analysis_result is None:
         return {}
-    return {
-        r.claim_id: r
-        for r in source_analysis_result.claim_results
-        if isinstance(r, ValidSourceRelation)
-    }
+    return {r.id: r for r in source_analysis_result.claim_results}
 
 
-def _render_source_relation_suffix(relation: ValidSourceRelation) -> str | None:
+_EXPECTED_RELATION_FOR_SOURCE_STATE: dict[SourceChannelState, str] = {
+    SourceChannelState.SUPPORTS: "supports",
+    SourceChannelState.CONTRADICTS: "contradicts",
+}
+
+
+def _first_excerpt(
+    outcome: ClaimReconciliationOutcome,
+    source_results_by_id: dict[str, SourceClaimAnalysisResult],
+) -> str | None:
+    """Primeiro excerto REAL entre os ids referenciados pelo outcome --
+    suficiente pros estados coerentes (supports/contradicts unânimes,
+    onde duplicatas retidas compartilham o mesmo tipo de relação); nunca
+    chamado pra SOURCE_CHANNEL_CONFLICT/UNRESOLVED/NOT_COMPARABLE (ver
+    `_render_reconciliation_suffix`) -- `expected_relation is None`
+    cobre esses (e qualquer outro) estado não-direcional defensivamente.
+
+    Repair #3 (revisão adversarial) -- FRONTEIRA DE PROVENANCE PRÓPRIA do
+    Editor: mesmo que `validate_reconciliation_coherence`
+    (app/reconciliation/reconcile.py) já devesse ter rejeitado, antes
+    deste ponto, qualquer `SourceJudgeReconciliationResult` incoerente,
+    este renderizador NUNCA confia cegamente no que recebe -- pra CADA
+    id referenciado, exige que o resultado exista, seja uma
+    `ValidSourceRelation`, pertença EXATAMENTE à mesma claim do outcome
+    (`relation.claim_id == outcome.claim_id`) e que sua direção seja
+    compatível com `outcome.source_state` (supports só aceita
+    `relation="supports"`, contradicts só aceita `relation="contradicts"`).
+
+    FALHA FECHADO (`ReconciliationError`) se QUALQUER id referenciado
+    violar qualquer uma dessas condições -- NUNCA pula um id incoerente
+    silenciosamente pra tentar um "substituto conveniente" mais adiante.
+
+    Repair da revisão focada F3 -- a validação NUNCA retorna cedo: TODOS
+    os ids referenciados são validados, na ordem, ATÉ O FIM, mesmo depois
+    de um excerto usável já ter sido encontrado. Um excerto válido nos
+    primeiros ids nunca pode "escapar" antes de uma referência malformada
+    mais adiante ser examinada -- do contrário um outcome com
+    (relação válida da claim A, referência malformada/cross-claim
+    posterior) renderizaria o excerto válido e esconderia a corrupção de
+    provenance no resto da lista. Só avança pro próximo id sem guardar
+    excerto quando o atual É coerente mas simplesmente não tem excerto
+    (`excerpt is None`) -- isso não é uma violação de provenance, é
+    apenas ausência de trecho pra aquela entrada específica; o PRIMEIRO
+    excerto coerente encontrado (na ordem de `source_claim_result_ids`)
+    é o que acaba sendo devolvido, nunca um posterior."""
+    expected_relation = _EXPECTED_RELATION_FOR_SOURCE_STATE.get(outcome.source_state)
+    if expected_relation is None:
+        return None
+    first_excerpt: str | None = None
+    for result_id in outcome.source_claim_result_ids:
+        result = source_results_by_id.get(result_id)
+        if result is None:
+            raise ReconciliationError(
+                f"outcome de claim_id={outcome.claim_id!r} referencia "
+                f"source_claim_result_id={result_id!r} que não existe nos "
+                "resultados de análise de fonte desta execução"
+            )
+        if not isinstance(result, ValidSourceRelation):
+            raise ReconciliationError(
+                f"outcome de claim_id={outcome.claim_id!r} (source_state="
+                f"{outcome.source_state!r}) referencia source_claim_result_id="
+                f"{result_id!r}, que não é uma ValidSourceRelation -- estado "
+                "canônico incoerente"
+            )
+        if result.claim_id != outcome.claim_id:
+            raise ReconciliationError(
+                f"outcome de claim_id={outcome.claim_id!r} referencia "
+                f"source_claim_result_id={result_id!r}, que pertence à claim "
+                f"{result.claim_id!r} -- provenance cruzada entre claims nunca "
+                "é aceita"
+            )
+        if result.relation != expected_relation:
+            raise ReconciliationError(
+                f"outcome de claim_id={outcome.claim_id!r} (source_state="
+                f"{outcome.source_state!r}) referencia source_claim_result_id="
+                f"{result_id!r} cuja relação real é {result.relation!r} -- "
+                "direção incompatível"
+            )
+        if first_excerpt is None and result.excerpt is not None:
+            first_excerpt = result.excerpt
+    return first_excerpt
+    return None
+
+
+def _render_reconciliation_suffix(
+    outcome: ClaimReconciliationOutcome,
+    source_results_by_id: dict[str, SourceClaimAnalysisResult],
+) -> str | None:
     """Linha ADICIONAL, nunca substituta, da avaliação do Judge --
-    SOURCE RELATION != JUDGE VERDICT != TRUTH. `None` pra
-    `relation="unresolved"` de propósito (sinal nulo -- ver
-    `_SOURCE_RELATION_PRESENTATION_LABELS`, conservador por design,
-    não por omissão).
+    CHANNEL RELATIONSHIP != JUDGE VERDICT != TRUTH. A classificação vem
+    inteiramente de `outcome.channel_relationship` (já resolvida pela
+    ÚNICA implementação de reconciliação, `app/reconciliation/reconcile.py`)
+    -- esta função NUNCA re-deriva o relacionamento a partir de
+    judge_verdict/source_state por conta própria, só escolhe o TEMPLATE
+    fixo correspondente. Ver comentário de `_RELATIONSHIP_RENDER_TEMPLATES`
+    acima pra quais estados são intencionalmente audit-only (`None` aqui).
 
     Correção arquitetural (auditoria de terminal-safety pós-CLI):
-    `relation.excerpt` entra aqui BYTE-FIEL, sem nenhum escaping --
+    o excerto entra aqui BYTE-FIEL, sem nenhum escaping --
     `FinalAnswer.answer_text` é o dado CANÔNICO (persistido/API/
     frontend), não um artefato de terminal, e escaping terminal-
     específico NUNCA pertence a esta camada de domínio (a mesma razão
@@ -606,13 +773,55 @@ def _render_source_relation_suffix(relation: ValidSourceRelation) -> str | None:
     apresentação real -- `app/cli/output.py::human_run_result`, que é
     quem de fato escreve em um terminal -- nunca dentro do
     renderizador de domínio. Ver docstring de `app/text_safety.py`."""
-    if relation.relation not in _SOURCE_RELATION_PRESENTATION_LABELS:
+    relationship = outcome.channel_relationship
+    if relationship in (ChannelRelationship.SOURCE_UNRESOLVED, ChannelRelationship.NOT_COMPARABLE):
         return None
-    label = _SOURCE_RELATION_PRESENTATION_LABELS[relation.relation]
-    suffix = f"\n  Relação com a fonte fornecida: a fonte {label}."
-    if relation.excerpt is not None:
-        suffix += f'\n  Trecho da fonte: "{relation.excerpt}"'
+
+    if relationship == ChannelRelationship.SOURCE_ADDS_DIRECTION:
+        label = _SOURCE_ADDS_DIRECTION_LABELS[outcome.source_state]
+        suffix = (
+            "\n  Relação com a fonte fornecida: o debate não decidiu esta "
+            f"afirmação, mas ela é {label}."
+        )
+    else:
+        suffix = _RELATIONSHIP_RENDER_TEMPLATES[relationship]
+
+    if relationship != ChannelRelationship.SOURCE_CHANNEL_CONFLICT:
+        excerpt = _first_excerpt(outcome, source_results_by_id)
+        if excerpt is not None:
+            suffix += f'\n  Trecho da fonte: "{excerpt}"'
     return suffix
+
+
+# Repair pós-revisão independente (seção 15 do contrato) -- usado SÓ em
+# `Editor._no_verdict_result` (Judge indisponível, `channel_relationship`
+# é SEMPRE not_comparable ali -- ver ClaimReconciliationOutcome, então a
+# nota aqui é escolhida por `source_state` diretamente, nunca por
+# relationship). NUNCA finge ser um veredito substituto -- a redação
+# deixa explícito que é a ANÁLISE DE FONTE, nunca "avaliação"/"veredito".
+# Estados sem nota (omissão concisa aceitável, ver contrato seção 15):
+# UNRESOLVED/ENTRY_REJECTED/ANALYSIS_UNAVAILABLE/NOT_SUPPLIED.
+_NO_VERDICT_SOURCE_STATE_LABELS: dict[SourceChannelState, str] = {
+    SourceChannelState.SUPPORTS: "apoiada pela fonte fornecida",
+    SourceChannelState.CONTRADICTS: "contradita pela fonte fornecida",
+}
+
+
+def _render_source_only_note(source_state: SourceChannelState) -> str | None:
+    # Repair #5 (revisão adversarial) -- wording neutro: "mixed" cobre
+    # qualquer combinação de entradas canônicas incoerentes entre si
+    # (não só supports+contradicts), e a anomalia é da ANÁLISE DE FONTE
+    # (processo), nunca do texto da fonte em si (ver comentário de
+    # `_RELATIONSHIP_RENDER_TEMPLATES` acima).
+    if source_state == SourceChannelState.MIXED:
+        return (
+            "A análise da fonte fornecida produziu entradas que não puderam "
+            "ser reduzidas a um único estado coerente para esta afirmação."
+        )
+    label = _NO_VERDICT_SOURCE_STATE_LABELS.get(source_state)
+    if label is None:
+        return None
+    return f"A análise da fonte fornecida classificou esta afirmação como {label}."
 
 
 def _bounded_question_excerpt(question: str) -> str:
@@ -679,7 +888,8 @@ def _render_final_answer_text(
     verdict: JudgeVerdict,
     current_claims: list[Claim],
     plan: EditorPlan,
-    source_relations_by_claim_id: dict[str, ValidSourceRelation],
+    reconciliation: SourceJudgeReconciliationResult | None,
+    source_results_by_id: dict[str, SourceClaimAnalysisResult],
 ) -> str:
     """Único renderizador epistêmico do módulo (Etapa 17B) -- usado tanto
     quando a LLM Editor produz um `EditorPlan` aceito quanto em qualquer
@@ -706,28 +916,34 @@ def _render_final_answer_text(
     cabeçalho (nenhuma frase "nenhuma conclusão sustentada" inventada) --
     ver `_BUCKET_A_HEADING`/`_BUCKET_B_HEADING`.
 
-    `source_relations_by_claim_id` (patch de apresentação com fonte):
-    quando existe uma relação válida pra `assessment.claim_id`, uma
-    linha ADICIONAL (`_render_source_relation_suffix`) é anexada
-    DEPOIS da linha "Avaliação: ..." do Judge -- nunca a substitui,
-    nunca muda `label`/`assessment.explanation`. As duas coexistem
-    sempre que ambas existem (SOURCE RELATION != JUDGE VERDICT). A
-    relação viaja PRESA ao bloco da claim -- nunca ao bucket -- então
-    nunca muda de claim nem desaparece por causa do particionamento
-    (o bucket de uma claim é decidido SÓ por `assessment.verdict`,
-    nunca pela presença/ausência de uma relação de fonte)."""
+    `reconciliation` (Cross-Channel Reconciliation V1): quando existe um
+    `ClaimReconciliationOutcome` pra `assessment.claim_id`, uma linha
+    ADICIONAL (`_render_reconciliation_suffix`) é anexada DEPOIS da linha
+    "Avaliação: ..." do Judge -- nunca a substitui, nunca muda
+    `label`/`assessment.explanation`. As duas coexistem sempre que ambas
+    existem (CHANNEL RELATIONSHIP != JUDGE VERDICT). A relação viaja
+    PRESA ao bloco da claim -- nunca ao bucket -- então nunca muda de
+    claim nem desaparece por causa do particionamento (o bucket de uma
+    claim é decidido SÓ por `assessment.verdict`, nunca pela
+    presença/ausência de um outcome de reconciliação). Este renderizador
+    NUNCA re-deriva `channel_relationship` a partir de
+    `assessment.verdict`/`source_state` por conta própria -- só lê o
+    campo já resolvido por `app/reconciliation/reconcile.py`."""
     claims_by_id = {c.id: c for c in current_claims}
+    outcomes_by_claim_id = (
+        {o.claim_id: o for o in reconciliation.claim_outcomes} if reconciliation is not None else {}
+    )
     bucket_lines: dict[Literal["a", "b"], list[str]] = {"a": [], "b": []}
     for assessment in verdict.claim_assessments:
         claim = claims_by_id.get(assessment.claim_id)
         claim_text = claim.text if claim is not None else "(claim não encontrada)"
         label = _VERDICT_LABELS.get(assessment.verdict, assessment.verdict)
         line = f"- {claim_text}\n  Avaliação: {label}. {assessment.explanation}"
-        relation = source_relations_by_claim_id.get(assessment.claim_id)
-        if relation is not None:
-            relation_suffix = _render_source_relation_suffix(relation)
-            if relation_suffix is not None:
-                line += relation_suffix
+        outcome = outcomes_by_claim_id.get(assessment.claim_id)
+        if outcome is not None:
+            suffix = _render_reconciliation_suffix(outcome, source_results_by_id)
+            if suffix is not None:
+                line += suffix
         bucket_lines[_bucket_for_verdict(assessment.verdict)].append(line)
 
     sections = []

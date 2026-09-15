@@ -5,8 +5,16 @@ from fastapi.testclient import TestClient
 
 from app.api.app import create_app
 from app.config import Settings
+from app.models.domain import ClaimAssessment
 from tests.api.helpers import make_components_factory
-from tests.storage.fixtures import full_council_run_result, model_response, now, quorum_failure_exception, run_config
+from tests.storage.fixtures import (
+    full_council_run_result,
+    model_response,
+    now,
+    quorum_failure_exception,
+    run_config,
+    with_recomputed_reconciliation,
+)
 
 
 def _settings() -> Settings:
@@ -155,7 +163,26 @@ def test_get_run_audit_claim_supporting_models_deduplicated():
     debate_result = result.debate_result.model_copy(
         update={"claims": [base_claim, duplicated_support_claim]}
     )
-    result = result.model_copy(update={"debate_result": debate_result})
+    # duplicated_support_claim é uma claim corrente nova (não superseded) --
+    # reconciliação exige avaliação do Judge pra ela também.
+    verdict = result.judge_result.verdict.model_copy(
+        update={
+            "claim_assessments": list(result.judge_result.verdict.claim_assessments)
+            + [
+                ClaimAssessment(
+                    claim_id="duplicated-support-claim-id",
+                    verdict="supported",
+                    explanation="ok",
+                )
+            ]
+        }
+    )
+    judge_result = result.judge_result.model_copy(update={"verdict": verdict})
+    result = with_recomputed_reconciliation(
+        result.model_copy(
+            update={"debate_result": debate_result, "judge_result": judge_result}
+        )
+    )
 
     app = create_app(settings=_settings(), components_factory=make_components_factory())
     with TestClient(app) as client:
@@ -233,7 +260,19 @@ def test_get_run_audit_claims_order_preserved():
     debate = result.debate_result.model_copy(
         update={"claims": [base_claim, second_claim, third_claim]}
     )
-    result = result.model_copy(update={"debate_result": debate})
+    verdict = result.judge_result.verdict.model_copy(
+        update={
+            "claim_assessments": list(result.judge_result.verdict.claim_assessments)
+            + [
+                ClaimAssessment(claim_id="second-claim", verdict="supported", explanation="ok"),
+                ClaimAssessment(claim_id="third-claim", verdict="supported", explanation="ok"),
+            ]
+        }
+    )
+    judge_result = result.judge_result.model_copy(update={"verdict": verdict})
+    result = with_recomputed_reconciliation(
+        result.model_copy(update={"debate_result": debate, "judge_result": judge_result})
+    )
 
     app = create_app(settings=_settings(), components_factory=make_components_factory())
     with TestClient(app) as client:

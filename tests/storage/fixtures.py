@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.council.result import CouncilRunResult
+from app.debate.claims import get_current_claims
 from app.debate.numeric_verification import build_verification_attempt
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult, DebateResult
+from app.reconciliation.reconcile import reconcile_source_and_judge
 from app.source_analysis.attempt import SourceAnalysisAttempt
 from app.source_analysis.models import RejectedSourceEntry, ValidSourceRelation
 from app.source_analysis.result import SourceAnalysisResult
@@ -272,7 +274,46 @@ def full_council_run_result(**overrides) -> CouncilRunResult:
         completed_at=now(),
     )
     fields.update(overrides)
+    # Cross-Channel Reconciliation V1 -- calculada via a implementação de
+    # PRODUÇÃO (nunca construída à mão) a partir dos valores FINAIS (pós-
+    # override) de debate_result/judge_result/source_analysis_result --
+    # nunca dos valores originais desta fixture, que um chamador pode ter
+    # substituído (ex.: um judge_result com verdict=None diferente do
+    # usado aqui por padrão). `setdefault` respeita um `reconciliation=`
+    # explícito passado em overrides (ex.: simular ausência histórica).
+    fields.setdefault(
+        "reconciliation",
+        reconcile_source_and_judge(
+            get_current_claims(fields["debate_result"].claims),
+            fields["judge_result"],
+            fields["source_analysis_result"],
+        ),
+    )
     return CouncilRunResult(**fields)
+
+
+def with_recomputed_reconciliation(result: CouncilRunResult) -> CouncilRunResult:
+    """Repair #4 (revisão adversarial) -- `save_success` agora recusa
+    persistir uma execução NOVA cujo `reconciliation` não seja coerente
+    com o `debate_result`/`judge_result`/`source_analysis_result`
+    EFETIVOS dela (ver `validate_reconciliation_coherence`,
+    app/reconciliation/reconcile.py). Um teste que pega um
+    `full_council_run_result()` já pronto e depois faz
+    `result.model_copy(update={"debate_result": ...})`/
+    `{"judge_result": ...}` diretamente (sem passar pela fixture de
+    novo) precisa recalcular a reconciliação a partir do estado FINAL
+    antes de salvar -- do contrário ela referencia claims/veredito que
+    já não são os reais desta execução. Helper dedicado em vez de
+    repetir a chamada em cada teste."""
+    return result.model_copy(
+        update={
+            "reconciliation": reconcile_source_and_judge(
+                get_current_claims(result.debate_result.claims),
+                result.judge_result,
+                result.source_analysis_result,
+            )
+        }
+    )
 
 
 def very_rich_council_run_result() -> CouncilRunResult:
@@ -454,6 +495,17 @@ def very_rich_council_run_result() -> CouncilRunResult:
             ClaimAssessment(
                 claim_id=c2.id, verdict="partially_supported", explanation="Segunda avaliação."
             ),
+            # Repair #4 (revisão adversarial) -- `reconciliation` agora é
+            # OBRIGATÓRIA em toda escrita nova (ver save_success); isso
+            # exige cobertura de avaliação pra TODA claim corrente, não
+            # só c1/c2 -- c3/c4/c5 abaixo existem só pra completar essa
+            # cobertura (o valor específico do veredito não importa pro
+            # propósito desta fixture, que é fidelidade de round-trip).
+            ClaimAssessment(claim_id=c3.id, verdict="rejected", explanation="Terceira avaliação."),
+            ClaimAssessment(claim_id=c4.id, verdict="unresolved", explanation="Quarta avaliação."),
+            ClaimAssessment(
+                claim_id=c5.id, verdict="conflicting", explanation="Quinta avaliação."
+            ),
         ],
         best_arguments_by={"openai/gpt-5.5": "Melhor argumento."},
         debate_limitations=["Limitação 1.", "Limitação 2."],
@@ -580,12 +632,23 @@ def very_rich_council_run_result() -> CouncilRunResult:
         cumulative_budget_exceeded=False,
     )
 
+    # Repair #4 (revisão adversarial) -- `reconciliation` agora é
+    # OBRIGATÓRIA em toda escrita nova via `save_success`, então esta
+    # fixture (usada em `save_success` real, ver
+    # test_full_fidelity_roundtrip_matches_original_model_dump/
+    # test_cmd_audit_human_output_surfaces_source_analysis) precisa de
+    # uma reconciliação de verdade, calculada pela implementação
+    # canônica -- nunca construída à mão.
+    reconciliation = reconcile_source_and_judge(
+        get_current_claims(debate_result.claims), judge_result, source_analysis_result
+    )
     return CouncilRunResult(
         run_config=run_config(source_text=source_text),
         debate_result=debate_result,
         source_analysis_result=source_analysis_result,
         judge_result=judge_result,
         editor_result=editor_result,
+        reconciliation=reconciliation,
         started_at=now(),
         completed_at=now(),
     )

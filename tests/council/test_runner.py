@@ -3,7 +3,9 @@ from __future__ import annotations
 import pytest
 
 from app.council.runner import CouncilRunner
+from app.models.domain import ClaimAssessment
 from app.orchestrator.errors import InsufficientQuorumError
+from app.reconciliation.models import ChannelRelationship, SourceChannelState
 from app.source_analysis.result import SourceAnalysisResult
 from tests.council.fakes import FakeDebateEngine, FakeEditor, FakeJudge, FakeSourceAnalyzer
 from tests.council.fixtures import (
@@ -80,6 +82,120 @@ async def test_source_analysis_result_is_passed_to_editor_compose():
     assert result.source_analysis_result is sa
 
 
+# ---------------------------------------------------------------------------
+# Cross-Channel Reconciliation V1 -- roda DEPOIS do Judge, ANTES do
+# Editor; função PURA (zero chamadas de provider adicionais); Editor
+# recebe o resultado explicitamente; accounting nunca é afetado.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_is_computed_and_passed_to_editor_compose():
+    c1 = raw_claim("Brasília é a capital.", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    jr = judge_result(v)
+    er = editor_result()
+    editor = FakeEditor(result=er)
+    runner = CouncilRunner(
+        debate_engine=FakeDebateEngine(result=dr),
+        judge=FakeJudge(result=jr),
+        editor=editor,
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+
+    result = await runner.run(run_config())
+
+    assert len(editor.reconciliation_calls) == 1
+    reconciliation = editor.reconciliation_calls[0]
+    assert reconciliation is not None
+    assert reconciliation.status == "complete"
+    assert reconciliation.claim_outcomes[0].claim_id == c1.id
+    assert reconciliation.claim_outcomes[0].source_state == SourceChannelState.NOT_SUPPLIED
+    assert reconciliation.claim_outcomes[0].channel_relationship == (
+        ChannelRelationship.NOT_COMPARABLE
+    )
+    # O MESMO objeto de reconciliação chega ao CouncilRunResult -- nunca
+    # recalculado uma segunda vez em outro lugar.
+    assert result.reconciliation is reconciliation
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_reflects_judge_unavailable_status():
+    """Judge indisponível -- reconciliação ainda roda, produz
+    status='judge_unavailable' deterministicamente, e o Editor a
+    recebe (nunca None só porque o Judge falhou)."""
+    dr, jr, er = _happy_path_fixtures()
+    assert jr.verdict is None
+    editor = FakeEditor(result=er)
+    runner = CouncilRunner(
+        debate_engine=FakeDebateEngine(result=dr),
+        judge=FakeJudge(result=jr),
+        editor=editor,
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+
+    result = await runner.run(run_config())
+
+    reconciliation = editor.reconciliation_calls[0]
+    assert reconciliation.status == "judge_unavailable"
+    assert result.reconciliation.status == "judge_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_causes_zero_extra_provider_calls():
+    """Reconciliação é uma função PURA -- roda entre Judge e Editor sem
+    tocar nenhum provider. Prova isso indiretamente: cada fake estágio
+    (Debate/SourceAnalyzer/Judge) é chamado EXATAMENTE uma vez, exatamente
+    como seria sem reconciliação nenhuma."""
+    c1 = raw_claim("Brasília é a capital.", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    jr = judge_result(v)
+    er = editor_result()
+    debate_engine = FakeDebateEngine(result=dr)
+    source_analyzer = FakeSourceAnalyzer(result=None)
+    judge = FakeJudge(result=jr)
+    editor = FakeEditor(result=er)
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=judge, editor=editor, source_analyzer=source_analyzer
+    )
+
+    await runner.run(run_config())
+
+    assert len(debate_engine.calls) == 1
+    assert len(source_analyzer.calls) == 1
+    assert len(judge.calls) == 1
+    assert len(editor.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_accounting_totals_unaffected_by_reconciliation():
+    """Reconciliação custa ZERO tokens/dólares -- os totais continuam
+    sendo exatamente a soma dos 4 componentes reais (debate/source/judge/
+    editor), nunca um quinto termo."""
+    dr, jr, er = _happy_path_fixtures()
+    runner = CouncilRunner(
+        debate_engine=FakeDebateEngine(result=dr),
+        judge=FakeJudge(result=jr),
+        editor=FakeEditor(result=er),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+
+    result = await runner.run(run_config())
+
+    assert result.reconciliation is not None
+    assert result.total_input_tokens == (
+        dr.cumulative_input_tokens + jr.judge_input_tokens + er.editor_input_tokens
+    )
+    assert result.total_output_tokens == (
+        dr.cumulative_output_tokens + jr.judge_output_tokens + er.editor_output_tokens
+    )
+    assert result.total_cost_usd == (
+        dr.cumulative_cost_usd + jr.judge_cost_usd + er.editor_cost_usd
+    )
+
+
 @pytest.mark.asyncio
 async def test_final_answer_accessible_via_result():
     dr, jr, er = _happy_path_fixtures()
@@ -137,7 +253,12 @@ async def test_editor_deterministic_from_verdict_produces_complete_result():
     )
     er = editor_result(final_answer=fa, fallback_reason="budget_exhausted_before_editor")
 
-    dr, _, _ = _happy_path_fixtures()
+    # `v` tem claim_assessments=[] -- combinado com um DebateResult SEM
+    # claims correntes (nunca o `c1` de `_happy_path_fixtures()`, que
+    # deixaria o veredito sem cobertura da única claim corrente e violaria
+    # a garantia real de SingleJudge, que reconcile_source_and_judge
+    # agora verifica -- ver app/reconciliation/reconcile.py).
+    dr = debate_result([], [model_response("openai")])
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
         judge=FakeJudge(result=jr),
