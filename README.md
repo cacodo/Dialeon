@@ -1,61 +1,266 @@
-# LLM Council
+# LLM Council (Dialeon)
 
-Sistema de debate multi-LLM: envia uma pergunta para várias LLMs
-independentemente, compara as respostas, faz elas debaterem, e usa
-um juiz para chegar a uma resposta final com consenso auditável —
-distinguindo sempre "modelos concordam" de "existe evidência externa".
+Sistema que envia uma pergunta para vários modelos de linguagem
+independentemente, faz eles debaterem em rodadas, extrai e agrupa as
+afirmações (claims) resultantes, e submete o resultado do debate a um
+juiz (outro modelo). Quando uma fonte textual opcional é fornecida
+pelo usuário, ela é comparada contra essas claims em um canal separado
+(Source Analysis) — o Judge nunca recebe esse texto nem esse
+resultado. Depois do Judge, uma etapa determinística reconcilia os
+dois canais, e a resposta final estruturada é montada com base nesse
+resultado. Cada execução é persistida para inspeção posterior.
 
-Arquitetura completa em `docs/` (ou nos documentos de arquitetura já
-trocados na conversa que originou este projeto).
+Projeto em desenvolvimento ativo. As interfaces (CLI, API HTTP,
+contrato de dados) ainda podem mudar entre execuções.
 
-## Estado atual: Etapa 1 — estrutura + configuração
+**Importante sobre o que isto NÃO é**: concordância entre modelos não é
+verdade, e a fonte fornecida pelo usuário não é validada como
+objetivamente correta. Ver [Escopo epistêmico](#escopo-epistêmico)
+abaixo.
 
-Este commit contém **só** estrutura de diretórios e configuração.
-Nenhuma lógica de LLM, orquestração, debate ou juiz foi implementada
-ainda — isso vem nas próximas etapas, uma de cada vez.
+## Sumário
+
+- [O que já está implementado](#o-que-já-está-implementado)
+- [Como o pipeline funciona](#como-o-pipeline-funciona)
+- [Escopo epistêmico](#escopo-epistêmico)
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [Rodando o projeto](#rodando-o-projeto)
+- [Configuração](#configuração)
+- [Testes](#testes)
+- [Possíveis direções futuras](#possíveis-direções-futuras)
+
+## O que já está implementado
+
+- Execução concorrente de uma pergunta contra múltiplos providers/modelos
+  (OpenAI, Anthropic, Gemini), com política de quórum configurável
+  (mínimo de respostas pra seguir com debate vs. mínimo pra ainda
+  retornar algo).
+- Debate em rodadas: resposta inicial de cada modelo e, quando há
+  quórum suficiente, uma rodada de crítica.
+- Extração de afirmações (claims) a partir das respostas, com
+  agrupamento/reconciliação das mesmas afirmações entre modelos e entre
+  rodadas.
+- Verificação determinística de expressões aritméticas simples
+  encontradas nas claims (sem chamada a modelo).
+- Análise de fonte (Source Analysis) opcional: quando o usuário fornece
+  um texto de referência, cada claim corrente é comparada contra esse
+  texto (apoia / contradiz / não resolvida), de forma independente do
+  debate.
+- Avaliação de um juiz (Judge) sobre o conjunto de claims correntes do
+  debate — avaliação escopada ao debate, não ao texto de fonte.
+- Reconciliação determinística (sem chamada a modelo) entre o canal do
+  Judge e o canal da Source Analysis: classifica como os dois se
+  relacionam por claim (alinhados, em tensão, etc.), nunca produz um
+  veredito de verdade novo.
+- Composição de uma resposta final estruturada: a LLM do Editor
+  continua cega a fonte e a reconciliação (nunca recebe o texto de
+  fonte, o `SourceAnalysisResult` nem o resultado da reconciliação); a
+  composição determinística da aplicação, essa sim, usa o resultado da
+  reconciliação e pode incluir na resposta final as relações/excertos
+  de Source Analysis por ele referenciados — sem que isso signifique
+  que a reconciliação escolhe qual dos dois canais está certo.
+- Persistência via SQLite (SQLAlchemy assíncrono), com ciclo de vida de
+  execução (`running` / `completed` / `failed` / `insufficient_quorum`).
+  Uma execução `completed` é persistida em detalhe suficiente pra
+  reconstrução/auditoria completa do resultado (claims, vereditos,
+  tentativas, reconciliação, custo); `running`/`failed` persistem
+  identidade, configuração, lifecycle e o snapshot de provenance do
+  aceite — não um registro incremental de claims/tentativas/vereditos
+  parciais em andamento, e uma falha inesperada de processo não
+  garante que todo o trabalho parcial anterior seja reconstruível.
+- Contabilização de tokens/custo por execução, com orçamento monetário e
+  orçamento agregado de tokens (ambos soft caps — ver
+  [Orçamento e contabilização](#orçamento-e-contabilização)).
+- Provenance de identidade de modelo (o identificador solicitado nem
+  sempre é igual ao reportado pelo provider) e de política de execução
+  de provider (timeout/tentativas), preservadas na auditoria.
+- CLI (`dialeon`), API HTTP (FastAPI) e frontend (React) para disparar
+  execuções e inspecionar resultados.
+
+## Como o pipeline funciona
+
+```
+Debate (rodadas + extração/agrupamento de claims)
+  → Source Analysis (só se uma fonte foi fornecida)
+  → Judge (avaliação escopada ao debate)
+  → Reconciliação determinística Source↔Judge
+  → Editor (resposta final estruturada)
+```
+
+Nenhuma chamada de modelo é adicionada pela etapa de reconciliação — é
+uma função pura sobre o que os dois canais anteriores já produziram. O
+Judge nunca recebe o texto de fonte nem o resultado da Source Analysis.
+A LLM do Editor também nunca recebe o texto de fonte, o
+`SourceAnalysisResult` ou o resultado da reconciliação — quem usa o
+resultado da reconciliação (e resolve as relações/excertos de Source
+Analysis por ele referenciados) é só a camada de composição
+determinística da aplicação, ao montar a resposta final.
+
+## Escopo epistêmico
+
+- **O veredito do Judge é escopado ao debate**: reflete o que os
+  modelos participantes discutiram, não uma verificação externa.
+- **A Source Analysis é um canal de comparação independente**, não uma
+  fonte de verdade — o texto fornecido pelo usuário nunca é verificado,
+  só comparado contra as claims.
+- **A reconciliação classifica um relacionamento entre dois canais**
+  (ex.: "o Judge e a fonte apontam na mesma direção"), nunca decide qual
+  dos dois está certo, e nunca é um terceiro veredito de verdade.
+- Consenso entre modelos nunca é tratado como confirmação de veracidade.
+
+## Estrutura do repositório
 
 ```
 llm-council/
 ├── app/
-│   ├── main.py                # (vazio ainda — Etapa 4+)
-│   ├── config.py               # ✅ settings via env vars
-│   ├── models/                 # schemas Pydantic — Etapa 3
-│   ├── providers/               # LLMProvider + implementações — Etapa 2
-│   ├── orchestrator/            # coordenação de fases — Etapa 4
-│   ├── context/                 # gerenciamento de contexto — Etapa 6+
-│   ├── debate/                  # rodadas de crítica — Etapa 6
-│   ├── judge/                   # JudgeStrategy — Etapa 7
-│   ├── verification/             # stub no MVP — Etapa 8
-│   ├── cost/                     # cost tracker/budget guard — Etapa 4
-│   └── storage/                  # SQLAlchemy/SQLite — Etapa 9
-├── frontend/
-│   └── streamlit_app.py         # (vazio ainda — Etapa 10)
-├── tests/
-├── .env.example                 # ✅ copie para .env e preencha as chaves
-├── pyproject.toml                # ✅ dependências
-└── README.md
+│   ├── config.py            # Settings (variáveis de ambiente)
+│   ├── providers/           # adapters dos providers (OpenAI/Anthropic/Gemini)
+│   ├── orchestrator/        # dispatch concorrente + política de quórum/budget
+│   ├── debate/               # rodadas, extração e agrupamento de claims
+│   ├── source_analysis/      # comparação claim × texto de fonte
+│   ├── judge/                 # avaliação escopada ao debate
+│   ├── reconciliation/        # relacionamento determinístico Source↔Judge
+│   ├── editor/                 # composição da resposta final
+│   ├── council/                 # orquestração do pipeline completo (CouncilRunner)
+│   ├── application/              # serviço de execução (aceite/persistência/erros)
+│   ├── storage/                    # modelos SQLAlchemy + repositório
+│   ├── presentation/                # schemas públicos (API/CLI compartilhados)
+│   ├── api/                          # FastAPI (rotas, app, serving do frontend)
+│   ├── cli/                           # entry point `dialeon`
+│   └── bootstrap.py                    # composition root (providers → pipeline → storage)
+├── frontend/                 # React + Vite + TypeScript
+├── tests/                     # pytest (espelha a estrutura de app/)
+├── .env.example                # exemplo das principais variáveis de ambiente (sem chaves reais)
+└── pyproject.toml
 ```
 
-## Setup local (o que já dá pra fazer nesta etapa)
+## Rodando o projeto
+
+### Backend
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
-pip install -e .
+pip install -e ".[dev]"
 cp .env.example .env            # depois preencha suas API keys no .env
 ```
 
-Não há nada pra rodar ainda — `main.py` está vazio de propósito. O
-objetivo desta etapa é só confirmar que a estrutura, o `config.py` e
-a instalação de dependências funcionam antes de entrarmos na Etapa 2
-(Provider Layer).
-
-### Como confirmar que esta etapa está OK
+Subir a API (porta 8000, padrão do uvicorn):
 
 ```bash
-python -c "from app.config import settings; print(settings.model_dump())"
+uvicorn app.api.app:create_app --factory --reload
 ```
 
-Isso deve imprimir as configurações padrão (com as API keys como
-`None` até você preencher o `.env`), sem erro nenhum. Se der erro de
-import, é sinal de que falta `pip install -e .`.
+Usar a CLI diretamente, sem subir a API:
+
+```bash
+dialeon providers                       # lista os identificadores de provider disponíveis
+dialeon run "sua pergunta aqui"         # executa e imprime o resultado
+dialeon run "..." --providers openai,anthropic --source "texto de referência opcional"
+dialeon list                             # lista execuções recentes
+dialeon get <run_id>                     # detalhe de uma execução
+dialeon audit <run_id>                   # auditoria completa (claims, vereditos, reconciliação, custo)
+```
+
+Qualquer um dos comandos acima que dispare uma execução real (`dialeon
+run`, ou uma chamada a `POST /runs` pela API) faz chamadas de verdade
+aos providers configurados e pode gerar custo.
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev          # servidor de desenvolvimento, com proxy pra API em :8000
+npm run build         # build de produção — servido pela API em /app quando presente
+npm test               # suíte de testes (vitest)
+```
+
+## Configuração
+
+Veja [`.env.example`](.env.example) para as principais variáveis de
+configuração e exemplos (nunca chaves reais) — não é uma lista
+exaustiva de tudo que `Settings` aceita (ex.: `OPENAI_DEFAULT_MODEL`,
+`ANTHROPIC_DEFAULT_MODEL`, `GEMINI_DEFAULT_MODEL` e
+`DEFAULT_SOURCE_ANALYZER_PROVIDER` também são aceitas, mas não
+aparecem lá); consulte `app/config.py` pra lista completa. Copie
+`.env.example` para `.env` e preencha suas próprias chaves — `.env` já
+está no `.gitignore` deste repositório e nunca deve ser commitado.
+
+**Nunca** imprima, logue ou serialize o objeto de configurações inteiro
+(por exemplo `Settings().model_dump()`) — isso inclui as API keys em
+texto plano quando configuradas. Para confirmar que a instalação/CLI
+está funcional sem imprimir, serializar ou transmitir as chaves
+configuradas, use:
+
+```bash
+dialeon providers --json
+```
+
+Isso só lista os identificadores de provider que a aplicação conhece
+(nunca a instância do provider, o objeto de configurações ou as
+próprias chaves), e não chama nenhum provider real pra montar essa
+lista. Não confirma se uma API key específica é válida — isso só é
+verificável executando uma pergunta de verdade, o que chama os
+providers reais. As chaves configuradas continuam sendo carregadas
+normalmente na memória do processo durante o bootstrap da CLI; este
+comando especificamente só nunca as imprime, serializa ou transmite.
+
+## Testes
+
+Backend:
+
+```bash
+pytest
+```
+
+Por padrão, testes marcados como `integration` (que fazem chamadas
+reais a providers e exigem API keys) são excluídos automaticamente. Pra
+rodá-los explicitamente:
+
+```bash
+pytest -m integration
+```
+
+Frontend:
+
+```bash
+cd frontend && npm test
+```
+
+## Orçamento e contabilização
+
+Dois orçamentos independentes por execução (nomes de campo em runtime,
+`RunConfig`):
+
+- **Orçamento monetário** (`max_cost_usd`): teto de custo estimado da
+  execução.
+- **Orçamento agregado de tokens** (`max_total_tokens`): soma de
+  input+output de todos os providers já concluídos — é um **soft cap**,
+  verificado entre chamadas, nunca cancela trabalho já em andamento; a
+  execução pode legitimamente terminar acima desse número.
+
+Distintos dos tetos de **output por chamada** (`max_output_tokens_per_call`/
+`max_output_tokens_grouping`/`max_output_tokens_judge`), que limitam
+quanto texto uma única chamada a um único provider pode gerar — não
+têm relação com o orçamento agregado acima.
+
+Esses valores vêm de `Settings` (configuráveis via `.env`) sob nomes de
+variável distintos dos nomes de campo acima:
+
+| Campo em runtime (`RunConfig`) | Variável de ambiente |
+| --- | --- |
+| `max_cost_usd` | `DEFAULT_MAX_COST_USD` |
+| `max_total_tokens` | `DEFAULT_MAX_TOTAL_TOKENS` |
+| `max_output_tokens_per_call` | `DEFAULT_MAX_OUTPUT_TOKENS_PER_CALL` |
+| `max_output_tokens_grouping` | `DEFAULT_MAX_OUTPUT_TOKENS_GROUPING` |
+| `max_output_tokens_judge` | `DEFAULT_MAX_OUTPUT_TOKENS_JUDGE` |
+
+## Possíveis direções futuras
+
+Sem roteiro formal/autoritativo neste repositório. Áreas identificadas
+como possíveis próximos passos, sem compromisso de implementação:
+
+- múltiplos juízes/estratégias de consenso do Judge;
+- suporte a mais providers;
+- interface de inspeção mais rica no frontend.
