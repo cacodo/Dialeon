@@ -17,7 +17,11 @@ from fastapi.responses import JSONResponse
 
 from app.api.exceptions import RunNotFoundError
 from app.presentation.schemas import ErrorBody, ErrorResponse
-from app.application.errors import InvalidQuestionError, UnknownProviderError
+from app.application.errors import (
+    InvalidQuestionError,
+    InvalidQuorumConfigurationError,
+    UnknownProviderError,
+)
 from app.orchestrator.errors import InsufficientQuorumError
 
 logger = logging.getLogger(__name__)
@@ -83,6 +87,33 @@ def register_exception_handlers(app: FastAPI) -> None:
                     code="invalid_request",
                     message=exc.reason,
                     details=None,
+                )
+            ),
+        )
+
+    @app.exception_handler(InvalidQuorumConfigurationError)
+    async def _handle_invalid_quorum_configuration(
+        request: Request, exc: InvalidQuorumConfigurationError
+    ) -> JSONResponse:
+        # Accepted Quorum Feasibility Boundary V1 -- mesmo
+        # code="invalid_request" que InvalidQuestionError usa acima: é a
+        # MESMA classe de problema (configuração de aceite inválida),
+        # detectada numa boundary diferente. NUNCA 409 -- 409/
+        # "insufficient_quorum" (handler abaixo) é reservado pra uma
+        # execução FACTÍVEL que foi de fato despachada e cujo resultado
+        # OBSERVADO ficou abaixo do quórum, nunca pra uma configuração
+        # matematicamente infactível detectada antes de qualquer
+        # dispatch.
+        return _error_json(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="invalid_request",
+                    message=str(exc),
+                    details={
+                        "min_to_return": exc.min_to_return,
+                        "participant_count": exc.participant_count,
+                    },
                 )
             ),
         )

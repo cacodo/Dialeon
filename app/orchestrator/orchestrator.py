@@ -46,7 +46,7 @@ from app.models.provider_models import (
 )
 from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
-from app.orchestrator.config import RunConfig
+from app.orchestrator.config import RunConfig, validate_quorum_feasibility
 from app.orchestrator.errors import InsufficientQuorumError
 from app.orchestrator.result import InitialResponsesResult, RoundResult
 from app.providers.base import LLMProvider
@@ -81,6 +81,16 @@ class Orchestrator:
         self._providers = providers
 
     async def run(self, run_config: RunConfig) -> InitialResponsesResult:
+        """Accepted Quorum Feasibility Boundary V1: `validate_quorum_feasibility`
+        roda ANTES de qualquer construção de request/provenance/dispatch
+        -- defesa em profundidade pra chamadores diretos do
+        `Orchestrator` (testes, código interno) que não passaram por
+        `CouncilExecutionService`/`CouncilRunner`. `ValueError` propaga
+        sem interceptação -- mesma disciplina de `validate_question` em
+        `CouncilRunner.run()`; a comparação em si nunca é reimplementada
+        aqui, só chamada."""
+        validate_quorum_feasibility(run_config)
+
         request = _build_initial_request(
             run_config.question, run_config.max_output_tokens_per_call
         )

@@ -27,7 +27,11 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from app.application.errors import InvalidQuestionError, UnknownProviderError
+from app.application.errors import (
+    InvalidQuestionError,
+    InvalidQuorumConfigurationError,
+    UnknownProviderError,
+)
 from app.bootstrap import AppComponents
 from app.cli import output
 from app.orchestrator.config import RunConfig
@@ -114,6 +118,27 @@ async def cmd_run(
         message = exc.reason
         if as_json:
             output.emit_json_error("invalid_request", message)
+        else:
+            output.print_error(message)
+        return EXIT_INVALID_INPUT
+    except InvalidQuorumConfigurationError as exc:
+        # Accepted Quorum Feasibility Boundary V1 -- mesmo
+        # code="invalid_request"/EXIT_INVALID_INPUT que InvalidQuestionError
+        # acima: MESMA classe de problema (configuração de aceite
+        # inválida), detectada na boundary autoritativa do service.
+        # NUNCA EXIT_INSUFFICIENT_QUORUM -- esse é reservado pra uma
+        # execução FACTÍVEL de fato despachada cujo resultado observado
+        # ficou abaixo do quórum.
+        message = str(exc)
+        if as_json:
+            output.emit_json_error(
+                "invalid_request",
+                message,
+                details={
+                    "min_to_return": exc.min_to_return,
+                    "participant_count": exc.participant_count,
+                },
+            )
         else:
             output.print_error(message)
         return EXIT_INVALID_INPUT

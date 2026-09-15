@@ -35,7 +35,7 @@ from app.debate.claims import get_current_claims
 from app.debate.debate_engine import DebateEngine
 from app.editor.compose import Editor
 from app.judge.strategy import JudgeStrategy
-from app.orchestrator.config import RunConfig, validate_question
+from app.orchestrator.config import RunConfig, validate_question, validate_quorum_feasibility
 from app.reconciliation.reconcile import (
     reconcile_source_and_judge,
     validate_reconciliation_coherence,
@@ -126,8 +126,19 @@ class CouncilRunner:
         (mesmo princípio já documentado no módulo pra "ValueError de
         provider mal configurado"); `CouncilRunner` nunca reimplementa a
         regra, só chama a MESMA função canônica de
-        app/orchestrator/config.py."""
+        app/orchestrator/config.py.
+
+        Accepted Quorum Feasibility Boundary V1: `validate_quorum_feasibility`
+        roda logo em seguida, AINDA antes de `_now()` -- mesma defesa em
+        profundidade: `CouncilExecutionService.run()` já é a boundary
+        autoritativa (rejeita antes de mintar/persistir), mas
+        `CouncilRunner` é diretamente construível/chamável (testes,
+        código interno) sem passar por ela. `ValueError` propaga sem
+        interceptação, mesmo princípio de `validate_question` acima --
+        `CouncilRunner` nunca reimplementa a comparação, só chama a
+        MESMA função canônica."""
         validate_question(run_config.question)
+        validate_quorum_feasibility(run_config)
 
         started_at = started_at if started_at is not None else _now()
 

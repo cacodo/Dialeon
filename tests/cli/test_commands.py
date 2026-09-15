@@ -144,6 +144,53 @@ async def test_cmd_run_invalid_provider_json_has_stable_error_shape(capsys):
 
 
 # ---------------------------------------------------------------------------
+# run — Accepted Quorum Feasibility Boundary V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cmd_run_infeasible_quorum_returns_exit_2(capsys):
+    """Matriz E, itens 25/26 -- `quorum.min_to_return > len(providers
+    selecionados)` mapeia pro mesmo vocabulário de invalid-input já
+    usado por `InvalidQuestionError`/`UnknownProviderError`:
+    `EXIT_INVALID_INPUT` (2), NUNCA `EXIT_INSUFFICIENT_QUORUM` (3) --
+    esse é reservado pra uma execução FACTÍVEL despachada de verdade.
+    `provider_names=("openai", "anthropic")` cobre os papéis internos
+    default (judge/editor/claim processor/source analyzer, todos
+    "anthropic" por Settings) -- só `enabled_providers=["openai"]" (1
+    participante) fica abaixo de `min_to_return=2`."""
+    components = await build_test_components(
+        _settings(quorum_min_to_return=2), provider_names=("openai", "anthropic")
+    )
+
+    exit_code = await commands.cmd_run(
+        components, question="pergunta", providers=["openai"], source_text=None, as_json=False
+    )
+
+    assert exit_code == commands.EXIT_INVALID_INPUT
+    debate_engine = components.service._runner._debate_engine
+    assert debate_engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_cmd_run_infeasible_quorum_json_has_invalid_request_vocabulary(capsys):
+    components = await build_test_components(
+        _settings(quorum_min_to_return=2), provider_names=("openai", "anthropic")
+    )
+
+    exit_code = await commands.cmd_run(
+        components, question="pergunta", providers=["openai"], source_text=None, as_json=True
+    )
+
+    assert exit_code == commands.EXIT_INVALID_INPUT
+    out = capsys.readouterr()
+    body = json.loads(out.err)
+    assert body["error"]["code"] == "invalid_request"
+    assert body["error"]["details"]["min_to_return"] == 2
+    assert body["error"]["details"]["participant_count"] == 1
+
+
+# ---------------------------------------------------------------------------
 # run — insufficient quorum
 # ---------------------------------------------------------------------------
 

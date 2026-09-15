@@ -293,6 +293,117 @@ async def test_multiple_providers_failing_simultaneously():
 
 
 @pytest.mark.asyncio
+async def test_infeasible_min_to_return_above_participant_count_dispatches_zero_providers():
+    """Accepted Quorum Feasibility Boundary V1, matriz D -- Orchestrator
+    é uma boundary de execução direta (defesa em profundidade): 1
+    participante com `min_to_return=2` é matematicamente infactível --
+    rejeitado ANTES de qualquer construção de request/provenance/
+    dispatch, provando `call_count == 0`."""
+    provider = StubProvider("openai", response=success_response("openai"))
+    orchestrator = Orchestrator({"openai": provider})
+    rc = _run_config(["openai"], quorum=QuorumPolicy(min_for_debate=2, min_to_return=2))
+
+    with pytest.raises(ValueError, match="min_to_return"):
+        await orchestrator.run(rc)
+
+    assert provider.call_count == 0
+    assert provider.received_requests == []
+
+
+@pytest.mark.asyncio
+async def test_infeasible_quorum_config_never_reaches_initial_request_construction(monkeypatch):
+    """Accepted Quorum Feasibility Boundary V1, matriz D, item 20 --
+    repair de teste (LOW #2, review independente): as duas provas
+    vizinhas (`call_count == 0` e o sentinela em
+    `build_request_provenance` abaixo) já provam "nenhum dispatch" e
+    "nenhuma provenance computada", mas NENHUMA delas de fato prova que
+    `validate_quorum_feasibility` roda ANTES de `_build_initial_request`
+    -- um mutante que movesse a validação pra logo DEPOIS de
+    `_build_initial_request` (ainda antes de `run_round`/dispatch/
+    provenance) passaria em ambas sem ser pego, porque
+    `_build_initial_request` sozinho não dispara nenhuma chamada de
+    provider nem computa provenance. Sentinela direto no símbolo de
+    produção usado por `Orchestrator.run` fecha essa lacuna: se a
+    validação rodasse depois da construção do request inicial, este
+    teste falharia com o `AssertionError` do sentinelo em vez de
+    `ValueError` de `min_to_return`."""
+    import app.orchestrator.orchestrator as orchestrator_module
+
+    def _should_never_be_called(*args, **kwargs):
+        raise AssertionError(
+            "_build_initial_request nunca deveria ser chamado pra quórum infactível"
+        )
+
+    monkeypatch.setattr(orchestrator_module, "_build_initial_request", _should_never_be_called)
+
+    provider = StubProvider("openai", response=success_response("openai"))
+    orchestrator = Orchestrator({"openai": provider})
+    rc = _run_config(["openai"], quorum=QuorumPolicy(min_for_debate=2, min_to_return=2))
+
+    with pytest.raises(ValueError, match="min_to_return"):
+        await orchestrator.run(rc)
+
+    assert provider.call_count == 0
+    assert provider.received_requests == []
+
+
+@pytest.mark.asyncio
+async def test_infeasible_quorum_config_never_reaches_request_provenance_construction(monkeypatch):
+    """Accepted Quorum Feasibility Boundary V1, matriz D item 22 --
+    sentinela direto em `build_request_provenance`: a rejeição de
+    pré-dispatch acontece ANTES até de qualquer digest/provenance ser
+    computado, não só antes do dispatch em si."""
+    import app.orchestrator.orchestrator as orchestrator_module
+
+    def _should_never_be_called(*args, **kwargs):
+        raise AssertionError(
+            "build_request_provenance nunca deveria ser chamado pra quórum infactível"
+        )
+
+    monkeypatch.setattr(orchestrator_module, "build_request_provenance", _should_never_be_called)
+
+    provider = StubProvider("openai", response=success_response("openai"))
+    orchestrator = Orchestrator({"openai": provider})
+    rc = _run_config(["openai"], quorum=QuorumPolicy(min_for_debate=2, min_to_return=2))
+
+    with pytest.raises(ValueError, match="min_to_return"):
+        await orchestrator.run(rc)
+
+    assert provider.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_feasible_config_with_genuine_observed_quorum_failure_still_raises_insufficient_quorum():
+    """Accepted Quorum Feasibility Boundary V1, seção 13 -- distinção
+    obrigatória: 3 participantes com `min_to_return=2` é uma
+    configuração FACTÍVEL (2 <= 3, preflight passa e dispatcha
+    normalmente); só 1 provider tem sucesso observado -- isso continua
+    sendo `InsufficientQuorumError` (falha de EXECUÇÃO real), nunca a
+    nova rejeição de pré-dispatch."""
+    providers = {
+        "openai": StubProvider("openai", response=success_response("openai")),
+        "anthropic": StubProvider("anthropic", response=error_response("anthropic")),
+        "gemini": StubProvider("gemini", response=error_response("gemini")),
+    }
+    orchestrator = Orchestrator(providers)
+    rc = _run_config(
+        ["openai", "anthropic", "gemini"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
+    )
+
+    with pytest.raises(InsufficientQuorumError) as exc_info:
+        await orchestrator.run(rc)
+
+    assert exc_info.value.successful_count == 1
+    assert exc_info.value.min_to_return == 2
+    # a configuração ERA factível -- todos os 3 providers foram
+    # de fato despachados antes do resultado observado ficar abaixo do
+    # quórum.
+    for provider in providers.values():
+        assert provider.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_unknown_provider_in_enabled_providers_raises_clear_error():
     orchestrator = Orchestrator({"openai": StubProvider("openai", response=success_response("openai"))})
     with pytest.raises(ValueError, match="desconhecido"):

@@ -81,6 +81,58 @@ async def test_historical_whitespace_only_question_still_loads_verbatim(repo):
 
 
 @pytest.mark.asyncio
+async def test_historical_infeasible_quorum_run_config_still_loads_unchanged(repo):
+    """Accepted Quorum Feasibility Boundary V1, matriz F, item 29 --
+    `RunConfig.quorum.min_to_return > len(enabled_providers)` (rejeitado
+    hoje pra execuções NOVAS, ver app/orchestrator/config.py) já
+    persistido historicamente (aceito ANTES desta regra existir) precisa
+    continuar carregável, verbatim, sem reinterpretação/backfill/
+    migração -- mesma disciplina de
+    `test_historical_oversized_question_still_loads_verbatim` acima."""
+    from app.orchestrator.config import QuorumPolicy
+
+    infeasible_quorum = QuorumPolicy(min_for_debate=2, min_to_return=2)
+    result = full_council_run_result(
+        run_config=run_config(enabled_providers=["openai"], quorum=infeasible_quorum)
+    )
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+
+    assert isinstance(loaded, CompletedRunRecord)
+    reloaded_config = loaded.council_run_result.run_config
+    assert reloaded_config.quorum.min_to_return == 2
+    assert reloaded_config.enabled_providers == ("openai",)
+
+
+@pytest.mark.asyncio
+async def test_executing_historical_infeasible_quorum_config_today_is_rejected(repo):
+    """Accepted Quorum Feasibility Boundary V1, matriz F, item 31 --
+    carregar a configuração histórica infactível (teste acima) é
+    permitido; EXECUTÁ-LA de novo através das boundaries de execução
+    ATUAIS (`Orchestrator.run()` aqui, o nível mais direto/baixo) é
+    rejeitado ANTES de qualquer dispatch -- nenhuma migração/backfill/
+    reinterpretação, só a boundary de aceite de execução NOVA fazendo
+    seu trabalho sobre um RunConfig genuinamente reconstruído da
+    persistência."""
+    from app.orchestrator.config import QuorumPolicy
+    from app.orchestrator.orchestrator import Orchestrator
+
+    infeasible_quorum = QuorumPolicy(min_for_debate=2, min_to_return=2)
+    result = full_council_run_result(
+        run_config=run_config(enabled_providers=["openai"], quorum=infeasible_quorum)
+    )
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+    historical_config = loaded.council_run_result.run_config
+
+    orchestrator = Orchestrator({})  # nenhum provider real precisa existir
+    with pytest.raises(ValueError, match="min_to_return"):
+        await orchestrator.run(historical_config)
+
+
+@pytest.mark.asyncio
 async def test_raw_response_text_preserved_exactly(repo):
     result = full_council_run_result()
     original_texts = {r.response_text for r in result.debate_result.initial_result.responses}

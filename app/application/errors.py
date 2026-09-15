@@ -49,3 +49,35 @@ class InvalidQuestionError(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(reason)
+
+
+class InvalidQuorumConfigurationError(Exception):
+    """Accepted Quorum Feasibility Boundary V1 -- `RunConfig.quorum.min_to_return`
+    excede `len(RunConfig.enabled_providers)`: uma execução NOVA que
+    NUNCA poderia satisfazer seu próprio quórum de retorno, mesmo que
+    TODO participante selecionado tenha sucesso. Levantada por
+    `CouncilExecutionService.run()` ANTES de qualquer mintagem de
+    run_id/`save_accepted`/chamada ao `CouncilRunner` -- mesma
+    disciplina de `InvalidQuestionError`/`UnknownProviderError` acima.
+
+    A regra em si mora só em `validate_quorum_feasibility`
+    (app/orchestrator/config.py) -- esta exceção nunca reimplementa a
+    comparação, só a traduz pro vocabulário de erro desta camada.
+    Distinta de `InsufficientQuorumError`
+    (app/orchestrator/errors.py): aquela é uma falha de EXECUÇÃO real
+    (uma configuração FACTÍVEL foi de fato despachada, mas o número
+    OBSERVADO de sucessos ficou abaixo de `min_to_return`); esta é uma
+    falha de CONFIGURAÇÃO detectada ANTES de qualquer dispatch --
+    nenhuma chamada de provider chega a ocorrer.
+
+    Expõe só fatos não sensíveis (contagem de participantes
+    selecionados e o `min_to_return` exigido) -- nunca configuração
+    interna/segredos/papéis internos de provider."""
+
+    def __init__(self, min_to_return: int, participant_count: int):
+        self.min_to_return = min_to_return
+        self.participant_count = participant_count
+        super().__init__(
+            f"quorum.min_to_return ({min_to_return}) excede o número de "
+            f"providers selecionados ({participant_count})"
+        )

@@ -140,6 +140,33 @@ def test_create_run_empty_enabled_providers_returns_422():
     assert resp.status_code == 422
 
 
+def test_create_run_infeasible_quorum_returns_422_invalid_request():
+    """Accepted Quorum Feasibility Boundary V1, matriz E, itens 23/24 --
+    `quorum.min_to_return > len(enabled_providers)` (aqui: Settings com
+    `quorum_min_to_return=2` + só 1 provider selecionado) é rejeitada
+    com HTTP 422 + `error.code="invalid_request"` -- NUNCA 409 (esse é
+    reservado pra `InsufficientQuorumError`, uma execução FACTÍVEL
+    despachada de verdade cujo resultado observado ficou abaixo do
+    quórum, ver `test_create_run_insufficient_quorum_returns_409`
+    abaixo)."""
+    factory = make_components_factory()
+    settings = Settings(_env_file=None, quorum_min_to_return=2)
+    app = create_app(settings=settings, components_factory=factory)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/runs", json={"question": "pergunta", "enabled_providers": ["openai"]}
+        )
+        debate_engine = app.state.components.service._runner._debate_engine
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_request"
+    assert body["error"]["details"]["min_to_return"] == 2
+    assert body["error"]["details"]["participant_count"] == 1
+    assert debate_engine.calls == []
+
+
 def test_create_run_insufficient_quorum_returns_409():
     exc = quorum_failure_exception()
     factory = make_components_factory(quorum_exc=exc)

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.application.errors import InvalidQuestionError, UnknownProviderError
+from app.application.errors import (
+    InvalidQuestionError,
+    InvalidQuorumConfigurationError,
+    UnknownProviderError,
+)
 from app.application.service import CouncilExecutionService
 from app.council.runner import CouncilRunner
-from app.orchestrator.config import MAX_QUESTION_CHARACTERS
+from app.orchestrator.config import MAX_QUESTION_CHARACTERS, QuorumPolicy
 from tests.api.helpers import TEST_PROVIDER_EXECUTION_POLICY
 from tests.council.fakes import FakeSourceAnalyzer, FakeDebateEngine, FakeEditor, FakeJudge
 from tests.council.fixtures import judge_result, model_response, run_config, verdict
@@ -318,6 +322,156 @@ async def test_valid_boundary_question_still_reaches_runner(repo):
     assert returned.debate_result is result_to_return.debate_result
     loaded = await repo.get_run(returned.id)
     assert loaded.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Accepted Quorum Feasibility Boundary V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_infeasible_quorum_rejected_before_calling_runner(repo):
+    """Accepted Quorum Feasibility Boundary V1 -- `CouncilExecutionService.run()`
+    é a boundary autoritativa de aceite: `quorum.min_to_return` >
+    `len(enabled_providers)` é rejeitada ANTES de mintar run_id/
+    save_accepted/chamar o runner -- mesmo invariante temporal de
+    `test_invalid_question_oversized_rejected_before_calling_runner`
+    acima, agora pra `InvalidQuorumConfigurationError`."""
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
+    )
+
+    with pytest.raises(InvalidQuorumConfigurationError) as exc_info:
+        await service.run(rc)
+
+    assert exc_info.value.min_to_return == 2
+    assert exc_info.value.participant_count == 1
+    assert debate_engine.calls == []  # levantado ANTES de qualquer chamada ao runner
+
+    summaries = await repo.list_runs()
+    assert summaries == []  # nada persistido -- nem started_at foi capturado
+
+
+@pytest.mark.asyncio
+async def test_infeasible_quorum_rejection_ordering_zero_side_effects(repo, monkeypatch):
+    """Seção 16 do contrato desta slice -- prova FORTE de ordering, mais
+    rígida que apenas checar o tipo de exceção final: instrumenta
+    mintagem de id, geração de timestamp, `repo.save_accepted` e o
+    runner com sentinelas que levantam `AssertionError` se alcançados.
+    Se a rejeição de quórum infactível acontecesse DEPOIS de qualquer um
+    desses efeitos colaterais, este teste falharia imediatamente com uma
+    mensagem específica identificando QUAL efeito colateral vazou, em
+    vez de só reportar o tipo de exceção observado."""
+    import app.application.service as service_module
+
+    def _new_id_should_never_be_called():
+        raise AssertionError("_new_id() nunca deveria ser chamado pra quórum infactível")
+
+    def _now_should_never_be_called():
+        raise AssertionError("_now() nunca deveria ser chamado pra quórum infactível")
+
+    async def _save_accepted_should_never_be_called(*args, **kwargs):
+        raise AssertionError("save_accepted() nunca deveria ser chamado pra quórum infactível")
+
+    monkeypatch.setattr(service_module, "_new_id", _new_id_should_never_be_called)
+    monkeypatch.setattr(service_module, "_now", _now_should_never_be_called)
+    monkeypatch.setattr(repo, "save_accepted", _save_accepted_should_never_be_called)
+
+    debate_engine = FakeDebateEngine(exc=AssertionError("runner nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=1000, min_to_return=1000),
+    )
+
+    with pytest.raises(InvalidQuorumConfigurationError):
+        await service.run(rc)
+
+    assert debate_engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_valid_boundary_quorum_still_reaches_runner(repo):
+    """Contraparte positiva -- `min_to_return == len(enabled_providers)`
+    (o limite exato, não N-1) continua sendo aceito e executa o caminho
+    fake normal, sem nenhuma rejeição (matriz G, item 33 -- fronteira de
+    igualdade com um fake de execução real)."""
+    result_to_return = full_council_run_result()
+    runner = CouncilRunner(
+        debate_engine=FakeDebateEngine(result=result_to_return.debate_result),
+        judge=FakeJudge(result=result_to_return.judge_result),
+        editor=FakeEditor(result=result_to_return.editor_result),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(
+        enabled_providers=["openai", "anthropic"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
+    )
+
+    returned = await service.run(rc)
+
+    assert returned.debate_result is result_to_return.debate_result
+    loaded = await repo.get_run(returned.id)
+    assert loaded.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_min_for_debate_above_participant_count_does_not_cause_preflight_rejection(repo):
+    """Matriz G, item 34 -- `min_for_debate` > contagem de participantes
+    NUNCA é motivo de rejeição de pré-dispatch (fora de escopo desta
+    slice, ver seção 3 do contrato): a execução chega ao runner
+    normalmente; é o `CouncilRunner`/`DebateEngine` que decide, DEPOIS,
+    que a crítica não roda (`insufficient_initial_quorum`) -- isso não é
+    testado aqui de novo (já coberto em tests/debate), só que o
+    preflight de aceite não intercepta essa configuração."""
+    result_to_return = full_council_run_result()
+    runner = CouncilRunner(
+        debate_engine=FakeDebateEngine(result=result_to_return.debate_result),
+        judge=FakeJudge(result=result_to_return.judge_result),
+        editor=FakeEditor(result=result_to_return.editor_result),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=5, min_to_return=1),
+    )
+
+    returned = await service.run(rc)
+
+    assert returned.debate_result is result_to_return.debate_result
 
 
 @pytest.mark.asyncio

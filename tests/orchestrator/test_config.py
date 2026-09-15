@@ -10,6 +10,7 @@ from app.orchestrator.config import (
     QuorumPolicy,
     RunConfig,
     validate_question,
+    validate_quorum_feasibility,
 )
 
 
@@ -458,3 +459,99 @@ def test_run_config_question_field_has_no_max_length_or_blank_after_trim_validat
     whitespace_only = "   \n\t  "
     config2 = _run_config(question=whitespace_only)
     assert config2.question == whitespace_only
+
+
+# ---------------------------------------------------------------------------
+# Accepted Quorum Feasibility Boundary V1 -- validate_quorum_feasibility
+# (matriz A do contrato desta slice)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_quorum_feasibility_accepts_min_to_return_below_participant_count():
+    config = _run_config(
+        enabled_providers=["openai", "anthropic"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
+    )
+    validate_quorum_feasibility(config)  # não levanta
+
+
+def test_validate_quorum_feasibility_accepts_min_to_return_equal_to_participant_count():
+    config = _run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=1, min_to_return=1),
+    )
+    validate_quorum_feasibility(config)  # igualdade é válida -- não levanta
+
+
+def test_validate_quorum_feasibility_rejects_min_to_return_above_participant_count():
+    config = _run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
+    )
+    with pytest.raises(ValueError, match="min_to_return"):
+        validate_quorum_feasibility(config)
+
+
+def test_validate_quorum_feasibility_ignores_min_for_debate_above_participant_count():
+    """`min_for_debate` pode legitimamente exceder a contagem de
+    participantes -- só significa que a crítica nunca roda, não que a
+    execução seja infactível (`min_to_return` continua satisfazível)."""
+    config = _run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=5, min_to_return=1),
+    )
+    validate_quorum_feasibility(config)  # não levanta
+
+
+def test_historical_infeasible_quorum_run_config_still_constructible():
+    """Matriz F, item 28 -- um `RunConfig` com `min_to_return >
+    len(enabled_providers)` (infactível pra uma execução NOVA) continua
+    diretamente construível: `validate_quorum_feasibility` NUNCA é um
+    `field_validator`/`model_validator` de `RunConfig`/`QuorumPolicy` --
+    só uma boundary de ACEITE DE EXECUÇÃO separada (mesma disciplina de
+    `test_run_config_question_field_has_no_max_length_or_blank_after_trim_validator`
+    acima). Reconstrução histórica (`RunConfig(**run_config_json)`)
+    precisa continuar funcionando pra uma execução aceita ANTES desta
+    regra existir."""
+    config = _run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
+    )
+    assert config.quorum.min_to_return == 2
+    assert len(config.enabled_providers) == 1
+    with pytest.raises(ValueError, match="min_to_return"):
+        validate_quorum_feasibility(config)
+
+
+def test_validate_quorum_feasibility_uses_enabled_providers_not_all_provider_authorities():
+    """A checagem é estritamente sobre `len(enabled_providers)` -- os 4
+    papéis internos (claim processor/judge/editor/source analyzer) NUNCA
+    entram na conta, mesmo quando são nomes de provider adicionais que
+    `all_provider_authorities` incluiria.
+
+    Repair de teste (LOW #1, review independente) -- a versão anterior
+    usava `min_to_return=1` com 1 participante: isso passa tanto sob a
+    implementação CORRETA (`1 <= len(enabled_providers)=1`) quanto sob
+    um mutante ERRADO que comparasse contra
+    `len(all_provider_authorities)=5` (`1 <= 5`) -- as duas aceitam, o
+    teste não discriminava NADA entre elas. Usando `min_to_return=2`
+    com 1 participante: a implementação CORRETA REJEITA
+    (`2 > len(enabled_providers)=1`), enquanto o mutante errado
+    ACEITARIA (`2 <= len(all_provider_authorities)=5`) -- só a versão
+    que compara contra `enabled_providers` levanta aqui, então este
+    teste agora falha sob esse mutante específico."""
+    config = _run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
+        claim_processor_provider="anthropic",
+        judge_provider="gemini",
+        editor_provider="mistral",
+        source_analyzer_provider="cohere",
+    )
+    # all_provider_authorities tem 5 nomes distintos (>= min_to_return=2)
+    # -- um mutante que comparasse contra isso aceitaria erroneamente;
+    # só enabled_providers (1 participante, < min_to_return=2) é usado
+    # pela implementação real, que rejeita.
+    assert len(config.all_provider_authorities) == 5
+    with pytest.raises(ValueError, match="min_to_return"):
+        validate_quorum_feasibility(config)

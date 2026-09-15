@@ -330,3 +330,56 @@ class RunConfig(BaseModel):
             source_analyzer_provider=settings.default_source_analyzer_provider,
             source_text=source_text,
         )
+
+
+def validate_quorum_feasibility(run_config: RunConfig) -> None:
+    """Accepted Quorum Feasibility Boundary V1 -- ÚNICA função de
+    validação de FACTIBILIDADE de quórum de retorno pra ACEITE DE
+    EXECUÇÕES NOVAS (mesma disciplina de `validate_question` acima):
+    rejeita configurações onde
+
+        run_config.quorum.min_to_return > len(run_config.enabled_providers)
+
+    -- uma execução assim NUNCA pode satisfazer seu próprio quórum de
+    retorno, mesmo que TODO participante selecionado tenha sucesso
+    (ex.: `enabled_providers=["openai"]` com `min_to_return=2`).
+    Igualdade é válida (`min_to_return == len(enabled_providers)`);
+    só o caso estritamente maior é rejeitado.
+
+    Deliberadamente NÃO compara contra `min_for_debate`:
+    `run_config.quorum.min_for_debate` pode legitimamente exceder
+    `len(enabled_providers)` -- isso só significa que a crítica/debate
+    nunca roda (`insufficient_initial_quorum`), não que a execução seja
+    infactível -- a rodada inicial ainda pode produzir um resultado
+    RETORNÁVEL válido sob a semântica atual de `QuorumPolicy`
+    (`_apply_quorum_and_budget`, app/orchestrator/orchestrator.py). Não
+    compara contra `all_provider_authorities` nem contra os 4 papéis
+    internos (claim processor/judge/editor/source analyzer) -- nenhum
+    deles participa da rodada inicial cujo `successful_count` alimenta
+    `min_to_return`; esta é estritamente uma checagem de cardinalidade
+    de PARTICIPANTES da rodada inicial.
+
+    Reconstrução histórica NUNCA passa por aqui -- esta é uma boundary
+    de ACEITE DE EXECUÇÃO NOVA, nunca um `field_validator`/
+    `model_validator` de `RunConfig`/`QuorumPolicy`: um `RunConfig`
+    persistido ANTES desta regra existir pode legitimamente violá-la
+    (ex.: participantes perdidos por uma configuração antiga, ou uma
+    Settings global mudada depois), e precisa continuar
+    reconstruível/carregável pra auditoria
+    (`RunConfig(**run_config_json)`) mesmo assim -- só EXECUTAR essa
+    configuração através das boundaries de execução atuais
+    (`CouncilExecutionService.run()`, `CouncilRunner.run()`,
+    `Orchestrator.run()`) é que é rejeitado.
+
+    ÚNICO ponto de comparação numérica desta regra no repositório --
+    Service/Runner/Orchestrator/API/CLI delegam todos aqui, nunca
+    reimplementam a comparação."""
+    participant_count = len(run_config.enabled_providers)
+    if run_config.quorum.min_to_return > participant_count:
+        raise ValueError(
+            "quorum.min_to_return "
+            f"({run_config.quorum.min_to_return}) não pode exceder o número de "
+            f"providers selecionados ({participant_count}) -- esta execução nunca "
+            "poderia satisfazer seu próprio quórum de retorno, mesmo que todo "
+            "participante selecionado tenha sucesso."
+        )

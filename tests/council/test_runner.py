@@ -4,7 +4,7 @@ import pytest
 
 from app.council.runner import CouncilRunner
 from app.models.domain import ClaimAssessment
-from app.orchestrator.config import MAX_QUESTION_CHARACTERS
+from app.orchestrator.config import MAX_QUESTION_CHARACTERS, QuorumPolicy
 from app.orchestrator.errors import InsufficientQuorumError
 from app.reconciliation.models import ChannelRelationship, SourceChannelState
 from app.source_analysis.result import SourceAnalysisResult
@@ -117,6 +117,45 @@ async def test_blank_question_rejected_before_any_engine_call(monkeypatch):
         await runner.run(rc)
 
     assert debate_engine.calls == []
+    assert judge.calls == []
+    assert editor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_infeasible_quorum_config_rejected_before_any_engine_call(monkeypatch):
+    """Accepted Quorum Feasibility Boundary V1, defesa em profundidade --
+    `CouncilRunner` é diretamente construível/chamável (como aqui, sem
+    passar por `CouncilExecutionService`) -- `min_to_return` >
+    `len(enabled_providers)` precisa falhar ANTES de qualquer chamada
+    de provider/engine, mesmo nesse caminho direto. Mesma prova de
+    timing de `test_oversized_question_rejected_before_any_engine_call`:
+    sentinela em `_now()` prova que o Runner nem chega a capturar
+    `started_at` pra uma execução que nunca vai existir."""
+    import app.council.runner as runner_module
+
+    def _now_should_never_be_called():
+        raise AssertionError("_now() nunca deveria ser chamado pra quórum infactível")
+
+    monkeypatch.setattr(runner_module, "_now", _now_should_never_be_called)
+
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    judge = FakeJudge(result=None)
+    editor = FakeEditor(result=None)
+    source_analyzer = FakeSourceAnalyzer(result=None)
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=judge, editor=editor,
+        source_analyzer=source_analyzer,
+    )
+    rc = run_config(
+        enabled_providers=["openai"],
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
+    )
+
+    with pytest.raises(ValueError, match="min_to_return"):
+        await runner.run(rc)
+
+    assert debate_engine.calls == []
+    assert source_analyzer.calls == []
     assert judge.calls == []
     assert editor.calls == []
 

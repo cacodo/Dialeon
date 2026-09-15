@@ -22,6 +22,11 @@ abaixo):
          enabled_providers, deixando os 4 papéis internos escaparem pra
          serem descobertos só em runtime profundo, depois de aceite
          durável e possível consumo de provider)
+      -> valida factibilidade de quórum de retorno (Accepted Quorum
+         Feasibility Boundary V1 -- InvalidQuorumConfigurationError se
+         `quorum.min_to_return > len(enabled_providers)`; nenhum
+         registro é criado nesse caso -- uma execução assim NUNCA
+         poderia satisfazer seu próprio quórum, mesmo com sucesso total)
       -> minta run_id + started_at (autoritativos a partir daqui)
       -> persiste o registro de aceite (repo.save_accepted) -- esta
          transação PRECISA completar antes de qualquer chamada ao runner
@@ -54,11 +59,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.application.errors import InvalidQuestionError, UnknownProviderError
+from app.application.errors import (
+    InvalidQuestionError,
+    InvalidQuorumConfigurationError,
+    UnknownProviderError,
+)
 from app.council.result import CouncilRunResult
 from app.council.runner import CouncilRunner
 from app.models.provider_models import ProviderExecutionPolicy
-from app.orchestrator.config import RunConfig, validate_question
+from app.orchestrator.config import RunConfig, validate_question, validate_quorum_feasibility
 from app.orchestrator.errors import InsufficientQuorumError
 from app.storage.repository import CouncilRepository
 
@@ -163,6 +172,18 @@ class CouncilExecutionService:
         `validate_question` (app/orchestrator/config.py) -- nunca
         reimplementada aqui.
 
+        `InvalidQuorumConfigurationError` (Accepted Quorum Feasibility
+        Boundary V1): levantada ANTES de mintar run_id/`save_accepted`/
+        chamar o runner -- mesma disciplina de `InvalidQuestionError`
+        acima, depois da validação de autoridade de provider (a ordem
+        entre as três checagens de aceite não importa pro contrato
+        externo -- todas rodam antes de qualquer mintagem -- mas segue
+        a ordem descrita na docstring do módulo). A regra em si
+        (`quorum.min_to_return` não pode exceder
+        `len(enabled_providers)`) mora inteiramente em
+        `validate_quorum_feasibility` (app/orchestrator/config.py) --
+        nunca reimplementada aqui.
+
         `InsufficientQuorumError`: persiste o registro de falha de
         quórum sob a MESMA identidade aceita, anexa o id em
         `exc.persisted_failure_id` (campo formal, Etapa 11 — não um
@@ -198,6 +219,14 @@ class CouncilExecutionService:
             raise UnknownProviderError(
                 unknown_providers=unknown, known_providers=sorted(self._known_providers)
             )
+
+        try:
+            validate_quorum_feasibility(run_config)
+        except ValueError:
+            raise InvalidQuorumConfigurationError(
+                min_to_return=run_config.quorum.min_to_return,
+                participant_count=len(run_config.enabled_providers),
+            ) from None
 
         run_id = _new_id()
         started_at = _now()
