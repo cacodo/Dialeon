@@ -68,7 +68,12 @@ async def init_db(engine: AsyncEngine) -> None:
     Model identity provenance: mesmo tratamento pra
     `model_identity_source`/`judge_model_identity_source`/
     `editor_model_identity_source` -- também sem backfill, ver docstring
-    de `_upgrade_legacy_model_identity_source`."""
+    de `_upgrade_legacy_model_identity_source`.
+
+    Provider-Neutral Request Provenance V1: mesmo tratamento pra
+    `request_provenance_json` nas mesmas 5 tabelas de
+    `_upgrade_legacy_model_identity_source` -- também sem backfill, ver
+    docstring de `_upgrade_legacy_request_provenance`."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_upgrade_legacy_had_uncertain_prior_attempts)
@@ -76,6 +81,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_support_scope_model_count)
         await conn.run_sync(_upgrade_legacy_provider_execution_policy)
         await conn.run_sync(_upgrade_legacy_model_identity_source)
+        await conn.run_sync(_upgrade_legacy_request_provenance)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -280,6 +286,53 @@ def _upgrade_legacy_model_identity_source(sync_conn) -> None:  # noqa: ANN001
             continue  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
 
         sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} TEXT"))
+
+
+# Provider-Neutral Request Provenance V1 -- exatamente as 5 tabelas de
+# "registro de UMA chamada real de provider" (ModelResponse + os 4
+# *Attempt) -- as MESMAS 5 primeiras entradas de
+# `_MODEL_IDENTITY_SOURCE_COLUMNS` acima. Nunca `claim_supports`/
+# `judge_verdicts`/`final_answers` -- esses são saídas semânticas
+# DERIVADAS de uma chamada, nunca o registro de aceite/tentativa da
+# chamada em si (ver seção 9 do contrato desta slice: não duplicar
+# provenance de tentativa aceita em saídas derivadas).
+_REQUEST_PROVENANCE_TABLES = (
+    "model_responses",
+    "claim_processing_attempts",
+    "source_analysis_attempts",
+    "judge_attempts",
+    "editor_attempts",
+)
+
+
+def _upgrade_legacy_request_provenance(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- Provider-Neutral Request
+    Provenance V1 (ver `app.models.request_provenance.RequestProvenance`).
+    Mesma disciplina de `_upgrade_legacy_model_identity_source`: só
+    `ALTER TABLE` quando a coluna genuinamente não existe (checagem via
+    `PRAGMA table_info`), nunca recalcula um valor já persistido.
+
+    SEM backfill, deliberadamente: `NULL` é o valor HONESTO pra toda
+    linha persistida antes desta coluna existir -- não existe forma de
+    reconstruir retroativamente o `CompletionRequest` exato que gerou
+    uma resposta/tentativa histórica (o código dos builders muda com o
+    tempo; regenerar um request "parecido" hoje NUNCA seria a mesma
+    provenance daquele momento). Inventar um valor aqui seria
+    exatamente o tipo de reinterpretação histórica que este slice
+    proíbe. SQLite usa `NULL` implicitamente pra linhas existentes
+    quando um `ALTER TABLE ADD COLUMN` não declara `DEFAULT` numa
+    coluna nullable, então nenhum `UPDATE` é necessário."""
+    inspector = sa_inspect(sync_conn)
+    for table_name in _REQUEST_PROVENANCE_TABLES:
+        if table_name not in inspector.get_table_names():
+            continue  # tabela nova, create_all() já a criou com a coluna
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        if "request_provenance_json" in existing_columns:
+            continue  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
+
+        sync_conn.execute(
+            text(f"ALTER TABLE {table_name} ADD COLUMN request_provenance_json TEXT")
+        )
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

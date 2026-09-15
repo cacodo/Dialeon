@@ -4,9 +4,10 @@ import json
 
 import pytest
 
-from app.debate.claim_extraction import extract_claims
+from app.debate.claim_extraction import CLAIM_EXTRACTION_CONTRACT_VERSION, extract_claims
 from app.models.domain import Claim, ClaimSupport, ModelResponse
 from app.models.provider_models import ModelIdentitySource, TokenUsage
+from app.models.request_provenance import REQUEST_DIGEST_PREFIX
 from tests.council.fixtures import run_config as _run_config
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 
@@ -263,6 +264,63 @@ async def test_transport_error_is_not_retried_by_this_layer():
     assert attempts[0].transport_status == "error"
     assert attempts[0].parse_status == "not_attempted"
     assert provider.received_requests  # só 1 chamada de fato
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accepted_extraction_attempt_carries_request_provenance():
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", '{"claims": []}')])
+    _claims, attempts, _v = await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert attempts[0].request_provenance is not None
+    assert attempts[0].request_provenance.contract_version == CLAIM_EXTRACTION_CONTRACT_VERSION
+    assert attempts[0].request_provenance.request_digest.startswith(REQUEST_DIGEST_PREFIX)
+
+
+@pytest.mark.asyncio
+async def test_transport_error_attempt_carries_request_provenance():
+    provider = ScriptedProvider("anthropic", [transport_error_response("anthropic")])
+    _claims, attempts, _v = await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert attempts[0].request_provenance is not None
+    assert attempts[0].request_provenance.contract_version == CLAIM_EXTRACTION_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_malformed_then_success_attempts_share_identical_request_provenance():
+    """O request é montado UMA vez, ANTES do loop de retry (ver
+    docstring do módulo) -- a tentativa malformada E a aceita seguinte
+    precisam carregar a MESMA provenance (mesmo contract_version, mesmo
+    digest), nunca duas identidades de request diferentes pra uma única
+    chamada lógica."""
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response("anthropic", "isto não é JSON"),
+            text_response("anthropic", '{"claims": []}'),
+        ],
+    )
+    _claims, attempts, _v = await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert len(attempts) == 2
+    assert attempts[0].request_provenance is not None
+    assert attempts[0].request_provenance == attempts[1].request_provenance
 
 
 @pytest.mark.asyncio

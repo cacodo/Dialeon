@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.judge.context import JUDGE_CONTRACT_VERSION
 from app.judge.single_judge import SingleJudge
 from app.models.provider_models import ModelIdentitySource, TokenUsage
 from app.orchestrator.config import QuorumPolicy, RunConfig
@@ -312,6 +313,72 @@ async def test_malformed_retry_exhausted():
     assert result.verdict is None
     assert result.verdict_unavailable_reason == "judge_output_invalid"
     assert len(result.attempts) == 2
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accepted_judge_attempt_carries_request_provenance():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    good = _assessment_payload(c1.id)
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", good)])
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    attempt = result.attempts[0]
+    assert attempt.request_provenance is not None
+    assert attempt.request_provenance.contract_version == JUDGE_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_transport_error_judge_attempt_carries_request_provenance():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    provider = ScriptedProvider("anthropic", [transport_error_response("anthropic")])
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    attempt = result.attempts[0]
+    assert attempt.request_provenance is not None
+    assert attempt.request_provenance.contract_version == JUDGE_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_malformed_then_success_judge_attempts_share_identical_request_provenance():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    good = _assessment_payload(c1.id)
+    provider = ScriptedProvider(
+        "anthropic", [text_response("anthropic", "isso não é json"), text_response("anthropic", good)]
+    )
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert len(result.attempts) == 2
+    assert result.attempts[0].request_provenance is not None
+    assert result.attempts[0].request_provenance == result.attempts[1].request_provenance
 
 
 # ---------------------------------------------------------------------------

@@ -44,6 +44,7 @@ from app.models.provider_models import (
     ProviderErrorType,
     ProviderResponse,
 )
+from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
@@ -52,15 +53,36 @@ from app.providers.base import LLMProvider
 
 _PHASE_1_ROUND_NUMBER = 1
 
+# Provider-Neutral Request Provenance V1 -- contrato da resposta inicial
+# do Council (Fase 1). Dono natural: é aqui, dentro de `Orchestrator.run()`,
+# que o CompletionRequest da resposta inicial é montado inline -- sem
+# builder próprio em outro módulo que justificasse morar em outro lugar
+# (ver seção 6/10 do contrato desta slice).
+INITIAL_RESPONSE_CONTRACT_VERSION = "initial_response_v1"
+
+
+def _build_initial_request(question: str, max_output_tokens_per_call: int) -> CompletionRequest:
+    """Único ponto de construção do `CompletionRequest` da resposta
+    inicial (Fase 1) -- extraído de dentro de `Orchestrator.run()` (F2,
+    review de independência) só pra que o teste de golden digest
+    (`tests/models/test_request_provenance_contracts.py`) traverse a
+    MESMA construção de produção, em vez de duplicar os campos à mão.
+    Semântica IDÊNTICA à construção inline anterior -- nenhuma mudança
+    de prompt/mensagem/model/cap/temperature, portanto nenhum bump de
+    `INITIAL_RESPONSE_CONTRACT_VERSION`."""
+    return CompletionRequest(
+        messages=[Message(role="user", content=question)],
+        max_tokens=max_output_tokens_per_call,
+    )
+
 
 class Orchestrator:
     def __init__(self, providers: dict[str, LLMProvider]):
         self._providers = providers
 
     async def run(self, run_config: RunConfig) -> InitialResponsesResult:
-        request = CompletionRequest(
-            messages=[Message(role="user", content=run_config.question)],
-            max_tokens=run_config.max_output_tokens_per_call,
+        request = _build_initial_request(
+            run_config.question, run_config.max_output_tokens_per_call
         )
         requests = {name: request for name in run_config.enabled_providers}
 
@@ -68,6 +90,7 @@ class Orchestrator:
             requests,
             round_number=_PHASE_1_ROUND_NUMBER,
             round_dispatch_timeout_seconds=run_config.round_dispatch_timeout_seconds,
+            contract_version=INITIAL_RESPONSE_CONTRACT_VERSION,
         )
 
         return _apply_quorum_and_budget(round_result, run_config)
@@ -77,18 +100,45 @@ class Orchestrator:
         requests: dict[str, CompletionRequest],
         round_number: int,
         round_dispatch_timeout_seconds: float,
+        contract_version: str,
     ) -> RoundResult:
+        """`contract_version` (Provider-Neutral Request Provenance V1):
+        rótulo de contrato da OPERAÇÃO que está chamando esta rodada
+        genérica -- `run_round` não sabe (nem precisa saber) o que a
+        operação significa semanticamente, só que toda `ModelResponse`
+        produzida aqui precisa carregar provenance computada do
+        `CompletionRequest` REAL associado a ela (`requests[name]`,
+        nunca reconstruído). Único parâmetro que distingue a resposta
+        inicial (`INITIAL_RESPONSE_CONTRACT_VERSION`) da crítica
+        (`CRITIQUE_CONTRACT_VERSION`, ver app/debate/context.py) --
+        ambas compartilham este mesmo mecanismo de dispatch."""
         unknown = set(requests) - set(self._providers)
         if unknown:
             raise ValueError(
                 f"requests contém provider(s) desconhecido(s): {sorted(unknown)}"
             )
 
+        # Provider-Neutral Request Provenance V1 (F1, review de
+        # independência -- REPARO) -- `CompletionRequest` é mutável, então a
+        # provenance precisa ser digerida do estado PRÉ-dispatch, ANTES de
+        # `_execute_all` entregar o objeto a `LLMProvider.complete()`. Um
+        # provider que mutar o request recebido (nunca deveria, mas nada
+        # aqui impede em runtime) não pode retroativamente alterar a
+        # provenance já registrada -- o dict abaixo é o snapshot imutável
+        # que sobrevive ao dispatch, calculado uma vez por
+        # participante/request associado (mesmo objeto compartilhado entre
+        # participantes -> mesmo valor, por construção determinística de
+        # `compute_request_digest`).
+        request_provenances = {
+            name: build_request_provenance(contract_version, request)
+            for name, request in requests.items()
+        }
+
         provider_responses = await self._execute_all(requests, round_dispatch_timeout_seconds)
 
         model_responses = [
-            _to_model_response(response, round_number)
-            for response in provider_responses.values()
+            _to_model_response(response, round_number, request_provenances[name])
+            for name, response in provider_responses.items()
         ]
 
         successful_count = sum(1 for r in model_responses if r.status == "success")
@@ -147,7 +197,9 @@ class Orchestrator:
         return results
 
 
-def _to_model_response(response: ProviderResponse, round_number: int) -> ModelResponse:
+def _to_model_response(
+    response: ProviderResponse, round_number: int, request_provenance: RequestProvenance
+) -> ModelResponse:
     return ModelResponse(
         provider=response.provider,
         requested_model=response.requested_model,
@@ -164,6 +216,7 @@ def _to_model_response(response: ProviderResponse, round_number: int) -> ModelRe
         error=response.error,
         had_uncertain_prior_attempts=response.had_uncertain_prior_attempts,
         provider_finish_reason=response.provider_finish_reason,
+        request_provenance=request_provenance,
     )
 
 

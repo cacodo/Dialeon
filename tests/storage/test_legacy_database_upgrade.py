@@ -789,3 +789,165 @@ async def test_pre_model_identity_source_claim_support_row_gets_null(tmp_path):
     ).fetchone()
     conn.close()
     assert model_identity_source is None
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1 -- request_provenance_json
+# (model_responses/claim_processing_attempts/source_analysis_attempts/
+# judge_attempts/editor_attempts)
+# ---------------------------------------------------------------------------
+
+_REQUEST_PROVENANCE_TABLES = (
+    "model_responses",
+    "claim_processing_attempts",
+    "source_analysis_attempts",
+    "judge_attempts",
+    "editor_attempts",
+)
+
+
+def _insert_full_schema_model_response(conn: sqlite3.Connection, id_: str) -> None:
+    """Insere um `model_responses` num banco onde SÓ
+    `request_provenance_json` foi removida -- diferente de
+    `_insert_model_response` (usada pelos upgrades que removem
+    `had_uncertain_prior_attempts`), aqui essa coluna já existe NOT NULL
+    sem default, então precisa ser fornecida explicitamente."""
+    conn.execute(
+        "INSERT INTO model_responses (id, council_run_id, round_number, position, provider, "
+        "requested_model, model, status, usage_present, latency_ms, attempts, "
+        "had_uncertain_prior_attempts, created_at) "
+        f"VALUES ('{id_}','run1',1,0,'openai','gpt-5.5','gpt-5.5','success',0,100,"
+        "1,0,'2026-01-01 00:00:00')"
+    )
+
+
+async def _make_pre_request_provenance_db(db_path: str) -> None:
+    """Cria o schema ATUAL e remove só `request_provenance_json` das 5
+    tabelas afetadas -- simula fielmente um banco criado antes desta
+    slice (mesma disciplina de `_make_pre_model_identity_source_db`).
+    Tupla independente de `app/storage/database.py::_REQUEST_PROVENANCE_TABLES`
+    de propósito -- importar tornaria o teste tautológico."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _REQUEST_PROVENANCE_TABLES:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN request_provenance_json")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_request_provenance_database_gets_column_added_to_all_five_tables(tmp_path):
+    db_path = str(tmp_path / "pre_request_provenance.db")
+    await _make_pre_request_provenance_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    for table in _REQUEST_PROVENANCE_TABLES:
+        columns_before = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "request_provenance_json" not in columns_before, table
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _REQUEST_PROVENANCE_TABLES:
+        columns_after = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "request_provenance_json" in columns_after, table
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_request_provenance_row_gets_null_never_backfilled(tmp_path):
+    """Uma linha `model_responses` persistida antes desta coluna existir
+    reconstrói com `request_provenance_json=NULL` depois do upgrade --
+    nunca um valor v1 inferido/regenerado a partir dos builders atuais
+    (ver seção 12/17 do contrato desta slice)."""
+    db_path = str(tmp_path / "pre_request_provenance_with_row.db")
+    await _make_pre_request_provenance_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    _insert_full_schema_model_response(conn, "mr-legacy-1")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    (request_provenance_json,) = conn.execute(
+        "SELECT request_provenance_json FROM model_responses WHERE id = 'mr-legacy-1'"
+    ).fetchone()
+    conn.close()
+    assert request_provenance_json is None
+
+
+@pytest.mark.asyncio
+async def test_request_provenance_upgrade_does_not_touch_other_legacy_columns(tmp_path):
+    """Upgrades independentes -- adicionar `request_provenance_json` não
+    deve tocar nenhum dos upgrades legados já testados isoladamente
+    acima (mesma disciplina de
+    `test_model_identity_source_upgrade_does_not_touch_other_legacy_columns`)."""
+    db_path = str(tmp_path / "pre_request_provenance_full_legacy.db")
+    await _make_legacy_db(db_path)  # remove had_uncertain_prior_attempts
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN provider_finish_reason")
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    for table in _REQUEST_PROVENANCE_TABLES:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN request_provenance_json")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table, _ in _TABLES_AND_ATTEMPTS_COLUMN:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "had_uncertain_prior_attempts" in columns, table
+        assert "provider_finish_reason" in columns, table
+    for table, column in _MODEL_IDENTITY_SOURCE_COLUMNS:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert column in columns, table
+    for table in _REQUEST_PROVENANCE_TABLES:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "request_provenance_json" in columns, table
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_request_provenance_upgrade_is_idempotent_across_repeated_init_db(tmp_path):
+    db_path = str(tmp_path / "pre_request_provenance_idempotent.db")
+    await _make_pre_request_provenance_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    _insert_full_schema_model_response(conn, "mr-legacy-1")
+    conn.commit()
+    conn.close()
+
+    for _ in range(3):
+        engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+        await init_db(engine)
+        await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _REQUEST_PROVENANCE_TABLES:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "request_provenance_json" in columns, table
+    (value,) = conn.execute(
+        "SELECT request_provenance_json FROM model_responses WHERE id = 'mr-legacy-1'"
+    ).fetchone()
+    count = conn.execute("SELECT COUNT(*) FROM model_responses").fetchone()[0]
+    conn.close()
+    assert value is None
+    assert count == 1

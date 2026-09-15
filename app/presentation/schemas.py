@@ -34,6 +34,7 @@ from app.models.provider_models import (
     ProviderExecutionPolicy,
     TokenUsage,
 )
+from app.models.request_provenance import RequestProvenance
 from app.orchestrator.config import _normalize_and_validate_source_text, validate_question
 from app.reconciliation.models import ChannelRelationship, SourceChannelState
 
@@ -112,6 +113,11 @@ class ModelResponsePublic(BaseModel):
     # Etapa 17A (B3) / 17A.1 (Objetivo B)
     had_uncertain_prior_attempts: bool
     provider_finish_reason: str | None
+    # Provider-Neutral Request Provenance V1 -- ver docstring de
+    # RequestProvenance (app/models/request_provenance.py). `None` só
+    # pra runs persistidos antes deste slice existir -- nunca
+    # regenerado a partir de builders atuais.
+    request_provenance: RequestProvenance | None
     created_at: datetime
 
 
@@ -234,6 +240,9 @@ class ClaimProcessingAttemptPublic(BaseModel):
     latency_ms: int
     had_uncertain_prior_attempts: bool
     provider_finish_reason: str | None
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponsePublic.request_provenance acima.
+    request_provenance: RequestProvenance | None
     created_at: datetime
 
 
@@ -289,6 +298,9 @@ class SourceAnalysisAttemptPublic(BaseModel):
     latency_ms: int
     had_uncertain_prior_attempts: bool
     provider_finish_reason: str | None
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponsePublic.request_provenance acima.
+    request_provenance: RequestProvenance | None
     created_at: datetime
 
 
@@ -372,6 +384,9 @@ class JudgeAttemptPublic(BaseModel):
     latency_ms: int
     had_uncertain_prior_attempts: bool
     provider_finish_reason: str | None
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponsePublic.request_provenance acima.
+    request_provenance: RequestProvenance | None
     created_at: datetime
 
 
@@ -395,6 +410,9 @@ class EditorAttemptPublic(BaseModel):
     latency_ms: int
     had_uncertain_prior_attempts: bool
     provider_finish_reason: str | None
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponsePublic.request_provenance acima.
+    request_provenance: RequestProvenance | None
     created_at: datetime
 
 

@@ -43,6 +43,7 @@ from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.schemas import ClaimExtractionOutput, ClaimGroupingOutput, ClaimGroupProposal
 from app.models.domain import Claim, ClaimSupport, ModelResponse
 from app.models.provider_models import CompletionRequest, Message, ProviderResponse
+from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.providers.base import (
@@ -55,6 +56,17 @@ from app.structured_output import strip_single_json_code_fence
 # Primeira tentativa + 1 retry por output malformado/inconsistente — constante
 # fixa pro MVP, sem campo novo em Settings.
 _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
+
+# Provider-Neutral Request Provenance V1 -- contratos das 3 operações
+# deste módulo, cada uma com sua PRÓPRIA versão (nunca uma versão
+# global de "claim processing") -- extração, agrupamento intra-round e
+# reconciliação cross-round são 3 operações semanticamente distintas,
+# mesmo compartilhando mecanismo de retry/schema (reconciliação reusa o
+# mecanismo de agrupamento, mas nunca sua versão de contrato -- ver
+# docstring de `reconcile_claims`).
+CLAIM_EXTRACTION_CONTRACT_VERSION = "claim_extraction_v1"
+CLAIM_GROUPING_CONTRACT_VERSION = "claim_grouping_v1"
+CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION = "cross_round_claim_reconciliation_v1"
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +121,7 @@ async def extract_claims(
 
     known_ids = {claim.id for claim in (known_claims or [])}
     request = _build_extraction_request(response, known_claims, max_output_tokens_per_call)
+    request_provenance = build_request_provenance(CLAIM_EXTRACTION_CONTRACT_VERSION, request)
 
     attempts: list[ClaimProcessingAttempt] = []
     parsed: ClaimExtractionOutput | None = None
@@ -133,6 +146,7 @@ async def extract_claims(
                     attempt_number,
                     provider_response,
                     target_model_response_id=response.id,
+                    request_provenance=request_provenance,
                 )
             )
             break  # sem retry desta camada pra erro de transporte
@@ -151,6 +165,7 @@ async def extract_claims(
                     "malformed",
                     str(exc),
                     target_model_response_id=response.id,
+                    request_provenance=request_provenance,
                 )
             )
             if is_known_output_truncation(provider_response.provider_finish_reason):
@@ -166,6 +181,7 @@ async def extract_claims(
                     "inconsistent_references",
                     str(exc),
                     target_model_response_id=response.id,
+                    request_provenance=request_provenance,
                 )
             )
             if is_known_output_truncation(provider_response.provider_finish_reason):
@@ -179,6 +195,7 @@ async def extract_claims(
                 attempt_number,
                 provider_response,
                 target_model_response_id=response.id,
+                request_provenance=request_provenance,
             )
         )
         break
@@ -432,10 +449,12 @@ async def group_claims(
 
     raw_ids = {c.id for c in raw_claims}
     request = _build_grouping_request(raw_claims, max_output_tokens_per_call)
+    request_provenance = build_request_provenance(CLAIM_GROUPING_CONTRACT_VERSION, request)
 
     parsed, attempts = await _run_structured_grouping_call(
         "grouping",
         request,
+        request_provenance,
         raw_ids,
         round_number,
         grouper,
@@ -553,6 +572,9 @@ async def reconcile_claims(
     request = _build_reconciliation_request(
         round1_candidates, round2_candidates, max_output_tokens_per_call
     )
+    request_provenance = build_request_provenance(
+        CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION, request
+    )
     validate = _make_cross_side_reconciliation_validator(
         round1_candidate_ids, round2_candidate_ids
     )
@@ -560,6 +582,7 @@ async def reconcile_claims(
     parsed, attempts = await _run_structured_grouping_call(
         "reconciliation",
         request,
+        request_provenance,
         candidate_ids,
         _RECONCILIATION_ATTEMPT_ROUND_NUMBER,
         reconciler,
@@ -588,6 +611,7 @@ async def reconcile_claims(
 async def _run_structured_grouping_call(
     operation: Literal["grouping", "reconciliation"],
     request: CompletionRequest,
+    request_provenance: RequestProvenance,
     raw_ids: set[str],
     round_number: int,
     provider: LLMProvider,
@@ -637,6 +661,7 @@ async def _run_structured_grouping_call(
                     attempt_number,
                     provider_response,
                     target_claim_ids=sorted(raw_ids),
+                    request_provenance=request_provenance,
                 )
             )
             break
@@ -653,6 +678,7 @@ async def _run_structured_grouping_call(
                     "malformed",
                     str(exc),
                     target_claim_ids=sorted(raw_ids),
+                    request_provenance=request_provenance,
                 )
             )
             if is_known_output_truncation(provider_response.provider_finish_reason):
@@ -668,6 +694,7 @@ async def _run_structured_grouping_call(
                     "inconsistent_references",
                     str(exc),
                     target_claim_ids=sorted(raw_ids),
+                    request_provenance=request_provenance,
                 )
             )
             if is_known_output_truncation(provider_response.provider_finish_reason):
@@ -681,6 +708,7 @@ async def _run_structured_grouping_call(
                 attempt_number,
                 provider_response,
                 target_claim_ids=sorted(raw_ids),
+                request_provenance=request_provenance,
             )
         )
         break
@@ -991,6 +1019,7 @@ def _transport_error_attempt(
     *,
     target_model_response_id: str | None = None,
     target_claim_ids: list[str] | None = None,
+    request_provenance: RequestProvenance | None = None,
 ) -> ClaimProcessingAttempt:
     return ClaimProcessingAttempt(
         operation=operation,
@@ -998,6 +1027,7 @@ def _transport_error_attempt(
         attempt_number=attempt_number,
         target_model_response_id=target_model_response_id,
         target_claim_ids=target_claim_ids or [],
+        request_provenance=request_provenance,
         **transport_error_common_fields(provider_response),
     )
 
@@ -1012,6 +1042,7 @@ def _parse_rejected_attempt(
     *,
     target_model_response_id: str | None = None,
     target_claim_ids: list[str] | None = None,
+    request_provenance: RequestProvenance | None = None,
 ) -> ClaimProcessingAttempt:
     return ClaimProcessingAttempt(
         operation=operation,
@@ -1035,6 +1066,7 @@ def _parse_rejected_attempt(
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
         provider_finish_reason=provider_response.provider_finish_reason,
+        request_provenance=request_provenance,
     )
 
 
@@ -1046,6 +1078,7 @@ def _accepted_attempt(
     *,
     target_model_response_id: str | None = None,
     target_claim_ids: list[str] | None = None,
+    request_provenance: RequestProvenance | None = None,
 ) -> ClaimProcessingAttempt:
     return ClaimProcessingAttempt(
         operation=operation,
@@ -1068,5 +1101,6 @@ def _accepted_attempt(
         pricing_provenance=provider_response.pricing_provenance,
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
+        request_provenance=request_provenance,
         provider_finish_reason=provider_response.provider_finish_reason,
     )

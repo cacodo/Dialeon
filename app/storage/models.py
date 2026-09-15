@@ -223,6 +223,16 @@ class ModelResponseRow(Base):
     had_uncertain_prior_attempts: Mapped[bool]
     # Etapa 17A.1 (Objetivo B) -- ver docstring de ProviderResponse.
     provider_finish_reason: Mapped[str | None]
+    # Provider-Neutral Request Provenance V1 -- ver docstring de
+    # RequestProvenance (app/models/request_provenance.py). Um único
+    # campo JSON estruturado (mesma disciplina de
+    # pricing_provenance_json acima) -- validado como uma unidade só na
+    # reconstrução (`RequestProvenance(**data)`, extra="forbid"), nunca
+    # duas colunas independentes que pudessem divergir (contract_version
+    # presente sem digest, ou vice-versa). NULL só pra linhas persistidas
+    # ANTES desta coluna existir (ver `_upgrade_legacy_request_provenance`,
+    # app/storage/database.py) -- nunca backfillado/inferido.
+    request_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime]
 
 
@@ -338,6 +348,10 @@ class ClaimProcessingAttemptRow(Base):
     cost_usd: Mapped[float | None]
     pricing_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     latency_ms: Mapped[int]
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponseRow.request_provenance_json acima pra semântica
+    # completa e disciplina de nulidade.
+    request_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime]
 
 
@@ -423,6 +437,10 @@ class SourceAnalysisAttemptRow(Base):
     cost_usd: Mapped[float | None]
     pricing_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     latency_ms: Mapped[int]
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponseRow.request_provenance_json acima pra semântica
+    # completa e disciplina de nulidade.
+    request_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime]
 
 
@@ -544,6 +562,10 @@ class JudgeAttemptRow(Base):
     cost_usd: Mapped[float | None]
     pricing_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     latency_ms: Mapped[int]
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponseRow.request_provenance_json acima pra semântica
+    # completa e disciplina de nulidade.
+    request_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime]
 
 
@@ -582,6 +604,10 @@ class EditorAttemptRow(Base):
     cost_usd: Mapped[float | None]
     pricing_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     latency_ms: Mapped[int]
+    # Provider-Neutral Request Provenance V1 -- ver
+    # ModelResponseRow.request_provenance_json acima pra semântica
+    # completa e disciplina de nulidade.
+    request_provenance_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime]
 
 

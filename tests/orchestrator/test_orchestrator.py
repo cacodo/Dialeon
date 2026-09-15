@@ -5,10 +5,23 @@ import time
 
 import pytest
 
+from app.debate.context import CRITIQUE_CONTRACT_VERSION, build_critique_requests
 from app.models.provider_models import CompletionRequest, Message, ProviderErrorType
+from app.models.request_provenance import compute_request_digest
 from app.orchestrator.config import QuorumPolicy, RunConfig
-from app.orchestrator.orchestrator import Orchestrator
-from tests.orchestrator.fakes import StubProvider, error_response, success_response
+from app.orchestrator.errors import InsufficientQuorumError
+from app.orchestrator.orchestrator import (
+    INITIAL_RESPONSE_CONTRACT_VERSION,
+    Orchestrator,
+    _build_initial_request,
+)
+from tests.judge.fixtures import raw_claim
+from tests.orchestrator.fakes import (
+    MutatingProvider,
+    StubProvider,
+    error_response,
+    success_response,
+)
 
 
 def _run_config(enabled_providers, **overrides) -> RunConfig:
@@ -171,10 +184,16 @@ async def test_round_dispatch_timeout_seconds_restarts_independently_each_round(
     )
 
     round1 = await orchestrator.run_round(
-        {"openai": request}, round_number=1, round_dispatch_timeout_seconds=timeout
+        {"openai": request},
+        round_number=1,
+        round_dispatch_timeout_seconds=timeout,
+        contract_version=INITIAL_RESPONSE_CONTRACT_VERSION,
     )
     round2 = await orchestrator.run_round(
-        {"openai": request}, round_number=2, round_dispatch_timeout_seconds=timeout
+        {"openai": request},
+        round_number=2,
+        round_dispatch_timeout_seconds=timeout,
+        contract_version=INITIAL_RESPONSE_CONTRACT_VERSION,
     )
 
     assert round1.successful_count == 1
@@ -200,7 +219,10 @@ async def test_round_dispatch_timeout_seconds_does_not_bound_anything_after_run_
     )
 
     round_result = await orchestrator.run_round(
-        {"openai": request}, round_number=1, round_dispatch_timeout_seconds=timeout
+        {"openai": request},
+        round_number=1,
+        round_dispatch_timeout_seconds=timeout,
+        contract_version=INITIAL_RESPONSE_CONTRACT_VERSION,
     )
     assert round_result.successful_count == 1
 
@@ -339,6 +361,176 @@ async def test_error_response_is_normalized_correctly():
     assert openai_response.error.type == ProviderErrorType.AUTH
     assert openai_response.error.message == "chave inválida"
     assert openai_response.attempts == 1
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_successful_initial_response_carries_request_provenance():
+    providers = {"openai": StubProvider("openai", response=success_response("openai"))}
+    orchestrator = Orchestrator(providers)
+    result = await orchestrator.run(_run_config(["openai"]))
+
+    response = result.responses[0]
+    assert response.request_provenance is not None
+    assert response.request_provenance.contract_version == INITIAL_RESPONSE_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_error_initial_response_carries_request_provenance():
+    providers = {
+        "openai": StubProvider(
+            "openai", response=error_response("openai", error_type=ProviderErrorType.AUTH)
+        ),
+        "anthropic": StubProvider("anthropic", response=success_response("anthropic")),
+    }
+    orchestrator = Orchestrator(providers)
+    result = await orchestrator.run(_run_config(["openai", "anthropic"]))
+
+    openai_response = next(r for r in result.responses if r.provider == "openai")
+    assert openai_response.status == "error"
+    assert openai_response.request_provenance is not None
+    assert openai_response.request_provenance.contract_version == INITIAL_RESPONSE_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_all_initial_response_providers_share_identical_request_provenance():
+    """A resposta inicial monta UM único CompletionRequest normalizado
+    compartilhado entre todos os providers (ver Orchestrator.run) -- a
+    provenance precisa ser IDÊNTICA entre eles, provando que a
+    identidade do provider nunca entra no digest."""
+    providers = {
+        "openai": StubProvider("openai", response=success_response("openai")),
+        "anthropic": StubProvider("anthropic", response=success_response("anthropic")),
+    }
+    orchestrator = Orchestrator(providers)
+    result = await orchestrator.run(_run_config(["openai", "anthropic"]))
+
+    provenances = {r.provider: r.request_provenance for r in result.responses}
+    assert provenances["openai"] is not None
+    assert provenances["openai"] == provenances["anthropic"]
+
+
+# ---------------------------------------------------------------------------
+# F1 (review de independência -- REPARO) -- provenance PRÉ-dispatch,
+# adversarial: um provider que muta o CompletionRequest recebido não pode
+# alterar retroativamente a provenance já registrada.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_initial_response_provenance_reflects_pre_dispatch_state_despite_mutation():
+    def _mutate(request: CompletionRequest) -> None:
+        request.max_tokens = 999999  # campo que participa do digest
+
+    provider = MutatingProvider(
+        "openai", response=success_response("openai"), mutate=_mutate
+    )
+    orchestrator = Orchestrator({"openai": provider})
+    rc = _run_config(["openai"])
+
+    result = await orchestrator.run(rc)
+
+    # Estado PRÉ-dispatch reconstruído de forma independente, via a
+    # MESMA construção de produção (`_build_initial_request`, F2) --
+    # nunca lido do objeto que o provider recebeu (que já está mutado
+    # neste ponto).
+    expected_pre_dispatch = _build_initial_request(
+        rc.question, rc.max_output_tokens_per_call
+    )
+    expected_digest = compute_request_digest(expected_pre_dispatch)
+
+    recorded = result.responses[0].request_provenance
+    assert recorded is not None
+    assert recorded.request_digest == expected_digest
+
+    # O objeto que o provider efetivamente recebeu já foi mutado -- seu
+    # digest AGORA precisa ser DIFERENTE do que foi registrado, provando
+    # que a provenance não foi (re)computada depois da mutação.
+    post_dispatch_digest = compute_request_digest(provider.received_requests[0])
+    assert post_dispatch_digest != recorded.request_digest
+
+
+@pytest.mark.asyncio
+async def test_critique_provenance_reflects_pre_dispatch_state_despite_mutation():
+    """Mesma garantia, mas pro mecanismo real que a crítica usa
+    (`build_critique_requests` + `Orchestrator.run_round()`, ver
+    app/debate/debate_engine.py) -- run_round é a MESMA rotina de
+    dispatch reusada pela resposta inicial, então cobre o caminho real
+    da crítica sem precisar orquestrar o DebateEngine inteiro."""
+    c1 = raw_claim("Brasília é a capital.", "resp-1", provider="openai", id="claim-mut-1")
+    requests = build_critique_requests(
+        question="Qual a capital do Brasil?",
+        current_claims=[c1],
+        participants=["openai"],
+        max_output_tokens_per_call=1024,
+    )
+    # Estado PRÉ-dispatch capturado ANTES do dispatch -- a MESMA
+    # instância que será entregue ao provider, hasheada agora, antes de
+    # qualquer chance de mutação.
+    expected_digest = compute_request_digest(requests["openai"])
+
+    def _mutate(request: CompletionRequest) -> None:
+        request.system_prompt = "prompt substituído pelo provider adversarial"
+
+    provider = MutatingProvider(
+        "openai", response=success_response("openai"), mutate=_mutate
+    )
+    orchestrator = Orchestrator({"openai": provider})
+
+    round_result = await orchestrator.run_round(
+        requests,
+        round_number=2,
+        round_dispatch_timeout_seconds=5.0,
+        contract_version=CRITIQUE_CONTRACT_VERSION,
+    )
+
+    recorded = round_result.responses[0].request_provenance
+    assert recorded is not None
+    assert recorded.request_digest == expected_digest
+
+    post_dispatch_digest = compute_request_digest(provider.received_requests[0])
+    assert post_dispatch_digest != recorded.request_digest
+
+
+@pytest.mark.asyncio
+async def test_initial_response_provenance_survives_synthetic_timeout_despite_mutation():
+    """A provenance pré-dispatch precisa sobreviver mesmo quando o
+    dispatch termina em timeout sintético (`_timeout_response`) -- o
+    request já foi mutado pelo provider adversarial antes de a task ser
+    cancelada, mas a provenance registrada continua sendo a do estado
+    PRÉ-dispatch."""
+
+    async def _mutate_then_hang(request: CompletionRequest) -> None:
+        request.max_tokens = 1  # muta antes de nunca retornar
+        await asyncio.sleep(9999)
+
+    class _HangingMutatingProvider(StubProvider):
+        async def complete(self, request: CompletionRequest):
+            self.received_requests.append(request)
+            await _mutate_then_hang(request)
+            raise AssertionError("nunca deveria chegar aqui")
+
+    provider = _HangingMutatingProvider("openai", response=success_response("openai"))
+    orchestrator = Orchestrator({"openai": provider})
+    rc = _run_config(["openai"], round_dispatch_timeout_seconds=0.05)
+
+    expected_pre_dispatch = _build_initial_request(rc.question, rc.max_output_tokens_per_call)
+    expected_digest = compute_request_digest(expected_pre_dispatch)
+
+    # Um único provider timing out => successful_count=0 < min_to_return
+    # => InsufficientQuorumError, mas `round_result` já vem completo com
+    # o ModelResponse sintético de timeout (ver InsufficientQuorumError).
+    with pytest.raises(InsufficientQuorumError) as exc_info:
+        await orchestrator.run(rc)
+
+    response = exc_info.value.round_result.responses[0]
+    assert response.status == "error"
+    assert response.request_provenance is not None
+    assert response.request_provenance.request_digest == expected_digest
 
 
 @pytest.mark.asyncio

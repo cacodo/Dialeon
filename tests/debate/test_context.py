@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 
-from app.debate.context import build_critique_requests
+from app.debate.context import CRITIQUE_CONTRACT_VERSION, build_critique_requests
 from app.models.domain import Claim, ClaimSupport
+from app.models.request_provenance import build_request_provenance, compute_request_digest
 
 
 def _support(response_id: str, provider: str) -> ClaimSupport:
@@ -115,3 +116,44 @@ def test_max_output_tokens_per_call_is_forwarded():
         max_output_tokens_per_call=4096,
     )
     assert requests["openai"].max_tokens == 4096
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+def test_two_participants_with_different_own_claims_get_different_digests():
+    """Cada participante recebe um request LÓGICO próprio (own_claim_ids
+    difere entre eles) -- os digests precisam ser DIFERENTES mesmo sendo
+    a mesma operação/mesma lista de claims totais."""
+    c1 = _claim("claim do openai", [("resp-1", "openai")])
+    c2 = _claim("claim do anthropic", [("resp-2", "anthropic")])
+    requests = build_critique_requests(
+        question="pergunta",
+        current_claims=[c1, c2],
+        participants=["openai", "anthropic"],
+        max_output_tokens_per_call=1024,
+    )
+    digest_openai = compute_request_digest(requests["openai"])
+    digest_anthropic = compute_request_digest(requests["anthropic"])
+    assert digest_openai != digest_anthropic
+
+
+def test_provider_identity_itself_is_never_part_of_the_digest():
+    """Dois requests com conteúdo NORMALIZADO idêntico (mesmo texto de
+    mensagens/system prompt/model/max_tokens/temperature) produzem o
+    MESMO digest, mesmo vindo de chaves de provider diferentes no dict
+    devolvido por build_critique_requests -- a chave/provider nunca é
+    input da função de digest (ver test_request_provenance.py, prova K)."""
+    claim = _claim("X", [("resp-1", "openai")])
+    requests = build_critique_requests(
+        question="pergunta",
+        current_claims=[claim],
+        participants=["openai"],
+        max_output_tokens_per_call=1024,
+    )
+    request = requests["openai"]
+    provenance_a = build_request_provenance(CRITIQUE_CONTRACT_VERSION, request)
+    provenance_b = build_request_provenance(CRITIQUE_CONTRACT_VERSION, request)
+    assert provenance_a == provenance_b

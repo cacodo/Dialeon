@@ -45,6 +45,7 @@ from app.models.provider_models import (
     ProviderErrorInfo,
     TokenUsage,
 )
+from app.models.request_provenance import RequestProvenance
 
 # Todo modelo de domínio compartilha a mesma postura: imutável depois de
 # criado (frozen) e sem campos extras não declarados (forbid) — isso é o
@@ -134,6 +135,15 @@ class ModelResponse(BaseModel):
     # Etapa 17A.1 (Objetivo B) — ver docstring de ProviderResponse. Copiado
     # verbatim, nunca normalizado.
     provider_finish_reason: str | None = None
+    # Provider-Neutral Request Provenance V1 -- ver docstring de
+    # `RequestProvenance` (app/models/request_provenance.py). Computada
+    # UMA vez, a partir do `CompletionRequest` REAL entregue a
+    # `LLMProvider.complete()` (nunca reconstruído depois), pra toda
+    # ModelResponse NOVA gerada a partir dessa mesma requisição lógica
+    # (sucesso, erro de provider, timeout de dispatch de rodada). `None`
+    # é EXCLUSIVAMENTE o valor de uma ModelResponse persistida ANTES
+    # deste slice existir -- nunca inferido/regenerado numa reconstrução.
+    request_provenance: RequestProvenance | None = None
     created_at: datetime = Field(default_factory=_now)
 
     @model_validator(mode="after")

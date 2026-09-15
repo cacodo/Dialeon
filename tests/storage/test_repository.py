@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from app.models.domain import ClaimAssessment, ClaimSupport
 from app.models.provider_models import ModelIdentitySource
+from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
 from app.reconciliation.errors import ReconciliationError
 from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 from app.storage.repository import _run_config_from_json
@@ -21,6 +22,7 @@ from tests.storage.fixtures import (
     provider_execution_policy,
     quorum_failure_exception,
     run_config,
+    very_rich_council_run_result,
     with_recomputed_reconciliation,
 )# ---------------------------------------------------------------------------
 # SUCCESS — save + load
@@ -1483,6 +1485,137 @@ async def test_quorum_failure_preserves_model_identity_source_per_response(repo)
     by_provider = {r.provider: r for r in loaded.round_result.responses}
     assert by_provider["openai"].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
     assert by_provider["anthropic"].model_identity_source == ModelIdentitySource.REQUESTED_FALLBACK
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1 -- round-trip de
+# request_provenance nas 5 famílias que a carregam, NULL histórico, e
+# fail-closed sobre JSON malformado.
+# ---------------------------------------------------------------------------
+
+
+def _provenance(contract_version: str, digest_suffix: str) -> RequestProvenance:
+    return RequestProvenance(
+        contract_version=contract_version,
+        request_digest=REQUEST_DIGEST_PREFIX + digest_suffix * 64,
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_provenance_roundtrips_across_all_five_record_families(repo):
+    result = very_rich_council_run_result()
+
+    mr_provenance = _provenance("initial_response_v1", "a")
+    proc_provenance = _provenance("claim_extraction_v1", "b")
+    judge_provenance = _provenance("judge_v1", "c")
+    editor_provenance = _provenance("editor_v1", "d")
+    source_provenance = _provenance("source_analysis_v1", "e")
+
+    mr1 = result.debate_result.initial_result.responses[0].model_copy(
+        update={"request_provenance": mr_provenance}
+    )
+    responses = [mr1] + result.debate_result.initial_result.responses[1:]
+    initial_result = result.debate_result.initial_result.model_copy(
+        update={"responses": responses}
+    )
+
+    proc_attempt = result.debate_result.claim_processing_attempts[0].model_copy(
+        update={"request_provenance": proc_provenance}
+    )
+    processing_attempts = [proc_attempt] + result.debate_result.claim_processing_attempts[1:]
+    debate_result = result.debate_result.model_copy(
+        update={"initial_result": initial_result, "claim_processing_attempts": processing_attempts}
+    )
+
+    judge_attempt = result.judge_result.attempts[0].model_copy(
+        update={"request_provenance": judge_provenance}
+    )
+    judge_result = result.judge_result.model_copy(
+        update={"attempts": [judge_attempt] + result.judge_result.attempts[1:]}
+    )
+
+    editor_attempt = result.editor_result.attempts[0].model_copy(
+        update={"request_provenance": editor_provenance}
+    )
+    editor_result = result.editor_result.model_copy(
+        update={"attempts": [editor_attempt] + result.editor_result.attempts[1:]}
+    )
+
+    source_attempt = result.source_analysis_result.attempts[0].model_copy(
+        update={"request_provenance": source_provenance}
+    )
+    source_analysis_result = result.source_analysis_result.model_copy(
+        update={"attempts": [source_attempt]}
+    )
+
+    result = result.model_copy(
+        update={
+            "debate_result": debate_result,
+            "judge_result": judge_result,
+            "editor_result": editor_result,
+            "source_analysis_result": source_analysis_result,
+        }
+    )
+    result = with_recomputed_reconciliation(result)
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.debate_result.initial_result.responses[0].request_provenance == mr_provenance
+    assert (
+        loaded.debate_result.claim_processing_attempts[0].request_provenance == proc_provenance
+    )
+    assert loaded.judge_result.attempts[0].request_provenance == judge_provenance
+    assert loaded.editor_result.attempts[0].request_provenance == editor_provenance
+    assert loaded.source_analysis_result.attempts[0].request_provenance == source_provenance
+
+
+@pytest.mark.asyncio
+async def test_model_response_historical_none_request_provenance_roundtrips_as_none(repo):
+    """Uma linha com request_provenance=None (histórica, coluna existia
+    mas nenhum valor foi persistido) reconstrói exatamente como None --
+    nunca um v1 inferido/regenerado a partir do builder atual (ver
+    seção 3 do contrato desta slice)."""
+    result = full_council_run_result()
+    mr1 = result.debate_result.initial_result.responses[0].model_copy(
+        update={"request_provenance": None}
+    )
+    responses = [mr1] + result.debate_result.initial_result.responses[1:]
+    initial = result.debate_result.initial_result.model_copy(update={"responses": responses})
+    debate = result.debate_result.model_copy(update={"initial_result": initial})
+    result = result.model_copy(update={"debate_result": debate})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = next(
+        r for r in loaded.debate_result.initial_result.responses if r.id == mr1.id
+    )
+    assert reloaded.request_provenance is None
+
+
+@pytest.mark.asyncio
+async def test_malformed_request_provenance_json_fails_closed_on_load(engine, repo):
+    """Um valor parcial/malformado persistido em `request_provenance_json`
+    (aqui: só `contract_version`, sem `request_digest`) precisa fazer a
+    reconstrução do domínio FALHAR explicitamente -- nunca ser
+    silenciosamente reparada/completada com um digest inventado (ver
+    seção 15 do contrato desta slice: validar o valor completo como
+    unidade)."""
+    result = full_council_run_result()
+    await repo.save_success(result)
+    mr1 = result.debate_result.initial_result.responses[0]
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE model_responses SET request_provenance_json = :json WHERE id = :id"
+            ),
+            {"json": json.dumps({"contract_version": "initial_response_v1"}), "id": mr1.id},
+        )
+
+    with pytest.raises(ValidationError):
+        await repo.get_run(result.id)
 
 
 # ---------------------------------------------------------------------------

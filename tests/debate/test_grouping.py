@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.debate.claim_extraction import group_claims
+from app.debate.claim_extraction import CLAIM_GROUPING_CONTRACT_VERSION, group_claims
 from tests.council.fixtures import run_config as _run_config
 from app.models.domain import Claim, ClaimSupport
 from app.models.provider_models import ModelIdentitySource
@@ -540,3 +540,50 @@ async def test_malformed_grouping_output_without_truncation_signal_still_retries
     assert canonical == []
     assert len(attempts) == 2
     assert attempts[1].parse_status == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accepted_grouping_attempt_carries_request_provenance():
+    a = _raw_claim("a", "openai")
+    b = _raw_claim("b", "anthropic")
+    payload = json.dumps(
+        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+
+    _canonical, attempts = await group_claims(
+        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+
+    assert attempts[0].request_provenance is not None
+    assert attempts[0].request_provenance.contract_version == CLAIM_GROUPING_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_malformed_then_success_grouping_attempts_share_identical_request_provenance():
+    a = _raw_claim("a", "openai")
+    b = _raw_claim("b", "anthropic")
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response("anthropic", "não é JSON"),
+            text_response(
+                "anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": [a.id, b.id]})
+            ),
+        ],
+    )
+
+    _canonical, attempts = await group_claims(
+        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+
+    assert len(attempts) == 2
+    assert attempts[0].request_provenance is not None
+    assert attempts[0].request_provenance == attempts[1].request_provenance

@@ -25,6 +25,13 @@ import json
 from app.models.domain import Claim
 from app.models.provider_models import CompletionRequest, Message
 
+# Provider-Neutral Request Provenance V1 -- contrato do request de
+# crítica (rodada 2), montado por `build_critique_requests` abaixo (um
+# CompletionRequest DISTINTO por provider -- own_claim_ids pode
+# divergir). Reusado só pela chamada real de `run_round` em
+# app/debate/debate_engine.py -- nunca reconstruído aqui.
+CRITIQUE_CONTRACT_VERSION = "critique_v1"
+
 _UNTRUSTED_CONTENT_WARNING = (
     "As claims abaixo foram produzidas por outros modelos de IA "
     "participando deste debate (e possivelmente por você mesmo, na rodada "

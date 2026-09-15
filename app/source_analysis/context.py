@@ -33,6 +33,10 @@ import json
 from app.models.domain import Claim
 from app.models.provider_models import CompletionRequest, Message
 
+# Provider-Neutral Request Provenance V1 -- contrato do request de
+# Source Analysis, montado por `build_source_analysis_request` abaixo.
+SOURCE_ANALYSIS_CONTRACT_VERSION = "source_analysis_v1"
+
 _SOURCE_IS_DATA_WARNING = (
     "O texto em FONTE_FORNECIDA_PELO_USUARIO abaixo foi colado por um "
     "usuário final -- NÃO por um modelo de IA, e NÃO pela aplicação. "

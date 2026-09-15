@@ -12,6 +12,7 @@ precisos (usage, cost_usd, attempts) sem precisar simular uma API real.
 from __future__ import annotations
 
 import asyncio
+from typing import Callable
 
 from app.models.provider_models import (
     CompletionRequest,
@@ -67,6 +68,45 @@ class StubProvider(LLMProvider):
         if self._raise_exc is not None:
             raise self._raise_exc
         assert self._response is not None, "StubProvider precisa de response ou raise_exc"
+        return self._response
+
+
+class MutatingProvider(LLMProvider):
+    """Provider ADVERSARIAL -- nunca deveria existir em produção. Muta o
+    `CompletionRequest` recebido em `complete()` (campo semântico do
+    digest) ANTES de devolver a resposta, provando que a provenance
+    registrada precisa ser digerida do estado PRÉ-dispatch (F1, review
+    de independência desta slice) -- `CompletionRequest` é mutável e
+    nada no contrato de `LLMProvider.complete()` impede um provider real
+    de mutar o objeto recebido em runtime."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        response: ProviderResponse,
+        mutate: Callable[[CompletionRequest], None],
+        default_model: str = "fake-model",
+    ):
+        super().__init__(
+            api_key="fake-key", timeout_seconds=9999, max_retries=0, pricing=PricingRegistry({})
+        )
+        self.provider_name = name
+        self._response = response
+        self._mutate = mutate
+        self._default_model_name = default_model
+        self.received_requests: list[CompletionRequest] = []
+
+    @property
+    def default_model(self) -> str:
+        return self._default_model_name
+
+    async def _call_api(self, request: CompletionRequest):
+        raise NotImplementedError("MutatingProvider sobrescreve complete() diretamente")
+
+    async def complete(self, request: CompletionRequest) -> ProviderResponse:
+        self.received_requests.append(request)
+        self._mutate(request)
         return self._response
 
 

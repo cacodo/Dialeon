@@ -7,6 +7,7 @@ import pytest
 from app.models.provider_models import ModelIdentitySource
 from app.orchestrator.config import QuorumPolicy, RunConfig
 from app.source_analysis.analyzer import SourceAnalyzer
+from app.source_analysis.context import SOURCE_ANALYSIS_CONTRACT_VERSION
 from app.source_analysis.models import RejectedSourceEntry, ValidSourceRelation
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 from tests.judge.fixtures import debate_result, model_response, raw_claim
@@ -431,6 +432,65 @@ async def test_malformed_then_accepted_recovers_via_retry():
     assert result.attempts[1].parse_status == "accepted"
     assert result.attempts[1].model_identity_source == ModelIdentitySource.PROVIDER_REPORTED
     assert len(result.claim_results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accepted_source_analysis_attempt_carries_request_provenance():
+    c1 = raw_claim("A receita cresceu 12%.", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    payload = _payload(
+        [{"claim_id": c1.id, "relation": "supports", "excerpt": "a receita cresceu 12% em 2025"}]
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    analyzer = SourceAnalyzer({"anthropic": provider})
+
+    result = await analyzer.analyze(dr, _run_config())
+
+    attempt = result.attempts[0]
+    assert attempt.request_provenance is not None
+    assert attempt.request_provenance.contract_version == SOURCE_ANALYSIS_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_transport_error_source_analysis_attempt_carries_request_provenance():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    provider = ScriptedProvider("anthropic", [transport_error_response("anthropic")])
+    analyzer = SourceAnalyzer({"anthropic": provider})
+
+    result = await analyzer.analyze(dr, _run_config())
+
+    attempt = result.attempts[0]
+    assert attempt.request_provenance is not None
+    assert attempt.request_provenance.contract_version == SOURCE_ANALYSIS_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_malformed_then_success_source_analysis_attempts_share_identical_request_provenance():
+    c1 = raw_claim("A receita cresceu 12%.", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    good_payload = _payload(
+        [{"claim_id": c1.id, "relation": "supports", "excerpt": "a receita cresceu 12% em 2025"}]
+    )
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response("anthropic", "json quebrado"),
+            text_response("anthropic", good_payload),
+        ],
+    )
+    analyzer = SourceAnalyzer({"anthropic": provider})
+
+    result = await analyzer.analyze(dr, _run_config())
+
+    assert len(result.attempts) == 2
+    assert result.attempts[0].request_provenance is not None
+    assert result.attempts[0].request_provenance == result.attempts[1].request_provenance
 
 
 # ---------------------------------------------------------------------------

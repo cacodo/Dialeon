@@ -6,6 +6,7 @@ import pytest
 
 from app.cli import commands
 from app.config import Settings
+from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
 from tests.api.helpers import build_test_components
 from tests.storage.fixtures import (
     full_council_run_result,
@@ -445,6 +446,42 @@ async def test_cmd_audit_completed_run(capsys):
     body = json.loads(out.out)
     assert body["status"] == "completed"
     assert len(body["claims"]) == len(result.debate_result.claims)
+
+
+@pytest.mark.asyncio
+async def test_cmd_audit_json_exposes_request_provenance_same_schema_as_api(capsys):
+    """`dialeon audit --json` deriva do MESMO schema público/de audit da
+    API (app.presentation) -- nenhuma segunda autoridade de serialização
+    -- então request_provenance persistida aparece idêntica: valor
+    concreto pra uma resposta nova, null pra uma histórica."""
+    components = await _components()
+    result = full_council_run_result()
+    concrete = RequestProvenance(
+        contract_version="initial_response_v1",
+        request_digest=REQUEST_DIGEST_PREFIX + "a" * 64,
+    )
+    mr1 = result.debate_result.initial_result.responses[0].model_copy(
+        update={"request_provenance": concrete}
+    )
+    mr2 = result.debate_result.initial_result.responses[1].model_copy(
+        update={"request_provenance": None}
+    )
+    initial = result.debate_result.initial_result.model_copy(update={"responses": [mr1, mr2]})
+    debate = result.debate_result.model_copy(update={"initial_result": initial})
+    result = result.model_copy(update={"debate_result": debate})
+    await components.repository.save_success(result)
+
+    exit_code = await commands.cmd_audit(components, run_id=result.id, as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    out = capsys.readouterr()
+    body = json.loads(out.out)
+    responses_by_id = {r["id"]: r for r in body["initial_round"]["responses"]}
+    assert responses_by_id[mr1.id]["request_provenance"] == {
+        "contract_version": "initial_response_v1",
+        "request_digest": REQUEST_DIGEST_PREFIX + "a" * 64,
+    }
+    assert responses_by_id[mr2.id]["request_provenance"] is None
 
 
 @pytest.mark.asyncio

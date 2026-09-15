@@ -33,12 +33,13 @@ from pydantic import TypeAdapter, ValidationError
 from app.debate.claims import get_current_claims
 from app.debate.result import DebateResult
 from app.models.provider_models import ProviderResponse
+from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.providers.base import LLMProvider, transport_error_common_fields
 from app.structured_output import strip_single_json_code_fence
 from app.source_analysis.attempt import SourceAnalysisAttempt
-from app.source_analysis.context import build_source_analysis_request
+from app.source_analysis.context import SOURCE_ANALYSIS_CONTRACT_VERSION, build_source_analysis_request
 from app.source_analysis.errors import MalformedSourceAnalysisOutputError
 from app.source_analysis.models import (
     RejectedSourceEntry,
@@ -99,6 +100,7 @@ class SourceAnalyzer:
         request = build_source_analysis_request(
             run_config.source_text, current_claims, run_config.max_output_tokens_per_call
         )
+        request_provenance = build_request_provenance(SOURCE_ANALYSIS_CONTRACT_VERSION, request)
 
         attempts: list[SourceAnalysisAttempt] = []
         parsed: SourceAnalysisOutput | None = None
@@ -116,18 +118,22 @@ class SourceAnalyzer:
             provider_response = await analyzer_llm.complete(request)
 
             if provider_response.status == "error":
-                attempts.append(_transport_error_attempt(attempt_number, provider_response))
+                attempts.append(
+                    _transport_error_attempt(attempt_number, provider_response, request_provenance)
+                )
                 break  # sem retry desta camada pra erro de transporte
 
             try:
                 parsed = _parse(provider_response.text)
             except MalformedSourceAnalysisOutputError as exc:
                 attempts.append(
-                    _parse_rejected_attempt(attempt_number, provider_response, str(exc))
+                    _parse_rejected_attempt(
+                        attempt_number, provider_response, str(exc), request_provenance
+                    )
                 )
                 continue
 
-            attempts.append(_accepted_attempt(attempt_number, provider_response))
+            attempts.append(_accepted_attempt(attempt_number, provider_response, request_provenance))
             break
 
         sa_input, sa_output, sa_cost, _ = sum_usage_and_cost(attempts)
@@ -250,15 +256,22 @@ def _validate_single_entry(
 
 
 def _transport_error_attempt(
-    attempt_number: int, provider_response: ProviderResponse
+    attempt_number: int,
+    provider_response: ProviderResponse,
+    request_provenance: RequestProvenance | None = None,
 ) -> SourceAnalysisAttempt:
     return SourceAnalysisAttempt(
-        attempt_number=attempt_number, **transport_error_common_fields(provider_response)
+        attempt_number=attempt_number,
+        request_provenance=request_provenance,
+        **transport_error_common_fields(provider_response),
     )
 
 
 def _parse_rejected_attempt(
-    attempt_number: int, provider_response: ProviderResponse, message: str
+    attempt_number: int,
+    provider_response: ProviderResponse,
+    message: str,
+    request_provenance: RequestProvenance | None = None,
 ) -> SourceAnalysisAttempt:
     return SourceAnalysisAttempt(
         attempt_number=attempt_number,
@@ -278,11 +291,14 @@ def _parse_rejected_attempt(
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
         provider_finish_reason=provider_response.provider_finish_reason,
+        request_provenance=request_provenance,
     )
 
 
 def _accepted_attempt(
-    attempt_number: int, provider_response: ProviderResponse
+    attempt_number: int,
+    provider_response: ProviderResponse,
+    request_provenance: RequestProvenance | None = None,
 ) -> SourceAnalysisAttempt:
     return SourceAnalysisAttempt(
         attempt_number=attempt_number,
@@ -300,5 +316,6 @@ def _accepted_attempt(
         pricing_provenance=provider_response.pricing_provenance,
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
+        request_provenance=request_provenance,
         provider_finish_reason=provider_response.provider_finish_reason,
     )

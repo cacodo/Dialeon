@@ -43,6 +43,7 @@ from app.models.provider_models import (
     ProviderErrorInfo,
     TokenUsage,
 )
+from app.models.request_provenance import RequestProvenance
 from app.reconciliation.models import (
     ChannelRelationship,
     ClaimReconciliationOutcome,
@@ -138,6 +139,19 @@ def _model_identity_source_from_column(value: str | None) -> ModelIdentitySource
     return ModelIdentitySource(value) if value is not None else None
 
 
+def _request_provenance_to_json(provenance: RequestProvenance | None) -> dict | None:
+    return provenance.model_dump() if provenance is not None else None
+
+
+def _request_provenance_from_json(data: dict | None) -> RequestProvenance | None:
+    """Reconstrução como UMA unidade -- `RequestProvenance(**data)`
+    valida `contract_version`/`request_digest` juntos (`extra="forbid"`,
+    formato de digest fechado); um valor malformado/parcial falha
+    fechado aqui (`ValidationError`), nunca é silenciosamente reparado
+    ou reinterpretado."""
+    return RequestProvenance(**data) if data is not None else None
+
+
 # ---------------------------------------------------------------------------
 # ModelResponse
 # ---------------------------------------------------------------------------
@@ -175,6 +189,7 @@ def model_response_to_row(
         error_retryable=mr.error.retryable if mr.error is not None else None,
         had_uncertain_prior_attempts=mr.had_uncertain_prior_attempts,
         provider_finish_reason=mr.provider_finish_reason,
+        request_provenance_json=_request_provenance_to_json(mr.request_provenance),
         created_at=dt_to_naive_utc(mr.created_at),
     )
 
@@ -202,6 +217,7 @@ def model_response_from_row(row: ModelResponseRow) -> ModelResponse:
         error=error,
         had_uncertain_prior_attempts=row.had_uncertain_prior_attempts,
         provider_finish_reason=row.provider_finish_reason,
+        request_provenance=_request_provenance_from_json(row.request_provenance_json),
         created_at=dt_from_naive_utc(row.created_at),
     )
 
@@ -323,6 +339,7 @@ def claim_processing_attempt_to_row(
         cost_usd=attempt.cost_usd,
         pricing_provenance_json=_provenance_to_json(attempt.pricing_provenance),
         latency_ms=attempt.latency_ms,
+        request_provenance_json=_request_provenance_to_json(attempt.request_provenance),
         created_at=dt_to_naive_utc(attempt.created_at),
     )
 
@@ -351,6 +368,7 @@ def claim_processing_attempt_from_row(row: ClaimProcessingAttemptRow) -> ClaimPr
         cost_usd=row.cost_usd,
         pricing_provenance=_provenance_from_json(row.pricing_provenance_json),
         latency_ms=row.latency_ms,
+        request_provenance=_request_provenance_from_json(row.request_provenance_json),
         created_at=dt_from_naive_utc(row.created_at),
     )
 
@@ -489,6 +507,7 @@ def judge_attempt_to_row(attempt: JudgeAttempt, *, council_run_id: str) -> Judge
         cost_usd=attempt.cost_usd,
         pricing_provenance_json=_provenance_to_json(attempt.pricing_provenance),
         latency_ms=attempt.latency_ms,
+        request_provenance_json=_request_provenance_to_json(attempt.request_provenance),
         created_at=dt_to_naive_utc(attempt.created_at),
     )
 
@@ -513,6 +532,7 @@ def judge_attempt_from_row(row: JudgeAttemptRow) -> JudgeAttempt:
         cost_usd=row.cost_usd,
         pricing_provenance=_provenance_from_json(row.pricing_provenance_json),
         latency_ms=row.latency_ms,
+        request_provenance=_request_provenance_from_json(row.request_provenance_json),
         created_at=dt_from_naive_utc(row.created_at),
     )
 
@@ -541,6 +561,7 @@ def editor_attempt_to_row(attempt: EditorAttempt, *, council_run_id: str) -> Edi
         cost_usd=attempt.cost_usd,
         pricing_provenance_json=_provenance_to_json(attempt.pricing_provenance),
         latency_ms=attempt.latency_ms,
+        request_provenance_json=_request_provenance_to_json(attempt.request_provenance),
         created_at=dt_to_naive_utc(attempt.created_at),
     )
 
@@ -565,6 +586,7 @@ def editor_attempt_from_row(row: EditorAttemptRow) -> EditorAttempt:
         cost_usd=row.cost_usd,
         pricing_provenance=_provenance_from_json(row.pricing_provenance_json),
         latency_ms=row.latency_ms,
+        request_provenance=_request_provenance_from_json(row.request_provenance_json),
         created_at=dt_from_naive_utc(row.created_at),
     )
 
@@ -638,6 +660,7 @@ def source_analysis_attempt_to_row(
         cost_usd=attempt.cost_usd,
         pricing_provenance_json=_provenance_to_json(attempt.pricing_provenance),
         latency_ms=attempt.latency_ms,
+        request_provenance_json=_request_provenance_to_json(attempt.request_provenance),
         created_at=dt_to_naive_utc(attempt.created_at),
     )
 
@@ -662,6 +685,7 @@ def source_analysis_attempt_from_row(row: SourceAnalysisAttemptRow) -> SourceAna
         cost_usd=row.cost_usd,
         pricing_provenance=_provenance_from_json(row.pricing_provenance_json),
         latency_ms=row.latency_ms,
+        request_provenance=_request_provenance_from_json(row.request_provenance_json),
         created_at=dt_from_naive_utc(row.created_at),
     )
 

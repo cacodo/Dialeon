@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from app.debate.claim_extraction import extract_claims, group_claims, reconcile_claims
 from app.debate.claims import get_current_claims
-from app.debate.context import build_critique_requests
+from app.debate.context import CRITIQUE_CONTRACT_VERSION, build_critique_requests
 from app.debate.numeric_verification import DeterministicVerificationAttempt
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult, DebateResult
@@ -140,6 +140,7 @@ class DebateEngine:
             critique_requests,
             round_number=_CRITIQUE_ROUND_NUMBER,
             round_dispatch_timeout_seconds=run_config.round_dispatch_timeout_seconds,
+            contract_version=CRITIQUE_CONTRACT_VERSION,
         )
         critique_result = CritiqueResult(round_result=round2_round_result)
 

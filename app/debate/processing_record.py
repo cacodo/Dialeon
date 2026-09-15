@@ -30,6 +30,7 @@ from app.models.provider_models import (
     ProviderErrorInfo,
     TokenUsage,
 )
+from app.models.request_provenance import RequestProvenance
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -115,6 +116,14 @@ class ClaimProcessingAttempt(BaseModel):
     # Etapa 17A.1 (Objetivo B) -- ver docstring de ProviderResponse.
     # Copiado verbatim, nunca normalizado.
     provider_finish_reason: str | None = None
+    # Provider-Neutral Request Provenance V1 -- ver docstring de
+    # `RequestProvenance` (app/models/request_provenance.py). O request
+    # de extração/agrupamento/reconciliação é construído UMA vez, ANTES
+    # do loop de retry de structured output -- toda tentativa (aceita ou
+    # rejeitada) desta MESMA chamada lógica carrega a MESMA provenance.
+    # `None` é EXCLUSIVAMENTE o valor de uma tentativa persistida ANTES
+    # deste slice existir.
+    request_provenance: RequestProvenance | None = None
     created_at: datetime = Field(default_factory=_now)
 
     @model_validator(mode="after")

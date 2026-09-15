@@ -33,13 +33,14 @@ from pydantic import ValidationError
 from app.debate.claims import get_current_claims
 from app.debate.result import DebateResult
 from app.judge.attempt import JudgeAttempt
-from app.judge.context import build_judge_request, get_participating_providers
+from app.judge.context import JUDGE_CONTRACT_VERSION, build_judge_request, get_participating_providers
 from app.judge.errors import InconsistentJudgeReferenceError, MalformedJudgeOutputError
 from app.judge.result import JudgeResult
 from app.judge.schemas import JudgeOutput
 from app.judge.strategy import JudgeStrategy
 from app.models.domain import ClaimAssessment, JudgeVerdict
 from app.models.provider_models import ProviderResponse
+from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.providers.base import (
@@ -119,6 +120,7 @@ class SingleJudge(JudgeStrategy):
             # cresce com a contagem de claims do debate inteiro.
             max_output_tokens_per_call=run_config.max_output_tokens_judge,
         )
+        request_provenance = build_request_provenance(JUDGE_CONTRACT_VERSION, request)
 
         attempts: list[JudgeAttempt] = []
         parsed: JudgeOutput | None = None
@@ -137,7 +139,9 @@ class SingleJudge(JudgeStrategy):
             provider_response = await judge_llm.complete(request)
 
             if provider_response.status == "error":
-                attempts.append(_transport_error_attempt(attempt_number, provider_response))
+                attempts.append(
+                    _transport_error_attempt(attempt_number, provider_response, request_provenance)
+                )
                 break  # sem retry desta camada pra erro de transporte
 
             try:
@@ -147,7 +151,11 @@ class SingleJudge(JudgeStrategy):
             except MalformedJudgeOutputError as exc:
                 attempts.append(
                     _parse_rejected_attempt(
-                        attempt_number, provider_response, "malformed", str(exc)
+                        attempt_number,
+                        provider_response,
+                        "malformed",
+                        str(exc),
+                        request_provenance,
                     )
                 )
                 if is_known_output_truncation(provider_response.provider_finish_reason):
@@ -156,14 +164,20 @@ class SingleJudge(JudgeStrategy):
             except InconsistentJudgeReferenceError as exc:
                 attempts.append(
                     _parse_rejected_attempt(
-                        attempt_number, provider_response, "inconsistent_references", str(exc)
+                        attempt_number,
+                        provider_response,
+                        "inconsistent_references",
+                        str(exc),
+                        request_provenance,
                     )
                 )
                 if is_known_output_truncation(provider_response.provider_finish_reason):
                     break
                 continue
 
-            attempts.append(_accepted_attempt(attempt_number, provider_response))
+            attempts.append(
+                _accepted_attempt(attempt_number, provider_response, request_provenance)
+            )
             accepted_response = provider_response
             break
 
@@ -276,10 +290,14 @@ def _parse_and_validate(
 
 
 def _transport_error_attempt(
-    attempt_number: int, provider_response: ProviderResponse
+    attempt_number: int,
+    provider_response: ProviderResponse,
+    request_provenance: RequestProvenance | None = None,
 ) -> JudgeAttempt:
     return JudgeAttempt(
-        attempt_number=attempt_number, **transport_error_common_fields(provider_response)
+        attempt_number=attempt_number,
+        request_provenance=request_provenance,
+        **transport_error_common_fields(provider_response),
     )
 
 
@@ -288,6 +306,7 @@ def _parse_rejected_attempt(
     provider_response: ProviderResponse,
     parse_status: Literal["malformed", "inconsistent_references"],
     message: str,
+    request_provenance: RequestProvenance | None = None,
 ) -> JudgeAttempt:
     return JudgeAttempt(
         attempt_number=attempt_number,
@@ -307,10 +326,15 @@ def _parse_rejected_attempt(
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
         provider_finish_reason=provider_response.provider_finish_reason,
+        request_provenance=request_provenance,
     )
 
 
-def _accepted_attempt(attempt_number: int, provider_response: ProviderResponse) -> JudgeAttempt:
+def _accepted_attempt(
+    attempt_number: int,
+    provider_response: ProviderResponse,
+    request_provenance: RequestProvenance | None = None,
+) -> JudgeAttempt:
     return JudgeAttempt(
         attempt_number=attempt_number,
         provider=provider_response.provider,
@@ -329,4 +353,5 @@ def _accepted_attempt(attempt_number: int, provider_response: ProviderResponse) 
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
         provider_finish_reason=provider_response.provider_finish_reason,
+        request_provenance=request_provenance,
     )

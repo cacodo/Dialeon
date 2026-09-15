@@ -190,13 +190,14 @@ from pydantic import ValidationError
 from app.debate.claims import get_current_claims
 from app.debate.result import DebateResult
 from app.editor.attempt import EditorAttempt
-from app.editor.context import build_editor_request
+from app.editor.context import EDITOR_CONTRACT_VERSION, build_editor_request
 from app.editor.errors import MalformedEditorOutputError
 from app.editor.result import EditorResult, FinalAnswer
 from app.editor.schemas import EditorPlan
 from app.judge.result import JudgeResult
 from app.models.domain import Claim, JudgeVerdict
 from app.models.provider_models import ProviderResponse
+from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.providers.base import LLMProvider, transport_error_common_fields
@@ -461,6 +462,7 @@ class Editor:
         request = build_editor_request(
             run_config.question, verdict, run_config.max_output_tokens_per_call
         )
+        request_provenance = build_request_provenance(EDITOR_CONTRACT_VERSION, request)
 
         attempts: list[EditorAttempt] = []
         parsed: EditorPlan | None = None
@@ -479,7 +481,9 @@ class Editor:
             provider_response = await editor_llm.complete(request)
 
             if provider_response.status == "error":
-                attempts.append(_transport_error_attempt(attempt_number, provider_response))
+                attempts.append(
+                    _transport_error_attempt(attempt_number, provider_response, request_provenance)
+                )
                 break  # sem retry desta camada pra erro de transporte
 
             try:
@@ -487,12 +491,18 @@ class Editor:
             except MalformedEditorOutputError as exc:
                 attempts.append(
                     _parse_rejected_attempt(
-                        attempt_number, provider_response, "malformed", str(exc)
+                        attempt_number,
+                        provider_response,
+                        "malformed",
+                        str(exc),
+                        request_provenance,
                     )
                 )
                 continue
 
-            attempts.append(_accepted_attempt(attempt_number, provider_response))
+            attempts.append(
+                _accepted_attempt(attempt_number, provider_response, request_provenance)
+            )
             accepted_response = provider_response
             break
 
@@ -993,10 +1003,14 @@ def _parse_and_validate(raw_text: str) -> EditorPlan:
 
 
 def _transport_error_attempt(
-    attempt_number: int, provider_response: ProviderResponse
+    attempt_number: int,
+    provider_response: ProviderResponse,
+    request_provenance: RequestProvenance | None = None,
 ) -> EditorAttempt:
     return EditorAttempt(
-        attempt_number=attempt_number, **transport_error_common_fields(provider_response)
+        attempt_number=attempt_number,
+        request_provenance=request_provenance,
+        **transport_error_common_fields(provider_response),
     )
 
 
@@ -1005,6 +1019,7 @@ def _parse_rejected_attempt(
     provider_response: ProviderResponse,
     parse_status: Literal["malformed"],
     message: str,
+    request_provenance: RequestProvenance | None = None,
 ) -> EditorAttempt:
     return EditorAttempt(
         attempt_number=attempt_number,
@@ -1024,10 +1039,15 @@ def _parse_rejected_attempt(
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
         provider_finish_reason=provider_response.provider_finish_reason,
+        request_provenance=request_provenance,
     )
 
 
-def _accepted_attempt(attempt_number: int, provider_response: ProviderResponse) -> EditorAttempt:
+def _accepted_attempt(
+    attempt_number: int,
+    provider_response: ProviderResponse,
+    request_provenance: RequestProvenance | None = None,
+) -> EditorAttempt:
     return EditorAttempt(
         attempt_number=attempt_number,
         provider=provider_response.provider,
@@ -1046,4 +1066,5 @@ def _accepted_attempt(attempt_number: int, provider_response: ProviderResponse) 
         latency_ms=provider_response.latency_ms,
         had_uncertain_prior_attempts=provider_response.had_uncertain_prior_attempts,
         provider_finish_reason=provider_response.provider_finish_reason,
+        request_provenance=request_provenance,
     )

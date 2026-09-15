@@ -18,6 +18,7 @@ from app.editor.compose import (
     _render_reconciliation_suffix,
     _source_results_by_id,
 )
+from app.editor.context import EDITOR_CONTRACT_VERSION
 from app.editor.schemas import EditorPlan
 from app.debate.claims import get_current_claims
 from app.debate.result import DebateResult
@@ -509,6 +510,82 @@ async def test_transport_failure_no_retry_this_layer():
     assert result.fallback_reason == "editor_transport_failed"
     assert len(result.attempts) == 1
     assert len(provider.received_requests) == 1
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accepted_editor_attempt_carries_request_provenance():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(v)
+
+    good = _plan_payload()
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", good)])
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    attempt = result.attempts[0]
+    assert attempt.request_provenance is not None
+    assert attempt.request_provenance.contract_version == EDITOR_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_transport_error_editor_attempt_carries_request_provenance():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(v)
+
+    provider = ScriptedProvider("anthropic", [transport_error_response("anthropic")])
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    attempt = result.attempts[0]
+    assert attempt.request_provenance is not None
+    assert attempt.request_provenance.contract_version == EDITOR_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+async def test_malformed_then_success_editor_attempts_share_identical_request_provenance():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(v)
+
+    good = _plan_payload()
+    provider = ScriptedProvider(
+        "anthropic",
+        [text_response("anthropic", "isso não é json"), text_response("anthropic", good)],
+    )
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert len(result.attempts) == 2
+    assert result.attempts[0].request_provenance is not None
+    assert result.attempts[0].request_provenance == result.attempts[1].request_provenance
 
 
 @pytest.mark.asyncio

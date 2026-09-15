@@ -35,6 +35,10 @@ import json
 from app.models.domain import JudgeVerdict
 from app.models.provider_models import CompletionRequest, Message
 
+# Provider-Neutral Request Provenance V1 -- contrato do request do
+# Editor, montado por `build_editor_request` abaixo.
+EDITOR_CONTRACT_VERSION = "editor_v1"
+
 
 def build_editor_request(
     question: str,

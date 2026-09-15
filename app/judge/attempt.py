@@ -31,6 +31,7 @@ from app.models.provider_models import (
     ProviderErrorInfo,
     TokenUsage,
 )
+from app.models.request_provenance import RequestProvenance
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -83,6 +84,12 @@ class JudgeAttempt(BaseModel):
     # Etapa 17A.1 (Objetivo B) -- ver docstring de ProviderResponse.
     # Copiado verbatim, nunca normalizado.
     provider_finish_reason: str | None = None
+    # Provider-Neutral Request Provenance V1 -- ver docstring de
+    # `RequestProvenance` (app/models/request_provenance.py). NUNCA
+    # altera semântica epistêmica do Judge -- só observa o request já
+    # construído. `None` é EXCLUSIVAMENTE o valor de uma tentativa
+    # persistida ANTES deste slice existir.
+    request_provenance: RequestProvenance | None = None
     created_at: datetime = Field(default_factory=_now)
 
     @model_validator(mode="after")

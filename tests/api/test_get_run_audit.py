@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.api.app import create_app
 from app.config import Settings
 from app.models.domain import ClaimAssessment
+from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
 from tests.api.helpers import make_components_factory
 from tests.storage.fixtures import (
     full_council_run_result,
@@ -13,6 +14,7 @@ from tests.storage.fixtures import (
     now,
     quorum_failure_exception,
     run_config,
+    very_rich_council_run_result,
     with_recomputed_reconciliation,
 )
 
@@ -61,6 +63,171 @@ def test_get_run_audit_completed_full_detail():
     assert len(body["judge_attempts"]) == 1
     assert len(body["editor_attempts"]) == 1
     assert body["final_answer"]["answer_text"] == result.final_answer.answer_text
+
+
+def test_get_run_audit_exposes_request_provenance_copied_never_regenerated():
+    """A superfície de audit precisa expor request_provenance persistida
+    tal como salva -- valor concreto pra uma resposta nova, null pra uma
+    histórica -- nunca regenerada a partir dos builders atuais (ver
+    seção 18 do contrato desta slice)."""
+    result = full_council_run_result()
+    concrete = RequestProvenance(
+        contract_version="initial_response_v1",
+        request_digest=REQUEST_DIGEST_PREFIX + "a" * 64,
+    )
+    mr1 = result.debate_result.initial_result.responses[0].model_copy(
+        update={"request_provenance": concrete}
+    )
+    mr2 = result.debate_result.initial_result.responses[1].model_copy(
+        update={"request_provenance": None}
+    )
+    initial = result.debate_result.initial_result.model_copy(update={"responses": [mr1, mr2]})
+    debate = result.debate_result.model_copy(update={"initial_result": initial})
+    result = result.model_copy(update={"debate_result": debate})
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_success, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}/audit")
+
+    body = resp.json()
+    responses_by_id = {r["id"]: r for r in body["initial_round"]["responses"]}
+    assert responses_by_id[mr1.id]["request_provenance"] == {
+        "contract_version": "initial_response_v1",
+        "request_digest": REQUEST_DIGEST_PREFIX + "a" * 64,
+    }
+    assert responses_by_id[mr2.id]["request_provenance"] is None
+
+    # atributo persistido nas 3 outras famílias de attempt também
+    # aparece na superfície de audit -- não só em model_responses.
+    assert "request_provenance" in body["claim_processing_attempts"][0]
+    assert "request_provenance" in body["judge_attempts"][0]
+    assert "request_provenance" in body["editor_attempts"][0]
+
+
+def test_get_run_audit_exposes_exact_distinct_request_provenance_for_all_five_families():
+    """F3 (review de independência -- REPARO) -- prova de VALOR EXATO,
+    não só presença, pras 5 famílias que carregam request_provenance,
+    incluindo Source Analysis (ausente da cobertura anterior). Cada
+    família recebe um `RequestProvenance` DISTINTO (contract_version E
+    digest diferentes entre si) -- se o mapeamento persistência->audit
+    cruzasse valores entre famílias por engano (ex.: Judge recebendo a
+    provenance do Editor), esta asserção pegaria isso; uma provenance
+    igual repetida em todo lugar não pegaria."""
+    result = very_rich_council_run_result()
+
+    mr_provenance = RequestProvenance(
+        contract_version="initial_response_v1", request_digest=REQUEST_DIGEST_PREFIX + "1" * 64
+    )
+    proc_provenance = RequestProvenance(
+        contract_version="claim_extraction_v1", request_digest=REQUEST_DIGEST_PREFIX + "2" * 64
+    )
+    source_provenance = RequestProvenance(
+        contract_version="source_analysis_v1", request_digest=REQUEST_DIGEST_PREFIX + "3" * 64
+    )
+    judge_provenance = RequestProvenance(
+        contract_version="judge_v1", request_digest=REQUEST_DIGEST_PREFIX + "4" * 64
+    )
+    editor_provenance = RequestProvenance(
+        contract_version="editor_v1", request_digest=REQUEST_DIGEST_PREFIX + "5" * 64
+    )
+
+    mr1 = result.debate_result.initial_result.responses[0].model_copy(
+        update={"request_provenance": mr_provenance}
+    )
+    responses = [mr1] + result.debate_result.initial_result.responses[1:]
+    initial_result = result.debate_result.initial_result.model_copy(
+        update={"responses": responses}
+    )
+
+    proc_attempt = result.debate_result.claim_processing_attempts[0].model_copy(
+        update={"request_provenance": proc_provenance}
+    )
+    processing_attempts = [proc_attempt] + result.debate_result.claim_processing_attempts[1:]
+    debate_result = result.debate_result.model_copy(
+        update={"initial_result": initial_result, "claim_processing_attempts": processing_attempts}
+    )
+
+    source_attempt = result.source_analysis_result.attempts[0].model_copy(
+        update={"request_provenance": source_provenance}
+    )
+    source_analysis_result = result.source_analysis_result.model_copy(
+        update={"attempts": [source_attempt]}
+    )
+
+    judge_attempt = result.judge_result.attempts[0].model_copy(
+        update={"request_provenance": judge_provenance}
+    )
+    judge_result = result.judge_result.model_copy(
+        update={"attempts": [judge_attempt] + result.judge_result.attempts[1:]}
+    )
+
+    editor_attempt = result.editor_result.attempts[0].model_copy(
+        update={"request_provenance": editor_provenance}
+    )
+    editor_result = result.editor_result.model_copy(
+        update={"attempts": [editor_attempt] + result.editor_result.attempts[1:]}
+    )
+
+    result = result.model_copy(
+        update={
+            "debate_result": debate_result,
+            "source_analysis_result": source_analysis_result,
+            "judge_result": judge_result,
+            "editor_result": editor_result,
+        }
+    )
+    result = with_recomputed_reconciliation(result)
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_success, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}/audit")
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    def _public(provenance: RequestProvenance) -> dict:
+        return {
+            "contract_version": provenance.contract_version,
+            "request_digest": provenance.request_digest,
+        }
+
+    responses_by_id = {r["id"]: r for r in body["initial_round"]["responses"]}
+    assert responses_by_id[mr1.id]["request_provenance"] == _public(mr_provenance)
+
+    proc_by_id = {a["id"]: a for a in body["claim_processing_attempts"]}
+    assert proc_by_id[proc_attempt.id]["request_provenance"] == _public(proc_provenance)
+
+    source_by_id = {a["id"]: a for a in body["source_analysis"]["attempts"]}
+    assert source_by_id[source_attempt.id]["request_provenance"] == _public(source_provenance)
+
+    judge_by_id = {a["id"]: a for a in body["judge_attempts"]}
+    assert judge_by_id[judge_attempt.id]["request_provenance"] == _public(judge_provenance)
+
+    editor_by_id = {a["id"]: a for a in body["editor_attempts"]}
+    assert editor_by_id[editor_attempt.id]["request_provenance"] == _public(editor_provenance)
+
+    # nenhum cross-copy entre famílias -- os 5 valores permanecem
+    # distintos na superfície pública, na mesma ordem em que foram
+    # atribuídos.
+    all_digests = {
+        responses_by_id[mr1.id]["request_provenance"]["request_digest"],
+        proc_by_id[proc_attempt.id]["request_provenance"]["request_digest"],
+        source_by_id[source_attempt.id]["request_provenance"]["request_digest"],
+        judge_by_id[judge_attempt.id]["request_provenance"]["request_digest"],
+        editor_by_id[editor_attempt.id]["request_provenance"]["request_digest"],
+    }
+    assert len(all_digests) == 5
+
+    # cobertura histórica barata na mesma fixture/teste -- o SEGUNDO
+    # attempt de cada família (nunca tocado acima) permanece com
+    # request_provenance=None na superfície de audit, nunca inferido.
+    assert proc_by_id[processing_attempts[1].id]["request_provenance"] is None
+    assert judge_by_id[judge_result.attempts[1].id]["request_provenance"] is None
+    assert editor_by_id[editor_result.attempts[1].id]["request_provenance"] is None
 
 
 def test_get_run_audit_model_identity_source_serialized_for_all_three_states():

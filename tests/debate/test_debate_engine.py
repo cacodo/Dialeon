@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.debate.context import CRITIQUE_CONTRACT_VERSION
 from app.debate.debate_engine import DebateEngine
 from app.models.provider_models import (
     ModelIdentitySource,
@@ -14,6 +15,7 @@ from app.models.provider_models import (
 )
 from app.orchestrator.config import QuorumPolicy, RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
+from app.orchestrator.orchestrator import INITIAL_RESPONSE_CONTRACT_VERSION
 from tests.debate.fakes import CallableProvider
 
 
@@ -284,6 +286,40 @@ async def test_critique_coverage_0_of_3_does_not_raise_and_debate_still_returns(
     assert result.critique_round.coverage_ratio == 0.0
     assert result.debate_skipped_reason is None
     assert len(result.claims) >= 3  # claims da rodada 1 seguem válidas
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_initial_and_critique_responses_carry_their_own_contract_versions():
+    providers = {
+        "openai": _make_provider("openai", "Brasília é a capital."),
+        "anthropic": _make_provider("anthropic", "A capital do Brasil é Brasília."),
+        "gemini": _make_provider("gemini", "Brasília é a capital do país."),
+    }
+    engine = DebateEngine(providers)
+    run_config = _run_config(["openai", "anthropic", "gemini"], "anthropic")
+
+    result = await engine.run(run_config)
+
+    for response in result.initial_result.responses:
+        assert response.request_provenance is not None
+        assert response.request_provenance.contract_version == INITIAL_RESPONSE_CONTRACT_VERSION
+
+    critique_responses = result.critique_round.round_result.responses
+    assert len(critique_responses) > 0
+    for response in critique_responses:
+        assert response.request_provenance is not None
+        assert response.request_provenance.contract_version == CRITIQUE_CONTRACT_VERSION
+
+    # rodadas diferentes -- contract_version (e portanto provenance) nunca
+    # se confunde entre resposta inicial e crítica.
+    initial_digest = result.initial_result.responses[0].request_provenance.request_digest
+    critique_digest = critique_responses[0].request_provenance.request_digest
+    assert initial_digest != critique_digest
 
 
 # ---------------------------------------------------------------------------

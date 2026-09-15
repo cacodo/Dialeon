@@ -87,6 +87,7 @@ def model_response_public(mr: ModelResponse) -> ModelResponsePublic:
         error=mr.error,
         had_uncertain_prior_attempts=mr.had_uncertain_prior_attempts,
         provider_finish_reason=mr.provider_finish_reason,
+        request_provenance=mr.request_provenance,
         created_at=mr.created_at,
     )
 
@@ -178,6 +179,7 @@ def claim_processing_attempt_public(
         latency_ms=attempt.latency_ms,
         had_uncertain_prior_attempts=attempt.had_uncertain_prior_attempts,
         provider_finish_reason=attempt.provider_finish_reason,
+        request_provenance=attempt.request_provenance,
         created_at=attempt.created_at,
     )
 
@@ -223,6 +225,7 @@ def judge_attempt_public(attempt: JudgeAttempt) -> JudgeAttemptPublic:
         latency_ms=attempt.latency_ms,
         had_uncertain_prior_attempts=attempt.had_uncertain_prior_attempts,
         provider_finish_reason=attempt.provider_finish_reason,
+        request_provenance=attempt.request_provenance,
         created_at=attempt.created_at,
     )
 
@@ -246,6 +249,7 @@ def editor_attempt_public(attempt: EditorAttempt) -> EditorAttemptPublic:
         latency_ms=attempt.latency_ms,
         had_uncertain_prior_attempts=attempt.had_uncertain_prior_attempts,
         provider_finish_reason=attempt.provider_finish_reason,
+        request_provenance=attempt.request_provenance,
         created_at=attempt.created_at,
     )
 
@@ -372,6 +376,7 @@ def source_analysis_attempt_public(attempt: SourceAnalysisAttempt) -> SourceAnal
         latency_ms=attempt.latency_ms,
         had_uncertain_prior_attempts=attempt.had_uncertain_prior_attempts,
         provider_finish_reason=attempt.provider_finish_reason,
+        request_provenance=attempt.request_provenance,
         created_at=attempt.created_at,
     )
 

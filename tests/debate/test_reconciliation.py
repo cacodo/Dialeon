@@ -25,6 +25,7 @@ import json
 import pytest
 
 from app.debate.claim_extraction import (
+    CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION,
     _RECONCILIATION_ATTEMPT_ROUND_NUMBER,
     reconcile_claims,
 )
@@ -566,3 +567,61 @@ async def test_ordinary_grouping_still_allows_same_round_merge_of_two_claims():
 
     assert attempts[0].parse_status == "accepted"
     assert len(canonical) == 1  # nunca rejeitado por ser "same-side" -- grouping não tem esse conceito
+
+
+# ---------------------------------------------------------------------------
+# Provider-Neutral Request Provenance V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accepted_reconciliation_attempt_carries_request_provenance():
+    r1_claim = _current_claim("r1", "openai", round_introduced=1)
+    r2_claim = _current_claim("r2", "anthropic", round_introduced=2)
+    payload = json.dumps(
+        {
+            "groups": [{"member_claim_ids": [r1_claim.id, r2_claim.id], "canonical_text": "x"}],
+            "ungrouped_claim_ids": [],
+        }
+    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+
+    _canonical, attempts = await _reconcile([r1_claim], [r2_claim], provider)
+
+    assert attempts[0].request_provenance is not None
+    assert (
+        attempts[0].request_provenance.contract_version
+        == CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_malformed_then_success_share_identical_request_provenance():
+    r1_claim = _current_claim("r1", "openai", round_introduced=1)
+    r2_claim = _current_claim("r2", "anthropic", round_introduced=2)
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response("anthropic", "não é JSON"),
+            text_response(
+                "anthropic",
+                json.dumps({"groups": [], "ungrouped_claim_ids": [r1_claim.id, r2_claim.id]}),
+            ),
+        ],
+    )
+
+    _canonical, attempts = await _reconcile([r1_claim], [r2_claim], provider)
+
+    assert len(attempts) == 2
+    assert attempts[0].request_provenance is not None
+    assert attempts[0].request_provenance == attempts[1].request_provenance
+
+
+def test_reconciliation_contract_version_is_distinct_from_grouping():
+    """H (independência) -- reconciliação reusa o MESMO mecanismo de
+    `group_claims`, mas nunca sua versão de contrato."""
+    from app.debate.claim_extraction import CLAIM_GROUPING_CONTRACT_VERSION
+
+    assert (
+        CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION != CLAIM_GROUPING_CONTRACT_VERSION
+    )
