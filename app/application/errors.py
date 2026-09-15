@@ -30,3 +30,22 @@ class UnknownProviderError(Exception):
             f"provider(s) desconhecido(s): {unknown_providers}; "
             f"providers disponíveis: {known_providers}"
         )
+
+
+class InvalidQuestionError(Exception):
+    """Accepted Question Size Boundary V1 -- `RunConfig.question`
+    viola a regra canônica de aceite de execuções NOVAS (vazia/só
+    espaço em branco, ou excede
+    `app.orchestrator.config.MAX_QUESTION_CHARACTERS`). Levantada por
+    `CouncilExecutionService.run()` ANTES de qualquer mintagem de
+    run_id/`save_accepted`/chamada ao `CouncilRunner` -- protege
+    chamadores diretos do service que construíram um `RunConfig` sem
+    passar pela validação antecipada de `CreateRunRequest` (mesma
+    disciplina de `UnknownProviderError` acima). A regra em si mora só
+    em `validate_question` (app/orchestrator/config.py) -- esta
+    exceção nunca reimplementa a checagem, só a traduz pro vocabulário
+    de erro desta camada."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)

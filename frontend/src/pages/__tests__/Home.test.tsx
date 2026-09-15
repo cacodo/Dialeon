@@ -127,6 +127,38 @@ describe('Home', () => {
     })
   })
 
+  it('envia a question VERBATIM, com espaço em branco significativo ao redor preservado (repair F1)', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
+    renderHome()
+
+    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    const question = screen.getByLabelText(/faça uma pergunta/i)
+    // userEvent.type digita caractere a caractere -- inclui os espaços
+    // literalmente, nunca colapsados/removidos pelo próprio evento de
+    // digitação.
+    await userEvent.type(question, '  pergunta válida  ')
+    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+
+    expect(apiClient.createRun).toHaveBeenCalledWith({
+      question: '  pergunta válida  ',
+      enabled_providers: ['openai'],
+      source_text: null,
+    })
+  })
+
+  it('espaço-em-branco-só continua bloqueando submit mesmo com forwarding verbatim (repair F1)', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    renderHome()
+
+    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    const question = screen.getByLabelText(/faça uma pergunta/i)
+    await userEvent.type(question, '   ')
+
+    expect(screen.getByRole('button', { name: /perguntar/i })).toBeDisabled()
+    expect(apiClient.createRun).not.toHaveBeenCalled()
+  })
+
   it('usuário ainda pode desmarcar um provider pré-selecionado', async () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)

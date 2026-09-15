@@ -30,6 +30,47 @@ _CONFIG = ConfigDict(frozen=True, extra="forbid")
 MAX_SOURCE_TEXT_CHARACTERS = 20_000
 
 
+# Accepted Question Size Boundary V1 -- limite canônico ÚNICO de
+# `question`, em CARACTERES Python (`len(str)` -- code points, nunca
+# bytes UTF-8/grapheme clusters/tokens de um tokenizer específico).
+# Reusado por `CreateRunRequest` (app/presentation/schemas.py,
+# validação antecipada pra erro HTTP/CLI limpo e cedo) e
+# `CouncilExecutionService.run()` (app/application/service.py, boundary
+# de aceite autoritativa pra chamadores diretos do service) -- nunca
+# duplicado como um segundo número que pudesse divergir. Semanticamente
+# INDEPENDENTE de `MAX_SOURCE_TEXT_CHARACTERS` acima -- mesmo que os
+# dois valores coincidam hoje, são limites de campos diferentes com
+# motivações diferentes, e nunca devem ser aliasados um ao outro.
+#
+# Deliberadamente NUNCA aplicado como field_validator de
+# `RunConfig.question` (ver classe abaixo): esse campo é reconstruído
+# diretamente a partir de dado histórico persistido
+# (`RunConfig(**run_config_json)`, app/storage/repository.py), e uma
+# execução legítima de ANTES deste limite existir pode ter uma
+# `question` mais longa que este teto -- carregar essa execução
+# histórica pra auditoria precisa continuar funcionando, sem
+# reinterpretar aceite passado à luz de uma regra que não existia
+# quando ela foi aceita. A validação de aceite de execuções NOVAS mora
+# inteiramente fora de `RunConfig`, nas duas boundaries citadas acima.
+MAX_QUESTION_CHARACTERS = 20_000
+
+
+def validate_question(value: str) -> str:
+    """Única função de validação de `question` pra ACEITE DE EXECUÇÕES
+    NOVAS -- nunca usada para reconstrução de dado histórico (ver
+    comentário de `MAX_QUESTION_CHARACTERS` acima). Preserva o valor
+    VERBATIM (nunca trima/normaliza/reescreve) -- só rejeita vazio/
+    só-espaço-em-branco e valores que excedem o limite. Espaço em
+    branco significativo ao REDOR de conteúdo real (ex.: "  pergunta
+    válida  ") nunca é removido -- só o valor INTEIRO sendo em branco é
+    rejeitado."""
+    if not value.strip():
+        raise ValueError("question não pode ser vazia ou só espaços em branco")
+    if len(value) > MAX_QUESTION_CHARACTERS:
+        raise ValueError(f"question excede o máximo de {MAX_QUESTION_CHARACTERS} caracteres")
+    return value
+
+
 def _normalize_and_validate_source_text(value: str | None) -> str | None:
     """Única função de normalização/validação de `source_text` do
     projeto -- RunConfig e CreateRunRequest delegam pra ela, nunca
@@ -152,6 +193,15 @@ class RunConfig(BaseModel):
 
     model_config = _CONFIG
 
+    # Accepted Question Size Boundary V1 -- deliberadamente SEM
+    # field_validator de blank/tamanho máximo aqui (só o `min_length=1`
+    # sintático de sempre) -- ver comentário de `validate_question`/
+    # `MAX_QUESTION_CHARACTERS` acima pra por que RunConfig precisa
+    # continuar diretamente reconstruível a partir de dado histórico
+    # que pode legitimamente exceder o limite novo. A validação de
+    # aceite de execuções NOVAS mora em `CreateRunRequest`
+    # (app/presentation/schemas.py) e `CouncilExecutionService.run()`
+    # (app/application/service.py), nunca aqui.
     question: str = Field(min_length=1)
     # Etapa 10: tuple, não list — era a única coleção mutável de
     # RunConfig/QuorumPolicy (confirmado por auditoria: único uso real é

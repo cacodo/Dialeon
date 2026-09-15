@@ -35,7 +35,7 @@ from app.debate.claims import get_current_claims
 from app.debate.debate_engine import DebateEngine
 from app.editor.compose import Editor
 from app.judge.strategy import JudgeStrategy
-from app.orchestrator.config import RunConfig
+from app.orchestrator.config import RunConfig, validate_question
 from app.reconciliation.reconcile import (
     reconcile_source_and_judge,
     validate_reconciliation_coherence,
@@ -111,7 +111,24 @@ class CouncilRunner:
         `debate_result` E `source_analysis_result` ao mesmo tempo. ALL
         REAL LLM CALLS COUNT BUDGET permanece verdadeiro sem que Judge
         precise saber que Source Analysis existe como conceito — só
-        quanto ela custou."""
+        quanto ela custou.
+
+        Accepted Question Size Boundary V1: `validate_question` roda
+        AQUI, ANTES de QUALQUER outra coisa -- inclusive antes de
+        `_now()` (repair F2 da revisão focada: uma question inválida
+        nunca deveria fazer o Runner sequer capturar um timestamp de
+        início) -- como defesa em profundidade: `CouncilExecutionService.run()`
+        já é a boundary autoritativa de aceite (levanta antes de mintar/
+        persistir), mas `CouncilRunner` é diretamente construível/
+        chamável (testes, código interno) sem passar por ela. Mesma
+        disciplina do resto deste método -- nenhum try/except aqui,
+        `ValueError` de `validate_question` propaga sem interceptação
+        (mesmo princípio já documentado no módulo pra "ValueError de
+        provider mal configurado"); `CouncilRunner` nunca reimplementa a
+        regra, só chama a MESMA função canônica de
+        app/orchestrator/config.py."""
+        validate_question(run_config.question)
+
         started_at = started_at if started_at is not None else _now()
 
         debate_result = await self._debate_engine.run(run_config)

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from app.application.errors import UnknownProviderError
+from app.application.errors import InvalidQuestionError, UnknownProviderError
 from app.bootstrap import AppComponents
 from app.cli import output
 from app.orchestrator.config import RunConfig
@@ -103,6 +103,20 @@ async def cmd_run(
 
     try:
         result = await components.service.run(run_config)
+    except InvalidQuestionError as exc:
+        # Accepted Question Size Boundary V1 -- mesmo code="invalid_request"
+        # que a validação de forma de CreateRunRequest já usa acima
+        # (_pydantic_errors): é a MESMA classe de problema, só detectada
+        # na boundary autoritativa do service em vez do schema (nunca
+        # alcançada por este comando na prática -- CreateRunRequest já
+        # rejeitou isso antes, mas o comando continua correto se essa
+        # ordem mudar).
+        message = exc.reason
+        if as_json:
+            output.emit_json_error("invalid_request", message)
+        else:
+            output.print_error(message)
+        return EXIT_INVALID_INPUT
     except UnknownProviderError as exc:
         message = "Um ou mais providers solicitados não existem."
         if as_json:

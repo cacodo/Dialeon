@@ -302,3 +302,70 @@ async def test_cli_run_oversized_source_exits_2_no_call(monkeypatch, capsys):
     out = capsys.readouterr()
     assert out.out == ""
     assert dispose_calls == [True]  # bootstrap aconteceu, mas nenhuma chamada de provider
+
+
+# ---------------------------------------------------------------------------
+# Accepted Question Size Boundary V1 -- flag `question` (posicional)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cli_run_oversized_question_exits_2_no_call(monkeypatch, capsys):
+    from app.orchestrator.config import MAX_QUESTION_CHARACTERS
+
+    dispose_calls = _patch_build_components(monkeypatch, provider_names=("openai", "anthropic"))
+
+    exit_code = await cli_main._run_async(
+        ["run", "x" * (MAX_QUESTION_CHARACTERS + 1), "--providers", "openai,anthropic"]
+    )
+
+    assert exit_code == EXIT_INVALID_INPUT
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert dispose_calls == [True]  # bootstrap aconteceu, mas nenhuma chamada de provider
+
+
+@pytest.mark.asyncio
+async def test_cli_run_blank_question_exits_2_no_call(monkeypatch, capsys):
+    dispose_calls = _patch_build_components(monkeypatch, provider_names=("openai", "anthropic"))
+
+    exit_code = await cli_main._run_async(
+        ["run", "   \n\t  ", "--providers", "openai,anthropic"]
+    )
+
+    assert exit_code == EXIT_INVALID_INPUT
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert dispose_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_cli_run_boundary_question_reaches_run_config(monkeypatch, capsys):
+    from app.orchestrator.config import MAX_QUESTION_CHARACTERS
+
+    captured: dict = {}
+
+    async def _fake_build(settings):
+        components = await build_test_components(settings, provider_names=("openai", "anthropic"))
+        original_run = components.service._runner._debate_engine.run
+
+        async def _tracking_run(run_config):
+            captured["run_config"] = run_config
+            return await original_run(run_config)
+
+        components.service._runner._debate_engine.run = _tracking_run
+        return components
+
+    monkeypatch.setattr(cli_main, "build_app_components", _fake_build)
+    boundary_question = "x" * MAX_QUESTION_CHARACTERS
+
+    exit_code = await cli_main._run_async(
+        ["run", boundary_question, "--providers", "openai,anthropic"]
+    )
+
+    # FakeDebateEngine sem result=... configurado levanta AssertionError
+    # interna (mesmo padrão de test_cli_run_with_source_reaches_run_config
+    # acima) -- só precisamos confirmar que o run_config foi construído
+    # com a question exata ANTES disso acontecer.
+    assert exit_code == cli_main.EXIT_INTERNAL_ERROR
+    assert captured["run_config"].question == boundary_question

@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.exceptions import RunNotFoundError
 from app.presentation.schemas import ErrorBody, ErrorResponse
-from app.application.errors import UnknownProviderError
+from app.application.errors import InvalidQuestionError, UnknownProviderError
 from app.orchestrator.errors import InsufficientQuorumError
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,27 @@ def register_exception_handlers(app: FastAPI) -> None:
                         "unknown_providers": exc.unknown_providers,
                         "known_providers": exc.known_providers,
                     },
+                )
+            ),
+        )
+
+    @app.exception_handler(InvalidQuestionError)
+    async def _handle_invalid_question(
+        request: Request, exc: InvalidQuestionError
+    ) -> JSONResponse:
+        # Accepted Question Size Boundary V1 -- mesmo code="invalid_request"
+        # que o handler de RequestValidationError acima usa: é a MESMA
+        # classe de problema (forma inválida de `question`), só
+        # detectada numa boundary diferente (chamador direto do service,
+        # nunca alcançado pelos dois clientes reais -- CreateRunRequest
+        # já rejeita isso bem mais cedo pra eles).
+        return _error_json(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="invalid_request",
+                    message=exc.reason,
+                    details=None,
                 )
             ),
         )

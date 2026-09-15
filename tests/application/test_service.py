@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from app.application.errors import UnknownProviderError
+from app.application.errors import InvalidQuestionError, UnknownProviderError
 from app.application.service import CouncilExecutionService
 from app.council.runner import CouncilRunner
+from app.orchestrator.config import MAX_QUESTION_CHARACTERS
 from tests.api.helpers import TEST_PROVIDER_EXECUTION_POLICY
 from tests.council.fakes import FakeSourceAnalyzer, FakeDebateEngine, FakeEditor, FakeJudge
 from tests.council.fixtures import judge_result, model_response, run_config, verdict
@@ -204,6 +205,119 @@ async def test_unknown_provider_raises_before_calling_runner(repo):
 
     summaries = await repo.list_runs()
     assert summaries == []  # nada persistido -- nem started_at foi capturado
+
+
+@pytest.mark.asyncio
+async def test_invalid_question_oversized_rejected_before_calling_runner(repo):
+    """Accepted Question Size Boundary V1 -- `CouncilExecutionService.run()`
+    é a boundary autoritativa de aceite: `question` > MAX_QUESTION_CHARACTERS
+    é rejeitada ANTES de mintar run_id/save_accepted/chamar o runner --
+    mesmo invariante temporal de `test_unknown_provider_raises_before_calling_runner`
+    acima, agora pra `InvalidQuestionError`."""
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(question="x" * (MAX_QUESTION_CHARACTERS + 1))
+
+    with pytest.raises(InvalidQuestionError):
+        await service.run(rc)
+
+    assert debate_engine.calls == []  # levantado ANTES de qualquer chamada ao runner
+
+    summaries = await repo.list_runs()
+    assert summaries == []  # nada persistido -- nem started_at foi capturado
+
+
+@pytest.mark.asyncio
+async def test_invalid_question_whitespace_only_rejected_before_calling_runner(repo):
+    """Accepted Question Size Boundary V1 -- fecha a inconsistência
+    identificada na investigação: `RunConfig` construído diretamente
+    (bypassando `CreateRunRequest`) podia carregar uma `question`
+    whitespace-only; `CouncilExecutionService.run()` agora rejeita isso
+    pra QUALQUER chamador direto do service, não só pros dois clientes
+    reais (API/CLI) que já passam por `CreateRunRequest` antes."""
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(question="   \n\t  ")
+
+    with pytest.raises(InvalidQuestionError):
+        await service.run(rc)
+
+    assert debate_engine.calls == []
+    summaries = await repo.list_runs()
+    assert summaries == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_question_rejection_happens_before_provider_authority_check(repo):
+    """A ordem entre as duas validações de aceite não importa pro
+    contrato externo (as duas rodam antes de qualquer mintagem), mas
+    esta prova que question inválida É detectada mesmo quando a
+    configuração TAMBÉM teria um provider desconhecido -- reforça que
+    nenhuma das duas checagens depende da outra ter passado primeiro."""
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(question="   ", enabled_providers=["provider-fake"])
+
+    with pytest.raises(InvalidQuestionError):
+        await service.run(rc)
+
+    assert debate_engine.calls == []
+    summaries = await repo.list_runs()
+    assert summaries == []
+
+
+@pytest.mark.asyncio
+async def test_valid_boundary_question_still_reaches_runner(repo):
+    """Contraparte positiva -- exatamente MAX_QUESTION_CHARACTERS
+    caracteres (o limite exato, não N-1) continua sendo aceito e
+    executa o caminho fake normal, sem nenhuma rejeição."""
+    result_to_return = full_council_run_result()
+    runner = CouncilRunner(
+        debate_engine=FakeDebateEngine(result=result_to_return.debate_result),
+        judge=FakeJudge(result=result_to_return.judge_result),
+        editor=FakeEditor(result=result_to_return.editor_result),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        known_providers={"openai", "anthropic"},
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(question="x" * MAX_QUESTION_CHARACTERS)
+
+    returned = await service.run(rc)
+
+    assert returned.debate_result is result_to_return.debate_result
+    loaded = await repo.get_run(returned.id)
+    assert loaded.status == "completed"
 
 
 @pytest.mark.asyncio

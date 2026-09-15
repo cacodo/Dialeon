@@ -4,7 +4,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.orchestrator.config import QuorumPolicy, RunConfig
+from app.orchestrator.config import (
+    MAX_QUESTION_CHARACTERS,
+    MAX_SOURCE_TEXT_CHARACTERS,
+    QuorumPolicy,
+    RunConfig,
+    validate_question,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -364,3 +370,91 @@ def test_all_provider_authorities_is_never_in_model_dump():
     assert "all_provider_authorities" not in config.model_dump(mode="json")
     # reconstrução a partir do próprio dump precisa continuar funcionando
     RunConfig(**config.model_dump(mode="json"))
+
+
+# ---------------------------------------------------------------------------
+# Accepted Question Size Boundary V1 -- validate_question / MAX_QUESTION_CHARACTERS
+# ---------------------------------------------------------------------------
+
+
+def test_validate_question_rejects_empty_string():
+    with pytest.raises(ValueError, match="vazia"):
+        validate_question("")
+
+
+@pytest.mark.parametrize("blank", [" ", "   ", "\n", "\t", "\n\t  \n"])
+def test_validate_question_rejects_whitespace_only(blank):
+    with pytest.raises(ValueError, match="vazia"):
+        validate_question(blank)
+
+
+def test_validate_question_accepts_exactly_the_maximum():
+    question = "x" * MAX_QUESTION_CHARACTERS
+    assert validate_question(question) == question
+
+
+def test_validate_question_rejects_one_over_the_maximum():
+    question = "x" * (MAX_QUESTION_CHARACTERS + 1)
+    with pytest.raises(ValueError, match="máximo"):
+        validate_question(question)
+
+
+def test_validate_question_accepts_exactly_the_maximum_in_multibyte_unicode():
+    """Seção 7 do contrato -- o limite é contagem de caracteres Python
+    (`len(str)`, code points), nunca bytes UTF-8. "🎉" é 1 caractere
+    Python mas 4 bytes em UTF-8 -- MAX_QUESTION_CHARACTERS repetições
+    dele têm 4x mais bytes que o limite, mas ainda passam."""
+    question = "🎉" * MAX_QUESTION_CHARACTERS
+    assert len(question) == MAX_QUESTION_CHARACTERS
+    assert len(question.encode("utf-8")) == MAX_QUESTION_CHARACTERS * 4
+    assert validate_question(question) == question
+
+
+def test_validate_question_rejects_one_over_the_maximum_in_multibyte_unicode():
+    question = "🎉" * (MAX_QUESTION_CHARACTERS + 1)
+    with pytest.raises(ValueError, match="máximo"):
+        validate_question(question)
+
+
+def test_validate_question_preserves_surrounding_whitespace_verbatim():
+    """Seção 6 do contrato -- espaço em branco AO REDOR de conteúdo real
+    nunca é removido; só o valor INTEIRO sendo em branco é rejeitado."""
+    question = "  pergunta válida  "
+    assert validate_question(question) == "  pergunta válida  "
+
+
+def test_validate_question_never_strips_leading_or_trailing_newlines():
+    question = "\npergunta\n"
+    assert validate_question(question) == "\npergunta\n"
+
+
+def test_question_and_source_text_limits_are_independent_constants():
+    """Seção 3/H do contrato -- MAX_QUESTION_CHARACTERS e
+    MAX_SOURCE_TEXT_CHARACTERS são nomes/constantes DISTINTOS no módulo
+    (nunca `MAX_QUESTION_CHARACTERS = MAX_SOURCE_TEXT_CHARACTERS`), ainda
+    que numericamente iguais hoje -- mudar um dos dois no código-fonte
+    nunca moveria o outro. Esta asserção de valor documenta o estado
+    atual; a independência real é uma garantia de DESIGN (duas
+    atribuições de módulo separadas em app/orchestrator/config.py, cada
+    uma consumida por exatamente uma função de validação própria), não
+    algo que um teste de runtime sozinho prove por completo."""
+    assert MAX_QUESTION_CHARACTERS == 20_000
+    assert MAX_SOURCE_TEXT_CHARACTERS == 20_000
+
+
+def test_run_config_question_field_has_no_max_length_or_blank_after_trim_validator():
+    """Accepted Question Size Boundary V1, compatibilidade histórica --
+    RunConfig.question NUNCA aplica validate_question como
+    field_validator: uma question > MAX_QUESTION_CHARACTERS ou
+    whitespace-only construída DIRETAMENTE via RunConfig (o caminho que
+    reconstrução de dado histórico usa, `RunConfig(**run_config_json)`)
+    precisa continuar aceita aqui -- só as boundaries de ACEITE DE
+    EXECUÇÃO NOVA (CreateRunRequest, CouncilExecutionService.run())
+    aplicam a regra."""
+    oversized = "x" * (MAX_QUESTION_CHARACTERS + 1)
+    config = _run_config(question=oversized)
+    assert config.question == oversized
+
+    whitespace_only = "   \n\t  "
+    config2 = _run_config(question=whitespace_only)
+    assert config2.question == whitespace_only

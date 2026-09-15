@@ -51,8 +51,18 @@ export function RunComposer({
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
     if (!canSubmit) return
+    // Accepted Question Size Boundary V1 (repair F1) -- `question` é
+    // encaminhada VERBATIM (nunca `.trim()`ada aqui): o backend é a
+    // única autoridade sobre o que conta como pergunta válida
+    // (vazio/só-espaço-em-branco, teto de MAX_QUESTION_CHARACTERS -- ver
+    // app/orchestrator/config.py::validate_question). `.trim()` acima em
+    // `canSubmit` é só detecção de "em branco" pra UX (desabilitar o
+    // botão), nunca uma transformação do valor realmente enviado -- um
+    // valor originalmente inválido (ex.: >20.000 caracteres) nunca pode
+    // se tornar válido por acaso de ser encurtado aqui antes de chegar
+    // na validação canônica.
     const trimmedSource = sourceText.trim()
-    onSubmit(question.trim(), selected, trimmedSource.length > 0 ? trimmedSource : null)
+    onSubmit(question, selected, trimmedSource.length > 0 ? trimmedSource : null)
   }
 
   return (

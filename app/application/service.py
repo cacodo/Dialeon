@@ -54,11 +54,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.application.errors import UnknownProviderError
+from app.application.errors import InvalidQuestionError, UnknownProviderError
 from app.council.result import CouncilRunResult
 from app.council.runner import CouncilRunner
 from app.models.provider_models import ProviderExecutionPolicy
-from app.orchestrator.config import RunConfig
+from app.orchestrator.config import RunConfig, validate_question
 from app.orchestrator.errors import InsufficientQuorumError
 from app.storage.repository import CouncilRepository
 
@@ -151,6 +151,18 @@ class CouncilExecutionService:
         (claim processor, judge, editor, source analyzer) -- nunca só
         `enabled_providers`.
 
+        `InvalidQuestionError` (Accepted Question Size Boundary V1):
+        levantada ANTES de qualquer outra checagem/mintagem/persistência
+        -- nenhum registro é criado. `CreateRunRequest`
+        (app/presentation/schemas.py) já rejeita question inválida bem
+        mais cedo pros dois clientes reais (API/CLI), mas esta é a
+        boundary AUTORITATIVA -- protege qualquer chamador direto do
+        service que tenha construído um `RunConfig` sem passar por
+        aquele schema. A regra em si (vazio/só-espaço-em-branco, teto de
+        `MAX_QUESTION_CHARACTERS`) mora inteiramente em
+        `validate_question` (app/orchestrator/config.py) -- nunca
+        reimplementada aqui.
+
         `InsufficientQuorumError`: persiste o registro de falha de
         quórum sob a MESMA identidade aceita, anexa o id em
         `exc.persisted_failure_id` (campo formal, Etapa 11 — não um
@@ -174,6 +186,11 @@ class CouncilExecutionService:
         o registro de aceite/running já commitado antes do runner rodar
         nunca é apagado por uma falha aqui, porque o DELETE/UPDATE que o
         finalizaria está na MESMA transação atômica que falhou."""
+        try:
+            validate_question(run_config.question)
+        except ValueError as exc:
+            raise InvalidQuestionError(str(exc)) from exc
+
         unknown = sorted(
             p for p in run_config.all_provider_authorities if p not in self._known_providers
         )

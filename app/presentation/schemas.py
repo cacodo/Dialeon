@@ -34,7 +34,7 @@ from app.models.provider_models import (
     ProviderExecutionPolicy,
     TokenUsage,
 )
-from app.orchestrator.config import _normalize_and_validate_source_text
+from app.orchestrator.config import _normalize_and_validate_source_text, validate_question
 from app.reconciliation.models import ChannelRelationship, SourceChannelState
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
@@ -53,7 +53,17 @@ class CreateRunRequest(BaseModel):
     app/orchestrator/config.py) -- nunca um segundo limite numérico que
     pudesse divergir. Isso só existe pra devolver um erro HTTP/CLI limpo
     e cedo; `RunConfig` continua sendo a autoridade real (é diretamente
-    construível, não pode depender deste schema ter rodado antes)."""
+    construível, não pode depender deste schema ter rodado antes).
+
+    `question` (Accepted Question Size Boundary V1): mesma disciplina --
+    `validate_question` (app/orchestrator/config.py) é a ÚNICA regra
+    (vazio/só-espaço-em-branco + teto de `MAX_QUESTION_CHARACTERS`),
+    reusada aqui e em `CouncilExecutionService.run()` (boundary de
+    aceite autoritativa pra chamadores diretos do service), nunca
+    reimplementada. Diferente de `source_text`, `RunConfig.question`
+    NUNCA aplica esta regra como field_validator próprio -- ver
+    docstring do campo em `RunConfig` pra por que (compatibilidade com
+    dado histórico)."""
 
     model_config = _CONFIG
 
@@ -68,10 +78,8 @@ class CreateRunRequest(BaseModel):
 
     @field_validator("question")
     @classmethod
-    def _question_not_blank_after_trim(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("question não pode ser vazia ou só espaços em branco")
-        return value
+    def _question_bounded_and_not_blank(cls, value: str) -> str:
+        return validate_question(value)
 
     @field_validator("enabled_providers")
     @classmethod

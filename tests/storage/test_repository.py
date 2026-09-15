@@ -39,6 +39,46 @@ async def test_save_and_load_completed_run_roundtrip(repo):
 
 
 @pytest.mark.asyncio
+async def test_historical_oversized_question_still_loads_verbatim(repo):
+    """Accepted Question Size Boundary V1, seção 5 do contrato --
+    RunConfig.question NUNCA aplica o novo teto como field_validator
+    (ver app/orchestrator/config.py), justamente pra que uma execução
+    histórica com question > MAX_QUESTION_CHARACTERS (persistida ANTES
+    deste limite existir) continue reconstruível via
+    `RunConfig(**run_config_json)`. Este teste simula essa execução
+    histórica diretamente (save_success/reload reais, sem migração de
+    schema nenhuma) -- a question sobrevive INTEIRA, sem truncamento/
+    reescrita."""
+    from app.orchestrator.config import MAX_QUESTION_CHARACTERS
+
+    oversized_question = "pergunta histórica muito longa " * 1000
+    assert len(oversized_question) > MAX_QUESTION_CHARACTERS
+
+    result = full_council_run_result(run_config=run_config(question=oversized_question))
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.council_run_result.run_config.question == oversized_question
+    assert len(loaded.council_run_result.run_config.question) == len(oversized_question)
+
+
+@pytest.mark.asyncio
+async def test_historical_whitespace_only_question_still_loads_verbatim(repo):
+    """Idem acima, pro outro lado do contrato -- uma question
+    whitespace-only historicamente persistida (nunca rejeitada por
+    RunConfig, só pela boundary de aceite de execuções NOVAS) também
+    precisa continuar reconstruível verbatim."""
+    result = full_council_run_result(run_config=run_config(question="   \n\t  "))
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+
+    assert loaded.council_run_result.run_config.question == "   \n\t  "
+
+
+@pytest.mark.asyncio
 async def test_raw_response_text_preserved_exactly(repo):
     result = full_council_run_result()
     original_texts = {r.response_text for r in result.debate_result.initial_result.responses}

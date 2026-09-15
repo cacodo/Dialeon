@@ -4,6 +4,7 @@ import pytest
 
 from app.council.runner import CouncilRunner
 from app.models.domain import ClaimAssessment
+from app.orchestrator.config import MAX_QUESTION_CHARACTERS
 from app.orchestrator.errors import InsufficientQuorumError
 from app.reconciliation.models import ChannelRelationship, SourceChannelState
 from app.source_analysis.result import SourceAnalysisResult
@@ -52,6 +53,72 @@ async def test_happy_path_calls_in_order_with_correct_arguments():
     assert result.judge_result is jr
     assert result.editor_result is er
     assert result.run_config is rc
+
+
+@pytest.mark.asyncio
+async def test_oversized_question_rejected_before_any_engine_call(monkeypatch):
+    """Accepted Question Size Boundary V1, defesa em profundidade --
+    `CouncilRunner` é diretamente construível/chamável (como aqui, sem
+    passar por `CouncilExecutionService`) -- `question` >
+    MAX_QUESTION_CHARACTERS precisa falhar ANTES de qualquer chamada de
+    provider/engine, mesmo nesse caminho direto.
+
+    Repair F2 (revisão focada) -- `validate_question` precisa rodar
+    ANTES até de `_now()` ser avaliado (started_at nunca deveria ser
+    capturado pra uma execução que nem vai existir): sentinela que
+    levanta se `_now` for chamado, prova que o Runner nem chega a essa
+    linha."""
+    import app.council.runner as runner_module
+
+    def _now_should_never_be_called():
+        raise AssertionError("_now() nunca deveria ser chamado pra question inválida")
+
+    monkeypatch.setattr(runner_module, "_now", _now_should_never_be_called)
+
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    judge = FakeJudge(result=None)
+    editor = FakeEditor(result=None)
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=judge, editor=editor,
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    rc = run_config(question="x" * (MAX_QUESTION_CHARACTERS + 1))
+
+    with pytest.raises(ValueError, match="máximo"):
+        await runner.run(rc)
+
+    assert debate_engine.calls == []
+    assert judge.calls == []
+    assert editor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_blank_question_rejected_before_any_engine_call(monkeypatch):
+    """Repair F2 (revisão focada) -- mesma prova de
+    `test_oversized_question_rejected_before_any_engine_call` acima,
+    pro lado blank do contrato: `_now()` nunca é chamado."""
+    import app.council.runner as runner_module
+
+    def _now_should_never_be_called():
+        raise AssertionError("_now() nunca deveria ser chamado pra question inválida")
+
+    monkeypatch.setattr(runner_module, "_now", _now_should_never_be_called)
+
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    judge = FakeJudge(result=None)
+    editor = FakeEditor(result=None)
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=judge, editor=editor,
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    rc = run_config(question="   \n\t  ")
+
+    with pytest.raises(ValueError, match="vazia"):
+        await runner.run(rc)
+
+    assert debate_engine.calls == []
+    assert judge.calls == []
+    assert editor.calls == []
 
 
 @pytest.mark.asyncio
