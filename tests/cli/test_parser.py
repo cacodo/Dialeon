@@ -31,6 +31,20 @@ def test_run_without_source_flag_defaults_to_none():
     assert args.source is None
 
 
+def test_run_help_has_no_stale_stage_terminology_or_audit_only_claim():
+    """Repair de revisão -- `--source` já participa da composição
+    determinística da resposta final via reconciliação Source↔Judge
+    (ver app/editor/compose.py), então o help nunca pode mais descrever
+    o efeito da fonte como "audit-only", nem carregar um rótulo de
+    etapa histórica ("Etapa N") que fica stale a cada nova mudança."""
+    run_subparser = _build_parser()._subparsers._group_actions[0].choices["run"]
+    run_help = run_subparser.format_help()
+
+    assert "Etapa" not in run_help
+    assert "audit-only" not in run_help
+    assert "Source Analysis" in run_help
+
+
 def test_run_without_question_exits_2():
     with pytest.raises(SystemExit) as exc_info:
         _build_parser().parse_args(["run"])

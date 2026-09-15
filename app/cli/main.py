@@ -77,9 +77,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source",
         default=None,
         metavar="TEXTO",
-        help=f"Fonte textual delimitada, opcional (Etapa 16) -- até "
+        help=f"Fonte textual delimitada, opcional -- até "
         f"{MAX_SOURCE_TEXT_CHARACTERS} caracteres. As claims atuais são "
-        "comparadas contra ela (audit-only nesta etapa).",
+        "comparadas contra ela (Source Analysis) e o resultado é "
+        "reconciliado deterministicamente com a avaliação do Judge na "
+        "resposta final.",
     )
     run_parser.add_argument("--json", action="store_true", dest="as_json")
 
