@@ -29,6 +29,7 @@ abaixo.
 - [Configuração](#configuração)
 - [Testes](#testes)
 - [Possíveis direções futuras](#possíveis-direções-futuras)
+- [Licença](#licença)
 
 ## O que já está implementado
 
@@ -311,3 +312,7 @@ como possíveis próximos passos, sem compromisso de implementação:
 - múltiplos juízes/estratégias de consenso do Judge;
 - suporte a mais providers;
 - interface de inspeção mais rica no frontend.
+
+## Licença
+
+Dialeon é licenciado sob a [Apache License, Version 2.0](LICENSE).

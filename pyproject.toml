@@ -1,11 +1,15 @@
 [build-system]
-requires = ["setuptools>=68"]
+# setuptools>=77 -- mínimo que entende `license = "Apache-2.0"` como
+# expressão SPDX (PEP 639) em vez da forma tabela antiga/deprecada.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-council"
 version = "0.9.0"
 description = "Sistema de debate multi-LLM com juiz, para chegar a respostas com alto grau de consenso auditável."
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
