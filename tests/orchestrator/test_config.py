@@ -185,6 +185,20 @@ def test_run_config_rejects_non_positive_round_dispatch_timeout_seconds():
         _run_config(round_dispatch_timeout_seconds=-5.0)
 
 
+def test_run_config_rejects_the_positive_infinity_public_compatibility_token():
+    """Historical Non-Finite Execution-Limit Public Representation V1,
+    review F1 LOW (M8) -- `"positive_infinity"` é um token de
+    compatibilidade OUTWARD-ONLY (`app/presentation/schemas.py`), nunca
+    um formato de INPUT pra `RunConfig`/execuções novas. Este teste
+    prova o invariante estruturalmente: o token nunca é analisado de
+    volta como um número -- `RunConfig` rejeita a string exatamente
+    como rejeitaria qualquer outra string não-numérica nestes campos."""
+    with pytest.raises(ValidationError):
+        _run_config(max_cost_usd="positive_infinity")
+    with pytest.raises(ValidationError):
+        _run_config(round_dispatch_timeout_seconds="positive_infinity")
+
+
 def test_settings_reads_round_dispatch_timeout_seconds_from_canonical_env_var(monkeypatch):
     monkeypatch.setenv("ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS", "42.0")
     settings = Settings(_env_file=None)

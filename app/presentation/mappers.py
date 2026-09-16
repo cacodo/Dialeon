@@ -11,6 +11,9 @@ dos objetos de domínio/storage (principio 1/7 da Decision Delta).
 
 from __future__ import annotations
 
+import math
+from typing import Literal
+
 from app.presentation.schemas import (
     AccountingSummary,
     ArithmeticAssertionPublic,
@@ -265,6 +268,40 @@ def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
     )
 
 
+def _positive_execution_limit_public(value: float) -> float | Literal["positive_infinity"]:
+    """Historical Non-Finite Execution-Limit Public Representation V1 --
+    ÚNICO ponto de conversão domínio -> público pros dois campos que
+    historicamente podiam ser `+inf` (`RunConfig.max_cost_usd`/
+    `round_dispatch_timeout_seconds`, aceitos antes de "Deployment
+    Execution Configuration Boundary V1"). `run_config_public` (abaixo)
+    é o ÚNICO chamador -- nenhum lifecycle root (completed/quorum
+    failure/running/failed, detail OU audit) reimplementa esta
+    conversão separadamente, porque todos passam pelo mesmo
+    `run_config_public`.
+
+    - finito E positivo -> valor numérico, inalterado;
+    - `+inf` (o ÚNICO não-finito historicamente alcançável por este
+      campo -- `RunConfig` usa `Field(gt=0)`, que já rejeitava `-inf`/
+      NaN antes desta slice existir) -> token de compatibilidade
+      OUTWARD `"positive_infinity"`;
+    - qualquer outro estado (finito <= 0, `-inf`, NaN) -- nenhum deles
+      nunca deveria alcançar este ponto vindo de um `RunConfig` real
+      (`Field(gt=0)` já os exclui na origem), mas a função FALHA
+      FECHADO explicitamente em vez de silenciosamente devolver um
+      número <=0/virar `null`/ser clampada/reinterpretada -- endurecimento
+      de fronteira de apresentação (review F2), não uma mudança de
+      contrato de `RunConfig`/Settings."""
+    if math.isfinite(value) and value > 0:
+        return value
+    if value == math.inf:
+        return "positive_infinity"
+    raise ValueError(
+        "valor de limite de execução fora do domínio suportado pra "
+        f"representação pública histórica: {value!r} (esperado positivo "
+        "finito, ou +inf historicamente alcançável)"
+    )
+
+
 def run_config_public(rc: RunConfig) -> RunConfigPublic:
     return RunConfigPublic(
         question=rc.question,
@@ -274,12 +311,14 @@ def run_config_public(rc: RunConfig) -> RunConfigPublic:
         editor_provider=rc.editor_provider,
         source_analyzer_provider=rc.source_analyzer_provider,
         source_text=rc.source_text,
-        max_cost_usd=rc.max_cost_usd,
+        max_cost_usd=_positive_execution_limit_public(rc.max_cost_usd),
         max_total_tokens=rc.max_total_tokens,
         max_output_tokens_per_call=rc.max_output_tokens_per_call,
         max_output_tokens_grouping=rc.max_output_tokens_grouping,
         max_output_tokens_judge=rc.max_output_tokens_judge,
-        round_dispatch_timeout_seconds=rc.round_dispatch_timeout_seconds,
+        round_dispatch_timeout_seconds=_positive_execution_limit_public(
+            rc.round_dispatch_timeout_seconds
+        ),
         quorum=QuorumPublic(
             min_for_debate=rc.quorum.min_for_debate, min_to_return=rc.quorum.min_to_return
         ),

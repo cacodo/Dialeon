@@ -102,6 +102,26 @@ async def test_historical_run_config_with_infinite_cost_still_loads_unchanged(re
 
 
 @pytest.mark.asyncio
+async def test_historical_run_config_with_infinite_round_timeout_still_loads_unchanged(repo):
+    """Historical Non-Finite Execution-Limit Public Representation V1,
+    T22 -- companion do teste acima pro OUTRO campo historicamente
+    afetado (`round_dispatch_timeout_seconds`). A reconstrução via
+    `RunConfig(**run_config_json)` continua produzindo `+inf` DOMÍNIO
+    puro -- nenhuma reinterpretação/backfill acontece aqui; o token
+    público `"positive_infinity"` só existe depois do mapper de
+    apresentação (ver tests/presentation/test_run_config_public.py)."""
+    result = full_council_run_result(
+        run_config=run_config(round_dispatch_timeout_seconds=float("inf"))
+    )
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+
+    assert isinstance(loaded, CompletedRunRecord)
+    assert math.isinf(loaded.council_run_result.run_config.round_dispatch_timeout_seconds)
+
+
+@pytest.mark.asyncio
 async def test_historical_provider_execution_policy_with_infinite_timeout_still_loads_unchanged(
     repo,
 ):

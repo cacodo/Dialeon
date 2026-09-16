@@ -231,6 +231,18 @@ export interface QuorumPublic {
   min_to_return: number
 }
 
+// Historical Non-Finite Execution-Limit Public Representation V1 --
+// os dois únicos campos historicamente alcançáveis com +inf (antes de
+// "Deployment Execution Configuration Boundary V1", Settings aceitava
+// +inf pra estes dois defaults). O token literal `"positive_infinity"`
+// é OUTWARD-ONLY: representa um valor histórico já persistido, nunca
+// um formato de input aceito por POST /runs ou por qualquer campo de
+// configuração nova. NUNCA converter de volta pra `Infinity` do
+// JavaScript nem tratar como uma opção de "sem limite" pra uma nova
+// execução -- é presentation de um fato histórico, não uma semântica
+// de execução.
+export type PositiveExecutionLimitPublic = number | 'positive_infinity'
+
 export interface RunConfigPublic {
   question: string
   enabled_providers: string[]
@@ -239,7 +251,7 @@ export interface RunConfigPublic {
   editor_provider: string
   source_analyzer_provider: string
   source_text: string | null
-  max_cost_usd: number
+  max_cost_usd: PositiveExecutionLimitPublic
   max_total_tokens: number
   max_output_tokens_per_call: number
   // Tetos PRÓPRIOS de agrupamento/reconciliação e do Judge -- ver
@@ -248,7 +260,7 @@ export interface RunConfigPublic {
   // de claims (cobertura obrigatória, uma entrada/avaliação por claim).
   max_output_tokens_grouping: number
   max_output_tokens_judge: number
-  round_dispatch_timeout_seconds: number
+  round_dispatch_timeout_seconds: PositiveExecutionLimitPublic
   quorum: QuorumPublic
 }
 

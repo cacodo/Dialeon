@@ -334,6 +334,37 @@ async def test_cmd_list_json_has_stable_shape(capsys):
 
 
 @pytest.mark.asyncio
+async def test_cmd_get_json_historical_infinite_cost_and_timeout_render_as_positive_infinity_token(
+    capsys,
+):
+    """Historical Non-Finite Execution-Limit Public Representation V1,
+    T17 -- `dialeon get --json` pra um run histórico com
+    `max_cost_usd`/`round_dispatch_timeout_seconds` = +inf expõe o
+    token exato `"positive_infinity"` -- NUNCA `null`, NUNCA
+    `Infinity` (token JSON não-standard que `json.dumps` normal
+    emitiria pra um float bruto), NUNCA a string `"Infinity"`."""
+    components = await _components()
+    result = full_council_run_result(
+        run_config=run_config(
+            max_cost_usd=float("inf"), round_dispatch_timeout_seconds=float("inf")
+        )
+    )
+    await components.repository.save_success(result)
+
+    exit_code = await commands.cmd_get(components, run_id=result.id, as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    out = capsys.readouterr()
+    raw = out.out
+    assert "Infinity" not in raw  # nem token JSON não-standard, nem string "Infinity"
+    body = json.loads(raw)
+    assert body["config"]["max_cost_usd"] == "positive_infinity"
+    assert body["config"]["round_dispatch_timeout_seconds"] == "positive_infinity"
+    assert body["config"]["max_cost_usd"] is not None
+    assert body["config"]["round_dispatch_timeout_seconds"] is not None
+
+
+@pytest.mark.asyncio
 async def test_cmd_get_completed_run(capsys):
     components = await _components()
     result = full_council_run_result()
@@ -493,6 +524,31 @@ async def test_cmd_audit_completed_run(capsys):
     body = json.loads(out.out)
     assert body["status"] == "completed"
     assert len(body["claims"]) == len(result.debate_result.claims)
+
+
+@pytest.mark.asyncio
+async def test_cmd_audit_json_historical_infinite_cost_and_timeout_render_as_positive_infinity_token(
+    capsys,
+):
+    """T18 -- `dialeon audit --json` pra o MESMO cenário histórico
+    acima -- mesma garantia (token exato, nunca null/Infinity)."""
+    components = await _components()
+    result = full_council_run_result(
+        run_config=run_config(
+            max_cost_usd=float("inf"), round_dispatch_timeout_seconds=float("inf")
+        )
+    )
+    await components.repository.save_success(result)
+
+    exit_code = await commands.cmd_audit(components, run_id=result.id, as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    out = capsys.readouterr()
+    raw = out.out
+    assert "Infinity" not in raw
+    body = json.loads(raw)
+    assert body["config"]["max_cost_usd"] == "positive_infinity"
+    assert body["config"]["round_dispatch_timeout_seconds"] == "positive_infinity"
 
 
 @pytest.mark.asyncio

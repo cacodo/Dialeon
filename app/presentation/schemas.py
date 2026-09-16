@@ -440,6 +440,35 @@ class QuorumPublic(BaseModel):
     min_to_return: int
 
 
+# Historical Non-Finite Execution-Limit Public Representation V1.
+#
+# Antes de "Deployment Execution Configuration Boundary V1", `Settings`
+# aceitava `+inf` pra `default_max_cost_usd`/
+# `orchestrator_round_dispatch_timeout_seconds` -- então `RunConfig`
+# (`Field(gt=0)`, sem `allow_inf_nan=False`) podia legitimamente
+# persistir `max_cost_usd=+inf`/`round_dispatch_timeout_seconds=+inf`
+# através dos dois roots de execução suportados (POST /runs, `dialeon
+# run`). `-inf`/NaN NUNCA foram historicamente alcançáveis por esse
+# caminho (`gt=0` já rejeitava os dois -- `-inf > 0` e `nan > 0` são
+# ambos False) -- só `+inf` é um estado histórico genuíno.
+#
+# `null` JÁ tinha um significado diferente (nenhum destes dois campos é
+# opcional em RunConfig -- nunca foram nullable), então nunca pode ser
+# reaproveitado pra significar "+inf histórico" -- isso apagaria a
+# distinção entre "não registrado" e "positivo infinito, de fato".
+#
+# `"positive_infinity"` é o ÚNICO token de compatibilidade OUTWARD
+# (nunca um formato de INPUT novo -- RunConfig/Settings/criação de Run
+# via API/CLI continuam finito-apenas, sem parsear este token de
+# volta). O tipo público abaixo FALHA FECHADO pra qualquer outro estado
+# não-finito (`-inf`, NaN) -- mesmo se alguém tentar construir
+# `RunConfigPublic` diretamente com esses valores, nunca só através do
+# mapper.
+PositiveExecutionLimitPublic = Annotated[float, Field(allow_inf_nan=False)] | Literal[
+    "positive_infinity"
+]
+
+
 class RunConfigPublic(BaseModel):
     """Subconjunto público de RunConfig -- nomes de provider e budgets,
     nunca segredo (Decision Delta secao 12). Etapa 11 patch final:
@@ -459,7 +488,11 @@ class RunConfigPublic(BaseModel):
     # não credencial); None quando nenhuma fonte foi fornecida.
     source_analyzer_provider: str
     source_text: str | None
-    max_cost_usd: float
+    # Historical Non-Finite Execution-Limit Public Representation V1 --
+    # ver comentário acima de `PositiveExecutionLimitPublic`. Só estes
+    # dois campos (os únicos historicamente alcançáveis com +inf) usam
+    # este tipo -- nenhum outro campo numérico público é enfraquecido.
+    max_cost_usd: PositiveExecutionLimitPublic
     max_total_tokens: int
     max_output_tokens_per_call: int
     # Etapa 17A.2 -- tetos PRÓPRIOS de agrupamento/Judge (ver
@@ -473,7 +506,7 @@ class RunConfigPublic(BaseModel):
     # execução) -- limita o dispatch paralelo de UMA rodada, reinicia a
     # cada rodada, nunca a execução inteira do Council. Ver
     # RunConfig.round_dispatch_timeout_seconds.
-    round_dispatch_timeout_seconds: float
+    round_dispatch_timeout_seconds: PositiveExecutionLimitPublic
     quorum: QuorumPublic
 
 
