@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from app.api.exceptions import RunNotFoundError
 from app.presentation.schemas import ErrorBody, ErrorResponse
 from app.application.errors import (
+    InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     UnknownProviderError,
@@ -114,6 +115,29 @@ def register_exception_handlers(app: FastAPI) -> None:
                         "min_to_return": exc.min_to_return,
                         "participant_count": exc.participant_count,
                     },
+                )
+            ),
+        )
+
+    @app.exception_handler(InvalidExecutionLimitsError)
+    async def _handle_invalid_execution_limits(
+        request: Request, exc: InvalidExecutionLimitsError
+    ) -> JSONResponse:
+        # Finite RunConfig New-Execution Boundary V1 -- mesmo
+        # code="invalid_request" que InvalidQuestionError/
+        # InvalidQuorumConfigurationError usam acima: é a MESMA classe
+        # de problema (configuração de aceite inválida), nunca
+        # alcançado pelos dois clientes reais em uso normal
+        # (`Settings.default_max_cost_usd`/
+        # `orchestrator_round_dispatch_timeout_seconds` já são sempre
+        # finitos) -- só protege um chamador direto do service.
+        return _error_json(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="invalid_request",
+                    message=exc.reason,
+                    details=None,
                 )
             ),
         )

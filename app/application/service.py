@@ -64,6 +64,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.application.errors import (
+    InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     UnknownProviderError,
@@ -75,7 +76,12 @@ from app.models.provider_models import (
     ProviderExecutionPolicy,
     validate_provider_execution_policy_for_new_execution,
 )
-from app.orchestrator.config import RunConfig, validate_question, validate_quorum_feasibility
+from app.orchestrator.config import (
+    RunConfig,
+    validate_execution_limits_for_new_execution,
+    validate_question,
+    validate_quorum_feasibility,
+)
 from app.orchestrator.errors import InsufficientQuorumError
 from app.providers.base import LLMProvider
 from app.storage.repository import CouncilRepository
@@ -246,6 +252,21 @@ class CouncilExecutionService:
         `validate_quorum_feasibility` (app/orchestrator/config.py) --
         nunca reimplementada aqui.
 
+        `InvalidExecutionLimitsError` (Finite RunConfig New-Execution
+        Boundary V1): levantada ANTES de mintar run_id/`save_accepted`/
+        chamar o runner -- mesma disciplina das três checagens acima.
+        Cobre `RunConfig.max_cost_usd`/`round_dispatch_timeout_seconds`
+        -- um `RunConfig` historicamente permissivo (ambos os campos
+        continuam construíveis com `+inf`, ver
+        `validate_execution_limits_for_new_execution`,
+        app/orchestrator/config.py) nunca pode alcançar EXECUÇÃO nova
+        através desta boundary, mesmo que um chamador direto do
+        service o tenha construído sem passar por `CreateRunRequest`/
+        `Settings.default_max_cost_usd` (que já produzem só valores
+        finitos). A regra em si mora inteiramente em
+        `validate_execution_limits_for_new_execution` -- nunca
+        reimplementada aqui.
+
         `InsufficientQuorumError`: persiste o registro de falha de
         quórum sob a MESMA identidade aceita, anexa o id em
         `exc.persisted_failure_id` (campo formal, Etapa 11 — não um
@@ -289,6 +310,11 @@ class CouncilExecutionService:
                 min_to_return=run_config.quorum.min_to_return,
                 participant_count=len(run_config.enabled_providers),
             ) from None
+
+        try:
+            validate_execution_limits_for_new_execution(run_config)
+        except ValueError as exc:
+            raise InvalidExecutionLimitsError(str(exc)) from exc
 
         # Provider Default-Model Snapshot Provenance V1 -- construído
         # ANTES de mintar run_id/aceite durável (mesma ordem de

@@ -12,6 +12,8 @@ nada vindo de uma resposta de LLM chega perto de nenhum dos dois: RunConfig
 
 from __future__ import annotations
 
+import math
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import Settings
@@ -382,4 +384,60 @@ def validate_quorum_feasibility(run_config: RunConfig) -> None:
             f"providers selecionados ({participant_count}) -- esta execução nunca "
             "poderia satisfazer seu próprio quórum de retorno, mesmo que todo "
             "participante selecionado tenha sucesso."
+        )
+
+
+# Etapa 17A.2 -- os dois nomes de campo que esta boundary verifica,
+# reusado tanto pela função de validação abaixo quanto por qualquer
+# teste que precise iterar sobre eles sem hardcodar a lista duas vezes.
+_FINITE_EXECUTION_LIMIT_FIELDS = ("max_cost_usd", "round_dispatch_timeout_seconds")
+
+
+def validate_execution_limits_for_new_execution(run_config: RunConfig) -> None:
+    """Finite RunConfig New-Execution Boundary V1 -- ÚNICA função de
+    validação de FINITUDE de `RunConfig.max_cost_usd`/
+    `RunConfig.round_dispatch_timeout_seconds` pra ACEITE DE EXECUÇÕES
+    NOVAS (mesma disciplina de `validate_question`/
+    `validate_quorum_feasibility` acima, e de
+    `validate_provider_execution_policy_for_new_execution`,
+    app/models/provider_models.py):
+
+        math.isfinite(value) and value > 0
+
+    para cada um dos dois campos.
+
+    `RunConfig` (`Field(gt=0)`, sem `allow_inf_nan=False`) continua
+    CONSTRUÍVEL diretamente com `max_cost_usd=+inf`/
+    `round_dispatch_timeout_seconds=+inf` -- deliberadamente: um
+    `RunConfig` aceito ANTES de "Deployment Execution Configuration
+    Boundary V1" existir pode ter sido persistido com um desses campos
+    em `+inf` (`gt=0` sozinho nunca excluiu `+inf`, só `<=0`/`-inf`/
+    NaN), e a reconstrução histórica
+    (`RunConfig(**run_config_json)`, `app/storage/repository.py`)
+    precisa continuar aceitando/preservando esse valor VERBATIM pra
+    auditoria -- nunca clampado/reescrito/inferido/migrado. A
+    representação pública histórica (`"positive_infinity"`, ver
+    `app/presentation/mappers.py:_positive_execution_limit_public`)
+    também permanece inalterada -- esta função nunca participa dessa
+    conversão de apresentação, só da decisão de ACEITAR execução nova.
+
+    CONSTRUÍVEL != AUTORIZADO PRA EXECUÇÃO NOVA: esta função é a
+    boundary separada que aplica a segunda metade dessa distinção,
+    chamada por TODA raiz de execução independente identificada por
+    auditoria (`CouncilExecutionService.run()`, `CouncilRunner.run()`,
+    `Orchestrator.run()`) -- nunca pela reconstrução histórica
+    (`RunConfig(**dados_persistidos)`, carregamento de detail/audit).
+
+    ÚNICO ponto de comparação numérica desta regra no repositório --
+    qualquer chamador delega aqui, nunca reimplementa a checagem."""
+    invalid = [
+        (field_name, value)
+        for field_name in _FINITE_EXECUTION_LIMIT_FIELDS
+        if not (math.isfinite(value := getattr(run_config, field_name)) and value > 0)
+    ]
+    if invalid:
+        details = ", ".join(f"{field_name}={value!r}" for field_name, value in invalid)
+        raise ValueError(
+            "RunConfig contém limite(s) de execução inválido(s) pra execução nova "
+            f"(precisa ser positivo e finito): {details}"
         )

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from app.application.errors import (
+    InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     UnknownProviderError,
@@ -444,6 +447,138 @@ async def test_valid_boundary_quorum_still_reaches_runner(repo):
         enabled_providers=["openai", "anthropic"],
         quorum=QuorumPolicy(min_for_debate=2, min_to_return=2),
     )
+
+    returned = await service.run(rc)
+
+    assert returned.debate_result is result_to_return.debate_result
+    loaded = await repo.get_run(returned.id)
+    assert loaded.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Finite RunConfig New-Execution Boundary V1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_infinite_max_cost_usd_rejected_before_calling_runner(repo):
+    """Finite RunConfig New-Execution Boundary V1 --
+    `CouncilExecutionService.run()` é a boundary autoritativa de aceite:
+    `max_cost_usd=+inf` é rejeitado ANTES de mintar run_id/save_accepted/
+    chamar o runner -- mesmo invariante temporal de
+    `test_infeasible_quorum_rejected_before_calling_runner` acima, agora
+    pra `InvalidExecutionLimitsError`."""
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        providers=_providers("openai", "anthropic"),
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(max_cost_usd=math.inf)
+
+    with pytest.raises(InvalidExecutionLimitsError):
+        await service.run(rc)
+
+    assert debate_engine.calls == []  # levantado ANTES de qualquer chamada ao runner
+
+    summaries = await repo.list_runs()
+    assert summaries == []  # nada persistido -- nem started_at foi capturado
+
+
+@pytest.mark.asyncio
+async def test_infinite_round_dispatch_timeout_seconds_rejected_before_calling_runner(repo):
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        providers=_providers("openai", "anthropic"),
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(round_dispatch_timeout_seconds=math.inf)
+
+    with pytest.raises(InvalidExecutionLimitsError):
+        await service.run(rc)
+
+    assert debate_engine.calls == []
+    summaries = await repo.list_runs()
+    assert summaries == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_execution_limits_rejection_ordering_zero_side_effects(repo, monkeypatch):
+    """Seção 16 do contrato desta slice -- mesma prova FORTE de ordering
+    de `test_infeasible_quorum_rejection_ordering_zero_side_effects`
+    acima, agora pra `InvalidExecutionLimitsError`: instrumenta mintagem
+    de id, geração de timestamp e `repo.save_accepted` com sentinelas
+    que levantam `AssertionError` se alcançados. Se a rejeição de
+    limites de execução não-finitos acontecesse DEPOIS de qualquer um
+    desses efeitos colaterais, este teste falharia imediatamente com uma
+    mensagem específica identificando QUAL efeito colateral vazou."""
+    import app.application.service as service_module
+
+    def _new_id_should_never_be_called():
+        raise AssertionError("_new_id() nunca deveria ser chamado pra limites de execução infinitos")
+
+    def _now_should_never_be_called():
+        raise AssertionError("_now() nunca deveria ser chamado pra limites de execução infinitos")
+
+    async def _save_accepted_should_never_be_called(*args, **kwargs):
+        raise AssertionError(
+            "save_accepted() nunca deveria ser chamado pra limites de execução infinitos"
+        )
+
+    monkeypatch.setattr(service_module, "_new_id", _new_id_should_never_be_called)
+    monkeypatch.setattr(service_module, "_now", _now_should_never_be_called)
+    monkeypatch.setattr(repo, "save_accepted", _save_accepted_should_never_be_called)
+
+    debate_engine = FakeDebateEngine(exc=AssertionError("runner nunca deveria ser chamado"))
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=FakeJudge(result=None), editor=FakeEditor(result=None),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        providers=_providers("openai", "anthropic"),
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(max_cost_usd=math.inf, round_dispatch_timeout_seconds=math.inf)
+
+    with pytest.raises(InvalidExecutionLimitsError):
+        await service.run(rc)
+
+    assert debate_engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_valid_finite_execution_limits_still_reach_runner(repo):
+    """Contraparte positiva -- `Settings`/`CreateRunRequest`/CLI normais
+    já só produzem `max_cost_usd`/`round_dispatch_timeout_seconds`
+    finitos e positivos; este teste prova que a nova boundary não
+    interfere nesse caminho normal."""
+    result_to_return = full_council_run_result()
+    runner = CouncilRunner(
+        debate_engine=FakeDebateEngine(result=result_to_return.debate_result),
+        judge=FakeJudge(result=result_to_return.judge_result),
+        editor=FakeEditor(result=result_to_return.editor_result),
+        source_analyzer=FakeSourceAnalyzer(result=None),
+    )
+    service = CouncilExecutionService(
+        runner=runner,
+        repository=repo,
+        providers=_providers("openai", "anthropic"),
+        provider_execution_policy=TEST_PROVIDER_EXECUTION_POLICY,
+    )
+    rc = run_config(max_cost_usd=2.5, round_dispatch_timeout_seconds=90.0)
 
     returned = await service.run(rc)
 

@@ -161,6 +161,43 @@ async def test_infeasible_quorum_config_rejected_before_any_engine_call(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_infinite_execution_limits_rejected_before_any_engine_call(monkeypatch):
+    """Finite RunConfig New-Execution Boundary V1, defesa em
+    profundidade -- `CouncilRunner` é diretamente construível/chamável
+    (como aqui, sem passar por `CouncilExecutionService`) --
+    `max_cost_usd`/`round_dispatch_timeout_seconds` não-finito precisa
+    falhar ANTES de qualquer chamada de provider/engine, mesmo nesse
+    caminho direto. Mesma prova de timing de
+    `test_infeasible_quorum_config_rejected_before_any_engine_call`:
+    sentinela em `_now()` prova que o Runner nem chega a capturar
+    `started_at` pra uma execução que nunca vai existir."""
+    import app.council.runner as runner_module
+
+    def _now_should_never_be_called():
+        raise AssertionError("_now() nunca deveria ser chamado pra limites de execução infinitos")
+
+    monkeypatch.setattr(runner_module, "_now", _now_should_never_be_called)
+
+    debate_engine = FakeDebateEngine(exc=AssertionError("nunca deveria ser chamado"))
+    judge = FakeJudge(result=None)
+    editor = FakeEditor(result=None)
+    source_analyzer = FakeSourceAnalyzer(result=None)
+    runner = CouncilRunner(
+        debate_engine=debate_engine, judge=judge, editor=editor,
+        source_analyzer=source_analyzer,
+    )
+    rc = run_config(max_cost_usd=float("inf"), round_dispatch_timeout_seconds=float("inf"))
+
+    with pytest.raises(ValueError, match="max_cost_usd"):
+        await runner.run(rc)
+
+    assert debate_engine.calls == []
+    assert source_analyzer.calls == []
+    assert judge.calls == []
+    assert editor.calls == []
+
+
+@pytest.mark.asyncio
 async def test_source_analysis_result_is_passed_to_editor_compose():
     """Patch de apresentação com fonte -- CouncilRunner precisa repassar
     o `SourceAnalysisResult` real pro Editor (pro renderizador

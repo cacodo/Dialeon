@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +11,7 @@ from app.orchestrator.config import (
     MAX_SOURCE_TEXT_CHARACTERS,
     QuorumPolicy,
     RunConfig,
+    validate_execution_limits_for_new_execution,
     validate_question,
     validate_quorum_feasibility,
 )
@@ -569,3 +572,92 @@ def test_validate_quorum_feasibility_uses_enabled_providers_not_all_provider_aut
     assert len(config.all_provider_authorities) == 5
     with pytest.raises(ValueError, match="min_to_return"):
         validate_quorum_feasibility(config)
+
+
+# ---------------------------------------------------------------------------
+# Finite RunConfig New-Execution Boundary V1 --
+# validate_execution_limits_for_new_execution
+# ---------------------------------------------------------------------------
+
+
+def test_validate_execution_limits_accepts_representative_positive_finite_values():
+    config = _run_config(max_cost_usd=1.0, round_dispatch_timeout_seconds=120.0)
+    validate_execution_limits_for_new_execution(config)  # não levanta
+
+    config2 = _run_config(max_cost_usd=0.0001, round_dispatch_timeout_seconds=0.5)
+    validate_execution_limits_for_new_execution(config2)  # não levanta
+
+    config3 = _run_config(max_cost_usd=1_000_000.0, round_dispatch_timeout_seconds=3600.0)
+    validate_execution_limits_for_new_execution(config3)  # não levanta
+
+
+def test_validate_execution_limits_rejects_positive_infinity_max_cost_usd():
+    config = _run_config(max_cost_usd=math.inf)
+    with pytest.raises(ValueError, match="max_cost_usd"):
+        validate_execution_limits_for_new_execution(config)
+
+
+def test_validate_execution_limits_rejects_positive_infinity_round_dispatch_timeout_seconds():
+    config = _run_config(round_dispatch_timeout_seconds=math.inf)
+    with pytest.raises(ValueError, match="round_dispatch_timeout_seconds"):
+        validate_execution_limits_for_new_execution(config)
+
+
+def test_validate_execution_limits_rejects_both_fields_infinite_simultaneously():
+    """A função reporta AMBOS os campos inválidos numa única chamada --
+    nunca para na primeira falha silenciando a segunda."""
+    config = _run_config(max_cost_usd=math.inf, round_dispatch_timeout_seconds=math.inf)
+    with pytest.raises(ValueError) as exc_info:
+        validate_execution_limits_for_new_execution(config)
+    assert "max_cost_usd" in str(exc_info.value)
+    assert "round_dispatch_timeout_seconds" in str(exc_info.value)
+
+
+def test_run_config_with_positive_infinity_still_constructible_but_rejected_for_new_execution():
+    """CONSTRUÍVEL != AUTORIZADO PRA EXECUÇÃO NOVA -- mesma disciplina de
+    `test_historical_infeasible_quorum_run_config_still_constructible`
+    acima: um RunConfig com +inf continua diretamente reconstruível
+    (histórico), mas a boundary de execução NOVA rejeita."""
+    config = _run_config(max_cost_usd=math.inf, round_dispatch_timeout_seconds=math.inf)
+    assert config.max_cost_usd == math.inf
+    assert config.round_dispatch_timeout_seconds == math.inf
+    with pytest.raises(ValueError):
+        validate_execution_limits_for_new_execution(config)
+
+
+@pytest.mark.parametrize("bad_value", [0.0, -1.0, -math.inf, math.nan])
+def test_validate_execution_limits_rejects_every_reachable_non_finite_or_non_positive_max_cost_usd(
+    bad_value,
+):
+    """`RunConfig.max_cost_usd` usa `Field(gt=0)`, que já rejeita
+    0/negativo/-inf/NaN na PRÓPRIA construção -- estes valores nunca
+    alcançam `validate_execution_limits_for_new_execution` vindos de um
+    `RunConfig` real. Prova, ainda assim, que a função em si falha
+    fechado pra QUALQUER valor não-finito/não-positivo que pudesse
+    alcançá-la (ex.: um mock/objeto substituto em teste que não passe
+    pela validação de campo do Pydantic) -- nunca assume silenciosamente
+    que só +inf pode chegar aqui."""
+    with pytest.raises(ValidationError):
+        _run_config(max_cost_usd=bad_value)
+
+    class _FakeRunConfig:
+        max_cost_usd = bad_value
+        round_dispatch_timeout_seconds = 1.0
+
+    with pytest.raises(ValueError, match="max_cost_usd"):
+        validate_execution_limits_for_new_execution(_FakeRunConfig())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad_value", [0.0, -1.0, -math.inf, math.nan])
+def test_validate_execution_limits_rejects_every_reachable_non_finite_or_non_positive_round_dispatch_timeout(
+    bad_value,
+):
+    with pytest.raises(ValidationError):
+        _run_config(round_dispatch_timeout_seconds=bad_value)
+
+    class _FakeRunConfig:
+        max_cost_usd = 1.0
+        round_dispatch_timeout_seconds = bad_value
+
+    with pytest.raises(ValueError, match="round_dispatch_timeout_seconds"):
+        validate_execution_limits_for_new_execution(_FakeRunConfig())  # type: ignore[arg-type]

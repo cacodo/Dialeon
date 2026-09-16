@@ -81,3 +81,24 @@ class InvalidQuorumConfigurationError(Exception):
             f"quorum.min_to_return ({min_to_return}) excede o número de "
             f"providers selecionados ({participant_count})"
         )
+
+
+class InvalidExecutionLimitsError(Exception):
+    """Finite RunConfig New-Execution Boundary V1 -- `RunConfig.max_cost_usd`
+    e/ou `RunConfig.round_dispatch_timeout_seconds` não são positivos e
+    finitos. Levantada por `CouncilExecutionService.run()` ANTES de
+    qualquer mintagem de run_id/`save_accepted`/chamada ao
+    `CouncilRunner` -- mesma disciplina de `InvalidQuestionError`/
+    `InvalidQuorumConfigurationError` acima.
+
+    A regra em si mora só em `validate_execution_limits_for_new_execution`
+    (app/orchestrator/config.py) -- esta exceção nunca reimplementa a
+    checagem, só a traduz pro vocabulário de erro desta camada. Um
+    `RunConfig` com um destes campos em `+inf` continua CONSTRUÍVEL
+    (reconstrução histórica, `RunConfig(**dados_persistidos)`) -- só
+    ACEITAR essa configuração como execução NOVA é que é rejeitado
+    aqui."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)

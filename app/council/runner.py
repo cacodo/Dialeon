@@ -35,7 +35,12 @@ from app.debate.claims import get_current_claims
 from app.debate.debate_engine import DebateEngine
 from app.editor.compose import Editor
 from app.judge.strategy import JudgeStrategy
-from app.orchestrator.config import RunConfig, validate_question, validate_quorum_feasibility
+from app.orchestrator.config import (
+    RunConfig,
+    validate_execution_limits_for_new_execution,
+    validate_question,
+    validate_quorum_feasibility,
+)
 from app.reconciliation.reconcile import (
     reconcile_source_and_judge,
     validate_reconciliation_coherence,
@@ -136,9 +141,21 @@ class CouncilRunner:
         código interno) sem passar por ela. `ValueError` propaga sem
         interceptação, mesmo princípio de `validate_question` acima --
         `CouncilRunner` nunca reimplementa a comparação, só chama a
-        MESMA função canônica."""
+        MESMA função canônica.
+
+        Finite RunConfig New-Execution Boundary V1:
+        `validate_execution_limits_for_new_execution` roda logo em
+        seguida, AINDA antes de `_now()` -- mesma defesa em
+        profundidade das duas checagens acima: protege chamadores
+        diretos de `CouncilRunner` (testes, código interno) que
+        construíram um `RunConfig` com `max_cost_usd`/
+        `round_dispatch_timeout_seconds` não-finito sem passar por
+        `CouncilExecutionService.run()`. `ValueError` propaga sem
+        interceptação -- `CouncilRunner` nunca reimplementa a checagem,
+        só chama a MESMA função canônica."""
         validate_question(run_config.question)
         validate_quorum_feasibility(run_config)
+        validate_execution_limits_for_new_execution(run_config)
 
         started_at = started_at if started_at is not None else _now()
 

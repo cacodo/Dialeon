@@ -28,6 +28,7 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from app.application.errors import (
+    InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     UnknownProviderError,
@@ -139,6 +140,19 @@ async def cmd_run(
                     "participant_count": exc.participant_count,
                 },
             )
+        else:
+            output.print_error(message)
+        return EXIT_INVALID_INPUT
+    except InvalidExecutionLimitsError as exc:
+        # Finite RunConfig New-Execution Boundary V1 -- mesmo
+        # code="invalid_request"/EXIT_INVALID_INPUT que InvalidQuestionError/
+        # InvalidQuorumConfigurationError acima: MESMA classe de
+        # problema (configuração de aceite inválida), nunca alcançada
+        # por este comando na prática (`RunConfig.from_settings` só
+        # produz valores finitos a partir de `Settings`).
+        message = exc.reason
+        if as_json:
+            output.emit_json_error("invalid_request", message)
         else:
             output.print_error(message)
         return EXIT_INVALID_INPUT
