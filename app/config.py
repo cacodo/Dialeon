@@ -15,9 +15,23 @@ com um `ValidationError` cru, ANTES do error boundary da CLI existir
 operacionalmente). Cada composition root (`app/bootstrap.py`,
 `app/cli/main.py`) instancia `Settings()` explicitamente, dentro do seu
 próprio tratamento de erro -- nunca um singleton global reaproveitado.
-"""
 
-from pydantic import AliasChoices, Field
+Deployment Execution Configuration Boundary V1 (F1, repair pós-revisão
+independente -- MEDIUM) -- `frozen=True`: uma vez construída com
+sucesso, uma instância de `Settings` é um SNAPSHOT imutável de
+deployment -- nenhuma atribuição posterior de campo é permitida, nem
+mesmo pra outro valor igualmente válido. Sem isso, um deployment
+programático podia construir um `Settings` válido e depois mutá-lo
+(`settings.default_max_cost_usd = float("inf")`) ANTES de
+`build_app_components(settings)` -- as validações de campo desta slice
+(seção 6/7/8 do contrato) só rodam na CONSTRUÇÃO, então qualquer
+atribuição posterior contornava inteiramente o boundary de deployment
+que esta slice existe pra fechar. Auditoria confirmou ZERO mutação de
+`Settings` pós-construção em todo o repositório (produção ou testes) --
+nenhum código legítimo depende de reatribuir um campo depois de
+`Settings()` retornar, então congelar não quebra nenhum uso real."""
+
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +40,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        frozen=True,
     )
 
     # --- API keys dos providers (Fase 1 do MVP: OpenAI, Anthropic, Gemini) ---
@@ -36,6 +51,14 @@ class Settings(BaseSettings):
     # --- Modelo padrão por provider, usado quando a requisição não especifica ---
     # Definidos aqui (não hardcoded nos providers) para facilitar atualização
     # quando os fornecedores lançarem novas versões.
+    #
+    # Deployment Execution Configuration Boundary V1 -- os três validados
+    # por `_default_model_identifier_is_well_formed` abaixo (não-vazio,
+    # não só espaço em branco, sem espaço líder/final): um identificador
+    # com esses defeitos nunca corresponde a um modelo real de nenhum
+    # provider, e sobrevivia até hoje a todo o processo de bootstrap
+    # (engine/DB/registry/service construídos, Run aceito e mintado)
+    # antes de falhar só na primeira chamada real, de forma obscura.
     openai_default_model: str = "gpt-5.5"
     anthropic_default_model: str = "claude-sonnet-5"
     gemini_default_model: str = "gemini-3.7-flash"
@@ -52,8 +75,20 @@ class Settings(BaseSettings):
     #   a UM provider, repassado para CompletionRequest.max_tokens antes
     #   da chamada — é o que de fato limita quanto texto cada resposta
     #   pode ter.
-    default_max_cost_usd: float = 1.00
-    default_max_total_tokens: int = 50_000
+    # Deployment Execution Configuration Boundary V1 -- `gt=0` sozinho
+    # aceitaria `+inf` (`float('inf') > 0` é True) -- `allow_inf_nan=False`
+    # fecha essa lacuna explicitamente pros dois floats de execução
+    # abaixo (`default_max_cost_usd` aqui, `orchestrator_round_dispatch_timeout_seconds`
+    # mais abaixo): um teto de custo/timeout "infinito" nunca é um
+    # limite de verdade, e sobrevivia hoje ao bootstrap inteiro (Run
+    # aceito/persistido, trabalho real incorrido) só pra falhar depois,
+    # ao serializar a resposta pública em JSON estrito
+    # (`ValueError: Out of range float values are not JSON compliant`).
+    default_max_cost_usd: float = Field(default=1.00, gt=0, allow_inf_nan=False)
+    # `gt=0` sozinho -- zero/negativo aqui sobrevivia ao bootstrap
+    # inteiro e só falhava na primeira `RunConfig.from_settings()` (por
+    # request), não na composição do deployment.
+    default_max_total_tokens: int = Field(default=50_000, gt=0)
     # Etapa 17A.1 -- 1024 provou-se insuficiente em Runs reais de
     # produção: respostas de participante (Gemini) truncadas visivelmente
     # incompletas a ~1020 tokens, e o próprio Judge batendo o teto
@@ -64,7 +99,7 @@ class Settings(BaseSettings):
     # igual a toda chamada (participante, extração, agrupamento,
     # crítica, Judge, Editor, SourceAnalyzer), configurável via
     # RunConfig por execução como já era.
-    default_max_output_tokens_per_call: int = 4096
+    default_max_output_tokens_per_call: int = Field(default=4096, gt=0)
 
     # Etapa 17A.2 -- investigação confirmou amplificação estrutural de
     # escala: agrupamento e Judge têm schema de output com cobertura
@@ -77,8 +112,8 @@ class Settings(BaseSettings):
     # contagem de claims, nenhuma alocação adaptativa) -- só reconhece
     # que agrupamento/Judge não deveriam compartilhar o mesmo teto de
     # extração/crítica/participante.
-    default_max_output_tokens_grouping: int = 8192
-    default_max_output_tokens_judge: int = 8192
+    default_max_output_tokens_grouping: int = Field(default=8192, gt=0)
+    default_max_output_tokens_judge: int = Field(default=8192, gt=0)
 
     # --- Claim processor (Etapa 5) ---
     # Mesmo provider realiza extração de claims E agrupamento semântico.
@@ -114,6 +149,18 @@ class Settings(BaseSettings):
     # min_to_return: nº mínimo pra ainda retornar algo (sem debate),
     #   marcado com insufficient_data_for_consensus=True. Abaixo disso,
     #   a execução aborta com erro.
+    #
+    # Deployment Execution Configuration Boundary V1 -- a FORMA destes
+    # dois valores (positividade + `min_to_return <= min_for_debate`) é
+    # validada em `app/bootstrap.py`, construindo o `QuorumPolicy` REAL
+    # (`QuorumPolicy.from_settings`) durante a composição do deployment
+    # -- NUNCA reimplementada aqui como uma segunda comparação
+    # independente que pudesse divergir da regra canônica de
+    # `QuorumPolicy` (app/orchestrator/config.py). `app/config.py` não
+    # pode importar `QuorumPolicy` diretamente (importaria
+    # `app.orchestrator.config`, que já importa `Settings` daqui --
+    # ciclo) -- por isso a validação de forma mora no composition root,
+    # não num field_validator local.
     quorum_min_for_debate: int = 2
     quorum_min_to_return: int = 1
 
@@ -140,8 +187,14 @@ class Settings(BaseSettings):
     # .env já em uso não pode silenciosamente parar de funcionar) --
     # ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS é a canônica; se as
     # duas estiverem definidas, a canônica vence (ordem em AliasChoices).
+    # Deployment Execution Configuration Boundary V1 -- `allow_inf_nan=False`
+    # ver comentário de `default_max_cost_usd` acima pro mesmo motivo:
+    # `+inf` sobreviveria a `gt=0` sozinho e só quebraria depois, na
+    # serialização JSON estrita da resposta pública.
     orchestrator_round_dispatch_timeout_seconds: float = Field(
         default=120.0,
+        gt=0,
+        allow_inf_nan=False,
         validation_alias=AliasChoices(
             "ORCHESTRATOR_ROUND_DISPATCH_TIMEOUT_SECONDS",
             "ORCHESTRATOR_OVERALL_TIMEOUT_SECONDS",
@@ -150,3 +203,24 @@ class Settings(BaseSettings):
 
     # --- App ---
     log_level: str = "INFO"
+
+    @field_validator(
+        "openai_default_model", "anthropic_default_model", "gemini_default_model"
+    )
+    @classmethod
+    def _default_model_identifier_is_well_formed(cls, value: str, info: ValidationInfo) -> str:
+        """Deployment Execution Configuration Boundary V1 -- rejeita
+        (nunca trima silenciosamente) um identificador de modelo padrão
+        vazio, só espaço em branco, ou com espaço em branco líder/final.
+        Um valor válido é preservado byte/string-equivalente ao input
+        configurado -- esta função nunca reescreve, só aceita ou
+        rejeita."""
+        if value.strip() == "":
+            raise ValueError(
+                f"{info.field_name} não pode ser vazio ou conter só espaço em branco"
+            )
+        if value != value.strip():
+            raise ValueError(
+                f"{info.field_name} não pode ter espaço em branco líder/final: {value!r}"
+            )
+        return value

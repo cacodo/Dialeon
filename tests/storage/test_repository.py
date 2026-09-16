@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 
 import pytest
@@ -78,6 +79,53 @@ async def test_historical_whitespace_only_question_still_loads_verbatim(repo):
     loaded = await repo.get_run(result.id)
 
     assert loaded.council_run_result.run_config.question == "   \n\t  "
+
+
+@pytest.mark.asyncio
+async def test_historical_run_config_with_infinite_cost_still_loads_unchanged(repo):
+    """Deployment Execution Configuration Boundary V1, matriz I -- esta
+    slice valida `default_max_cost_usd`/`orchestrator_round_dispatch_timeout_seconds`
+    em `Settings` (app/config.py), NUNCA no próprio campo de
+    `RunConfig` (que continua `Field(gt=0)`, sem `allow_inf_nan=False`)
+    -- justamente pra não quebrar a reconstrução de uma execução
+    histórica que porventura tenha sido aceita com esses valores antes
+    desta correção existir (nenhuma migração/backfill/reinterpretação).
+    Simula essa execução histórica diretamente (save_success/reload
+    reais) -- `max_cost_usd=inf` sobrevive INTEIRO."""
+    result = full_council_run_result(run_config=run_config(max_cost_usd=float("inf")))
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+
+    assert isinstance(loaded, CompletedRunRecord)
+    assert math.isinf(loaded.council_run_result.run_config.max_cost_usd)
+
+
+@pytest.mark.asyncio
+async def test_historical_provider_execution_policy_with_infinite_timeout_still_loads_unchanged(
+    repo,
+):
+    """Idem acima, pra `ProviderExecutionPolicy.attempt_timeout_seconds`
+    (também reconstruído de JSON persistido, ver `_policy_from_json`,
+    app/storage/repository.py) -- este slice NÃO estreita o campo do
+    próprio `ProviderExecutionPolicy` (só `Settings.provider_timeout_seconds`,
+    que é `int` e nunca pode ser `inf` pela via real de deployment), pela
+    mesma disciplina de não quebrar reconstrução histórica."""
+    from app.models.provider_models import ProviderExecutionPolicy
+
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=float("inf"), max_transport_attempts_per_completion=3
+    )
+    await repo.save_accepted(
+        "run-historical-inf-timeout",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=policy,
+    )
+
+    loaded = await repo.get_run("run-historical-inf-timeout")
+
+    assert math.isinf(loaded.provider_execution_policy.attempt_timeout_seconds)
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.application.service import CouncilExecutionService
@@ -42,6 +43,7 @@ from app.debate.debate_engine import DebateEngine
 from app.editor.compose import Editor
 from app.judge.single_judge import SingleJudge
 from app.models.provider_models import ProviderExecutionPolicy
+from app.orchestrator.config import QuorumPolicy
 from app.providers.base import LLMProvider
 from app.providers.factory import build_all_providers
 from app.source_analysis.analyzer import SourceAnalyzer
@@ -120,6 +122,59 @@ def _validate_internal_provider_config(
         )
 
 
+def _validate_default_quorum_feasibility(
+    settings: Settings, providers: dict[str, LLMProvider]
+) -> None:
+    """Deployment Execution Configuration Boundary V1.
+
+    Duas checagens distintas, deliberadamente NUNCA fundidas numa só:
+
+    1. FORMA do quórum padrão -- construindo o `QuorumPolicy` REAL
+       (`QuorumPolicy.from_settings`, app/orchestrator/config.py) e
+       descartando o resultado. Isso reusa a ÚNICA implementação
+       canônica de "positividade + `min_to_return <= min_for_debate`"
+       que já existe -- NUNCA reimplementada aqui como uma segunda
+       comparação que pudesse divergir da de `QuorumPolicy`. Antes
+       desta correção, uma forma de quórum padrão inválida (ex.:
+       `quorum_min_to_return=5, quorum_min_for_debate=2` num `.env` de
+       deployment) sobrevivia ao bootstrap inteiro (engine/DB/registry/
+       service construídos) e só falhava na primeira
+       `RunConfig.from_settings()` de um Run real.
+
+    2. FACTIBILIDADE do `min_to_return` padrão contra a cardinalidade do
+       registry de participantes REALMENTE construído (`len(providers)`)
+       -- NUNCA `all_provider_authorities`/união de papéis internos/
+       contagem configurada/literal hardcoded. Um deployment cujo
+       `min_to_return` padrão excede até o número TOTAL de providers
+       disponíveis pra seleção nunca poderia satisfazer seu próprio
+       quórum de retorno, mesmo selecionando TODOS eles. Igualdade é
+       válida; `min_for_debate` pode legitimamente exceder a
+       cardinalidade do registry (só significa que a crítica nunca
+       roda -- ver `app.orchestrator.config.validate_quorum_feasibility`,
+       cuja autoridade PER-RUN sobre o subconjunto selecionado numa
+       execução real permanece inalterada e é reusada sem modificação
+       -- esta função nunca a substitui, só cobre o caso de deployment
+       ANTES de qualquer execução existir)."""
+    try:
+        quorum_policy = QuorumPolicy.from_settings(settings)
+    except ValidationError as exc:
+        raise ConfigurationError(
+            "Configuração de quórum padrão inválida (quorum_min_for_debate="
+            f"{settings.quorum_min_for_debate}, quorum_min_to_return="
+            f"{settings.quorum_min_to_return}): {exc}"
+        ) from exc
+
+    participant_registry_size = len(providers)
+    if quorum_policy.min_to_return > participant_registry_size:
+        raise ConfigurationError(
+            "Configuração de quórum padrão infactível -- quorum_min_to_return "
+            f"({quorum_policy.min_to_return}) excede o número de providers "
+            f"disponíveis no registry construído ({participant_registry_size}): "
+            "nenhuma execução nova poderia satisfazer esse quórum de retorno "
+            "mesmo selecionando todos os providers disponíveis."
+        )
+
+
 async def build_app_components(settings: Settings) -> AppComponents:
     """Monta a cadeia inteira. Chamado uma vez no lifespan de
     `create_app()` -- nunca por request (Decision Delta, revisão final:
@@ -141,6 +196,7 @@ async def build_app_components(settings: Settings) -> AppComponents:
     provider_execution_policy = ProviderExecutionPolicy.from_settings(settings)
     providers = build_all_providers(settings, provider_execution_policy)
     _validate_internal_provider_config(settings, providers)
+    _validate_default_quorum_feasibility(settings, providers)
 
     engine = create_engine(settings.database_url)
     try:
