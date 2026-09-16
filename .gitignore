@@ -7,3 +7,11 @@ __pycache__/
 
 # Python packaging artifacts
 *.egg-info/
+/build/
+/dist/
+
+# Release Packaging Contract V1 -- frontend compilado copiado pra dentro do
+# pacote Python só no momento do build de release (ver
+# scripts/sync_frontend_dist.py); nunca commitado -- mesmo tratamento de
+# frontend/dist (ver frontend/.gitignore).
+/app/frontend_dist/

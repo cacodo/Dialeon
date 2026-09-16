@@ -1,0 +1,7 @@
+# Release Packaging Contract V1 -- garante que o sdist inclua o frontend
+# compilado, se e somente se `app/frontend_dist/` já tiver sido populado
+# (via `scripts/sync_frontend_dist.py`) antes de `python -m build` rodar.
+# Não é um erro se o diretório não existir: `graft` de um caminho ausente
+# simplesmente não adiciona nada -- checkout de fonte/dev normal (sem
+# build de frontend) continua produzindo um sdist válido, só sem o bundle.
+graft app/frontend_dist

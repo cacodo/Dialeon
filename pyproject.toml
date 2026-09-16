@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "llm-council"
-version = "0.1.0"
+version = "0.9.0"
 description = "Sistema de debate multi-LLM com juiz, para chegar a respostas com alto grau de consenso auditável."
 requires-python = ">=3.11"
 dependencies = [
@@ -12,7 +16,6 @@ dependencies = [
     "aiosqlite>=0.20",
     "httpx>=0.27",
     "python-dotenv>=1.0",
-    "streamlit>=1.37",
     # SDKs oficiais dos 3 providers do MVP (Etapa 2 — Provider Layer)
     "openai>=1.55",
     "anthropic>=0.40",
@@ -30,6 +33,18 @@ dialeon = "app.cli.main:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+# Release Packaging Contract V1 -- inclui o frontend compilado como dado de
+# pacote de `app`, nunca o código-fonte de frontend/ (que continua fora do
+# pacote Python). `app/frontend_dist/` NÃO é versionado em Git (ver
+# .gitignore) -- populado só no momento do release, via
+# `scripts/sync_frontend_dist.py`, ANTES de `python -m build` (ver README,
+# secao "Empacotamento de release"). Ausente em checkout de fonte/dev normal
+# -- padrão glob que não casa nada não é erro, `app/api/frontend_serving.py`
+# cai de volta pro `frontend/dist` de desenvolvimento, preservando o
+# comportamento gracioso já existente quando nenhum build está presente.
+[tool.setuptools.package-data]
+app = ["frontend_dist/**/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -152,8 +152,10 @@ def test_real_production_build_integration():
 
 def test_mount_frontend_uses_default_dist_when_none_passed():
     """Confirma que `mount_frontend(app)` sem argumento usa
-    DEFAULT_FRONTEND_DIST (frontend/dist relativo à raiz do repo), não
-    precisa de dist_dir explícito em produção."""
+    DEFAULT_FRONTEND_DIST -- resolvido para o bundle empacotado
+    (`app/frontend_dist/`) se presente (instalação de release), senão pra
+    `frontend/dist/` relativo à raiz do repo (checkout de desenvolvimento,
+    o caso deste teste) -- não precisa de dist_dir explícito em produção."""
     if not DEFAULT_FRONTEND_DIST.exists():
         pytest.skip("frontend/dist não existe -- rode 'npm run build' em frontend/ antes deste teste")
 

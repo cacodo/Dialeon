@@ -25,6 +25,7 @@ abaixo.
 - [Escopo epistêmico](#escopo-epistêmico)
 - [Estrutura do repositório](#estrutura-do-repositório)
 - [Rodando o projeto](#rodando-o-projeto)
+- [Empacotamento de release](#empacotamento-de-release)
 - [Configuração](#configuração)
 - [Testes](#testes)
 - [Possíveis direções futuras](#possíveis-direções-futuras)
@@ -189,6 +190,38 @@ npm run dev          # servidor de desenvolvimento, com proxy pra API em :8000
 npm run build         # build de produção — servido pela API em /app quando presente
 npm test               # suíte de testes (vitest)
 ```
+
+## Empacotamento de release
+
+Dialeon é distribuído atualmente como **um único produto**: o artefato
+Python de release (`llm-council`, instalável via wheel/sdist) inclui
+backend, CLI (`dialeon`) **e** o frontend web já compilado. Quem instala
+esse artefato não precisa da árvore de código-fonte do frontend nem de
+Node pra que a API sirva a UI já empacotada em `/app` — só pra
+CONSTRUIR o frontend a partir do fonte, que é responsabilidade de quem
+prepara o release, não de quem instala.
+
+O frontend continua um pacote interno/privado (`frontend/package.json`
+tem `"private": true`) — nunca publicado separadamente.
+
+Build order mínimo de um release (nesta ordem, sempre):
+
+```bash
+# 1. instala as dependências de frontend já declaradas (frontend/package-lock.json)
+cd frontend && npm install && npm run build && cd ..
+
+# 2. copia frontend/dist/ pra dentro do pacote Python (app/frontend_dist/,
+#    nunca versionado em Git -- só existe durante o build de release)
+python scripts/sync_frontend_dist.py
+
+# 3. constrói wheel + sdist normalmente (setuptools via pyproject.toml)
+python -m build
+```
+
+Rodar a suíte de testes do backend sozinha (`pytest`) **nunca** requer
+Node nem este build order — `app/frontend_dist/` ausente preserva
+exatamente o comportamento gracioso de sempre (API funciona normalmente
+sem frontend montado, ver `app/api/frontend_serving.py`).
 
 ## Configuração
 
