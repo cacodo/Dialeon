@@ -89,6 +89,7 @@ def _completed_run_response(**overrides) -> CompletedRunResponse:
         accounting=_accounting(),
         config=_run_config(),
         provider_execution_policy=None,
+        default_model_authority_snapshot=None,
     )
     fields.update(overrides)
     return CompletedRunResponse(**fields)
@@ -155,6 +156,7 @@ def _completed_run_audit(**overrides) -> CompletedRunAudit:
         final_answer=_final_answer(),
         accounting=_accounting(),
         provider_execution_policy=None,
+        default_model_authority_snapshot=None,
         reconciliation=None,
     )
     fields.update(overrides)

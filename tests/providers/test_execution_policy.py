@@ -8,11 +8,16 @@ resolução a partir de `Settings` construído em memória.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.models.provider_models import ProviderExecutionPolicy
+from app.models.provider_models import (
+    ProviderExecutionPolicy,
+    validate_provider_execution_policy_for_new_execution,
+)
 
 
 def _settings(**overrides) -> Settings:
@@ -196,3 +201,90 @@ def test_structured_retry_attempt_number_fields_are_untouched_and_distinct():
         assert "attempt_number" in cls.model_fields
         assert "max_transport_attempts_per_completion" not in cls.model_fields
         assert "attempt_timeout_seconds" not in cls.model_fields
+
+
+# ---------------------------------------------------------------------------
+# Provider Execution Policy Finite New-Execution Boundary V1 --
+# validate_provider_execution_policy_for_new_execution (matriz B1-B10, B19)
+# ---------------------------------------------------------------------------
+
+
+def test_b1_positive_finite_policy_accepted_for_new_execution():
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=30.0, max_transport_attempts_per_completion=3
+    )
+    validate_provider_execution_policy_for_new_execution(policy)  # não levanta
+
+
+def test_b2_positive_infinity_rejected_for_new_execution():
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=float("inf"), max_transport_attempts_per_completion=3
+    )
+    with pytest.raises(ValueError):
+        validate_provider_execution_policy_for_new_execution(policy)
+
+
+def test_b3_negative_infinity_construction_itself_already_fails_closed():
+    """`-inf` já é rejeitado na PRÓPRIA construção de `ProviderExecutionPolicy`
+    (`Field(gt=0)`: `-inf > 0` é False) -- nem chega a existir uma
+    instância pra passar pro validador de execução nova."""
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy(
+            attempt_timeout_seconds=float("-inf"), max_transport_attempts_per_completion=3
+        )
+
+
+def test_b4_nan_construction_itself_already_fails_closed():
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy(
+            attempt_timeout_seconds=float("nan"), max_transport_attempts_per_completion=3
+        )
+
+
+def test_b5_zero_construction_itself_already_fails_closed():
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy(
+            attempt_timeout_seconds=0.0, max_transport_attempts_per_completion=3
+        )
+
+
+def test_b6_negative_finite_construction_itself_already_fails_closed():
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy(
+            attempt_timeout_seconds=-5.0, max_transport_attempts_per_completion=3
+        )
+
+
+def test_b7_retry_count_semantics_unchanged_by_the_new_validator():
+    """A validação nova olha SÓ `attempt_timeout_seconds` -- `validate_provider_execution_policy_for_new_execution`
+    não tem opinião sobre `max_transport_attempts_per_completion`, e o
+    valor sobrevive inalterado depois de passar pela validação."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=15.0, max_transport_attempts_per_completion=5
+    )
+    validate_provider_execution_policy_for_new_execution(policy)
+    assert policy.max_transport_attempts_per_completion == 5
+
+
+def test_b8_direct_positive_infinity_construction_remains_possible():
+    """CONSTRUÍVEL != AUTORIZADO PRA EXECUÇÃO NOVA -- `ProviderExecutionPolicy`
+    em si continua aceitando `+inf` diretamente (necessário pra
+    reconstrução histórica fiel, ver B9/B10 abaixo); só a boundary de
+    execução NOVA (`validate_provider_execution_policy_for_new_execution`)
+    rejeita."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=float("inf"), max_transport_attempts_per_completion=3
+    )
+    assert math.isinf(policy.attempt_timeout_seconds)
+
+
+def test_b19_positive_infinity_token_is_not_accepted_as_policy_input():
+    """O token público `"positive_infinity"` (Historical Non-Finite
+    Execution-Limit Public Representation V1) NUNCA é um formato de
+    INPUT -- `ProviderExecutionPolicy.attempt_timeout_seconds` é `float`
+    puro; a string não é coercível e a construção falha."""
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy(
+            attempt_timeout_seconds="positive_infinity",
+            max_transport_attempts_per_completion=3,
+        )

@@ -87,7 +87,7 @@ def test_get_run_completed():
     assert "judge_reasoning" not in body["final_answer"]
     assert set(body.keys()) == {
         "status", "id", "started_at", "completed_at", "final_answer", "accounting", "config",
-        "provider_execution_policy",
+        "provider_execution_policy", "default_model_authority_snapshot",
     }
     # T02.2 -- sem accepted_runs prévio (_seed_success isolado), o valor
     # honesto é None, nunca um default inventado.
@@ -111,6 +111,45 @@ def test_get_run_completed_with_known_policy_displays_it():
         "max_transport_attempts_per_completion": 2,
     }
     assert "provider_execution_policy" not in body["config"]
+
+
+def test_get_run_completed_exposes_default_model_authority_snapshot():
+    """Provider Default-Model Snapshot Provenance V1, C19/C20 -- exposto
+    em detail comum (mesma convenção de `provider_execution_policy`,
+    SIBLING de `config`), com valor EXATO determinístico -- não só
+    presença."""
+    from app.models.provider_models import DefaultModelAuthoritySnapshot
+
+    result = full_council_run_result()
+    snapshot = DefaultModelAuthoritySnapshot(
+        configured_default_models={"openai": "gpt-audit-value", "anthropic": "claude-audit-value"}
+    )
+
+    async def _seed(components, result):
+        await components.repository.save_accepted(
+            result.id,
+            run_config=result.run_config,
+            started_at=result.started_at,
+            provider_execution_policy=components.provider_execution_policy,
+            default_model_authority_snapshot=snapshot,
+        )
+        await components.repository.save_success(result)
+        return result.id
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}")
+
+    body = resp.json()
+    assert body["default_model_authority_snapshot"] == {
+        "configured_default_models": {
+            "openai": "gpt-audit-value",
+            "anthropic": "claude-audit-value",
+        }
+    }
+    assert "default_model_authority_snapshot" not in body["config"]
 
 
 def test_get_run_completed_accounting_matches_domain():
@@ -200,7 +239,10 @@ def test_get_run_running():
     assert body["id"] == run_id
     assert "final_answer" not in body
     assert "accounting" not in body
-    assert set(body.keys()) == {"status", "id", "started_at", "config", "provider_execution_policy"}
+    assert set(body.keys()) == {
+        "status", "id", "started_at", "config", "provider_execution_policy",
+        "default_model_authority_snapshot",
+    }
 
 
 def test_get_run_failed():
@@ -225,7 +267,7 @@ def test_get_run_failed():
     assert "accounting" not in body
     assert set(body.keys()) == {
         "status", "id", "started_at", "failed_at", "failure_reason", "message", "config",
-        "provider_execution_policy",
+        "provider_execution_policy", "default_model_authority_snapshot",
     }
 
 

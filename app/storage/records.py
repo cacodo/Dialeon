@@ -19,7 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from app.council.result import CouncilRunResult
-from app.models.provider_models import ProviderExecutionPolicy
+from app.models.provider_models import DefaultModelAuthoritySnapshot, ProviderExecutionPolicy
 from app.orchestrator.config import RunConfig
 from app.orchestrator.result import RoundResult
 
@@ -43,6 +43,10 @@ class CompletedRunRecord(BaseModel):
     status: Literal["completed"] = "completed"
     council_run_result: CouncilRunResult
     provider_execution_policy: ProviderExecutionPolicy | None = None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata: `None`
+    # só pra runs persistidos antes desta coluna existir.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None
 
 
 class QuorumFailureRecord(BaseModel):
@@ -63,6 +67,10 @@ class QuorumFailureRecord(BaseModel):
     round_result: RoundResult
     # T02.2 -- ver docstring de CompletedRunRecord.provider_execution_policy.
     provider_execution_policy: ProviderExecutionPolicy | None = None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata: `None`
+    # só pra runs persistidos antes desta coluna existir.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None
 
 
 class AcceptedRunRecord(BaseModel):
@@ -94,6 +102,10 @@ class AcceptedRunRecord(BaseModel):
     # exige o parâmetro); `None` só ocorre reconstruindo uma linha
     # legada pré-upgrade.
     provider_execution_policy: ProviderExecutionPolicy | None = None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata: `None`
+    # só pra runs persistidos antes desta coluna existir.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None
 
 
 PersistedRun = CompletedRunRecord | QuorumFailureRecord | AcceptedRunRecord

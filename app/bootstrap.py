@@ -65,11 +65,23 @@ class AppComponents:
 
     `provider_execution_policy` (T02.2): a MESMA instância resolvida que
     foi injetada em `providers`/`service` -- exposta aqui, sibling de
-    `.repository`, pra que `app/api/routes.py`/`app/cli/commands.py`
-    consigam ler o snapshot que acabou de ser aceito no caminho
-    síncrono de criação de Run (POST /runs), sem precisar reler do
-    banco nem alcançar dentro de `.service` (que mantém o valor privado
-    -- ver `CouncilExecutionService`)."""
+    `.repository`, principalmente pra composição/inspeção de deployment
+    (ex.: testes, futuros clientes) que precisem do snapshot vigente sem
+    depender de nenhum Run já ter sido aceito.
+
+    Provider Default-Model Snapshot Provenance V1 (F1, repair pós-
+    revisão independente) -- `app/api/routes.py`/`app/cli/commands.py`
+    NÃO leem mais este campo pra montar a resposta de um Run: depois de
+    `CouncilExecutionService.run()` suceder, os dois recarregam o
+    registro recém-persistido (`repository.get_run(result.id)`) e usam
+    `record.provider_execution_policy`/
+    `record.default_model_authority_snapshot` -- o segundo destes varia
+    POR RUN (depende de `run_config.all_provider_authorities`), então
+    nunca poderia ser um valor de deployment único como este campo é;
+    ler de volta o registro recém-gravado (em vez de recomputar do
+    registry de provider ao vivo) é o que garante que a resposta
+    imediata reporte exatamente o que foi aceito, nunca um valor
+    potencialmente diferente observado depois da execução."""
 
     settings: Settings
     engine: AsyncEngine
@@ -217,7 +229,7 @@ async def build_app_components(settings: Settings) -> AppComponents:
         service = CouncilExecutionService(
             runner=runner,
             repository=repository,
-            known_providers=frozenset(providers),
+            providers=providers,
             provider_execution_policy=provider_execution_policy,
         )
     except Exception:

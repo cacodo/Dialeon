@@ -7,7 +7,7 @@ import pytest
 from app.cli import commands
 from app.config import Settings
 from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
-from tests.api.helpers import build_test_components
+from tests.api.helpers import SelfMutatingRegistryProvider, _FakeRegistryProvider, build_test_components
 from tests.storage.fixtures import (
     full_council_run_result,
     now,
@@ -47,6 +47,46 @@ async def test_cmd_run_success_returns_exit_0(capsys):
     out = capsys.readouterr()
     assert result.final_answer.answer_text in out.out
     assert out.err == ""
+
+
+@pytest.mark.asyncio
+async def test_cmd_run_json_reports_accepted_time_default_model_not_live_registry(capsys):
+    """F1 (repair pós-revisão independente, MEDIUM) -- mesma garantia de
+    `test_create_run_immediate_response_reports_accepted_time_default_model_not_live_registry`
+    (tests/api/test_create_run.py), agora pro caminho síncrono da CLI
+    (`dialeon run --json`)."""
+    result = full_council_run_result()
+    openai_provider = SelfMutatingRegistryProvider("model-A", "model-B")
+    components = await _components(
+        debate_result=result.debate_result,
+        judge_result=result.judge_result,
+        editor_result=result.editor_result,
+        provider_instances={
+            "openai": openai_provider,
+            "anthropic": _FakeRegistryProvider("claude-fixed"),
+        },
+    )
+
+    exit_code = await commands.cmd_run(
+        components, question="Qual a capital do Brasil?", providers=["openai"], source_text=None,
+        as_json=True,
+    )
+
+    assert exit_code == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["default_model_authority_snapshot"]["configured_default_models"]["openai"] == (
+        "model-A"
+    )
+    assert openai_provider.read_count == 1
+
+    # cmd_get subsequente também precisa reportar o valor ACEITO.
+    exit_code_get = await commands.cmd_get(components, run_id=body["id"], as_json=True)
+    assert exit_code_get == commands.EXIT_OK
+    get_body = json.loads(capsys.readouterr().out)
+    assert get_body["default_model_authority_snapshot"]["configured_default_models"][
+        "openai"
+    ] == "model-A"
+    assert openai_provider.read_count == 1
 
 
 @pytest.mark.asyncio
@@ -527,6 +567,37 @@ async def test_cmd_audit_completed_run(capsys):
 
 
 @pytest.mark.asyncio
+async def test_cmd_audit_json_exposes_default_model_authority_snapshot_exact_value(capsys):
+    """C21 -- `dialeon audit --json` deriva do MESMO schema público/de
+    audit da API (app.presentation), então o snapshot de autoridade de
+    modelo padrão aparece com o valor EXATO persistido, nunca
+    regenerado do registry de provider atual."""
+    from app.models.provider_models import DefaultModelAuthoritySnapshot
+
+    components = await _components()
+    result = full_council_run_result()
+    snapshot = DefaultModelAuthoritySnapshot(
+        configured_default_models={"openai": "gpt-cli-audit-value"}
+    )
+    await components.repository.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=components.provider_execution_policy,
+        default_model_authority_snapshot=snapshot,
+    )
+    await components.repository.save_success(result)
+
+    exit_code = await commands.cmd_audit(components, run_id=result.id, as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["default_model_authority_snapshot"] == {
+        "configured_default_models": {"openai": "gpt-cli-audit-value"}
+    }
+
+
+@pytest.mark.asyncio
 async def test_cmd_audit_json_historical_infinite_cost_and_timeout_render_as_positive_infinity_token(
     capsys,
 ):
@@ -678,7 +749,10 @@ async def test_cmd_audit_running_run_never_invents_detail(capsys):
     assert exit_code == commands.EXIT_OK
     body = json.loads(capsys.readouterr().out)
     assert body["status"] == "running"
-    assert set(body.keys()) == {"status", "id", "started_at", "config", "provider_execution_policy"}
+    assert set(body.keys()) == {
+        "status", "id", "started_at", "config", "provider_execution_policy",
+        "default_model_authority_snapshot",
+    }
 
 
 @pytest.mark.asyncio

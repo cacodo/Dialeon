@@ -53,7 +53,7 @@ from app.presentation.schemas import (
 from app.council.result import CouncilRunResult
 from app.reconciliation.models import SourceJudgeReconciliationResult
 from app.debate.numeric_verification import DeterministicVerificationAttempt
-from app.models.provider_models import ProviderExecutionPolicy
+from app.models.provider_models import DefaultModelAuthoritySnapshot, ProviderExecutionPolicy
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult
 from app.editor.attempt import EditorAttempt
@@ -335,7 +335,10 @@ def accounting_summary(result: CouncilRunResult) -> AccountingSummary:
 
 
 def completed_run_response(
-    result: CouncilRunResult, *, provider_execution_policy: ProviderExecutionPolicy | None
+    result: CouncilRunResult,
+    *,
+    provider_execution_policy: ProviderExecutionPolicy | None,
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None,
 ) -> CompletedRunResponse:
     """`provider_execution_policy` (T02.2) é passado explicitamente pelo
     chamador -- `CouncilRunResult` NUNCA carrega isso (autoridade
@@ -345,7 +348,25 @@ def completed_run_response(
     quem chama depois de reconstruir de storage (`GET /runs/{id}`) usa
     `CompletedRunRecord.provider_execution_policy` -- os dois SEMPRE
     concordam pra qualquer run real (mesma instância resolvida), mas
-    esta função nunca decide isso por conta própria."""
+    esta função nunca decide isso por conta própria.
+
+    `default_model_authority_snapshot` (Provider Default-Model Snapshot
+    Provenance V1) segue a MESMA disciplina -- mas, diferente de
+    `provider_execution_policy` (um singleton de deployment, sempre
+    idêntico independente do run), varia POR RUN (depende de
+    `run_config.all_provider_authorities`). F1 (repair pós-revisão
+    independente, MEDIUM): por variar por run, este valor NUNCA pode
+    ser recomputado a partir do registry de provider AO VIVO no
+    caminho síncrono de criação -- isso reintroduziria exatamente o
+    bug que esta provenance existe pra fechar (o registry pode ter
+    mudado entre o aceite e a resposta, mesmo dentro da mesma request).
+    TODO chamador -- síncrono (`POST /runs`/`dialeon run`, logo depois
+    de `CouncilExecutionService.run()` suceder) OU de reconstrução
+    (`GET /runs/{id}`) -- SEMPRE passa
+    `CompletedRunRecord.default_model_authority_snapshot`, recarregado
+    de `repository.get_run(result.id)` no caso síncrono: o fato de
+    provenance autoritativo é sempre o que foi PERSISTIDO no aceite,
+    nunca uma reconstrução independente."""
     return CompletedRunResponse(
         id=result.id,
         started_at=result.started_at,
@@ -354,6 +375,7 @@ def completed_run_response(
         accounting=accounting_summary(result),
         config=run_config_public(result.run_config),
         provider_execution_policy=provider_execution_policy,
+        default_model_authority_snapshot=default_model_authority_snapshot,
     )
 
 
@@ -368,6 +390,7 @@ def quorum_failure_run_response(record: QuorumFailureRecord) -> QuorumFailureRun
         accounting=_round_accounting(record.round_result),
         config=run_config_public(record.run_config),
         provider_execution_policy=record.provider_execution_policy,
+        default_model_authority_snapshot=record.default_model_authority_snapshot,
     )
 
 
@@ -485,10 +508,14 @@ def reconciliation_public(
 
 
 def completed_run_audit(
-    result: CouncilRunResult, *, provider_execution_policy: ProviderExecutionPolicy | None
+    result: CouncilRunResult,
+    *,
+    provider_execution_policy: ProviderExecutionPolicy | None,
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None,
 ) -> CompletedRunAudit:
     """Ver docstring de `completed_run_response` -- mesma disciplina de
-    passagem explícita de `provider_execution_policy`."""
+    passagem explícita de `provider_execution_policy`/
+    `default_model_authority_snapshot`."""
     debate = result.debate_result
     judge = result.judge_result
     editor = result.editor_result
@@ -526,6 +553,7 @@ def completed_run_audit(
         final_answer=final_answer_public(editor.final_answer),
         accounting=accounting_summary(result),
         provider_execution_policy=provider_execution_policy,
+        default_model_authority_snapshot=default_model_authority_snapshot,
         reconciliation=reconciliation_public(result.reconciliation),
     )
 
@@ -541,6 +569,7 @@ def quorum_failure_audit(record: QuorumFailureRecord) -> QuorumFailureAudit:
         min_to_return=record.min_to_return,
         round_result=round_audit(record.round_result),
         provider_execution_policy=record.provider_execution_policy,
+        default_model_authority_snapshot=record.default_model_authority_snapshot,
     )
 
 
@@ -551,6 +580,7 @@ def running_run_response(record: AcceptedRunRecord) -> RunningRunResponse:
         started_at=record.started_at,
         config=run_config_public(record.run_config),
         provider_execution_policy=record.provider_execution_policy,
+        default_model_authority_snapshot=record.default_model_authority_snapshot,
     )
 
 
@@ -567,6 +597,7 @@ def failed_run_response(record: AcceptedRunRecord) -> FailedRunResponse:
         message=record.failure_message,
         config=run_config_public(record.run_config),
         provider_execution_policy=record.provider_execution_policy,
+        default_model_authority_snapshot=record.default_model_authority_snapshot,
     )
 
 

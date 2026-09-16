@@ -28,6 +28,7 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.provider_models import (
+    DefaultModelAuthoritySnapshot,
     ModelIdentitySource,
     PricingProvenance,
     ProviderErrorInfo,
@@ -577,6 +578,12 @@ class CompletedRunResponse(BaseModel):
     # pra runs persistidos antes desta coluna existir -- nunca
     # substituído pelos defaults atuais.
     provider_execution_policy: ProviderExecutionPolicy | None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata
+    # (autoridade de deployment/aceite, nunca dentro de `RunConfigPublic`).
+    # `None` só pra runs persistidos antes desta coluna existir --
+    # nunca inferido do registry de provider atual.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
 
 
 class QuorumFailureRunResponse(BaseModel):
@@ -593,6 +600,12 @@ class QuorumFailureRunResponse(BaseModel):
     config: RunConfigPublic
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
     provider_execution_policy: ProviderExecutionPolicy | None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata
+    # (autoridade de deployment/aceite, nunca dentro de `RunConfigPublic`).
+    # `None` só pra runs persistidos antes desta coluna existir --
+    # nunca inferido do registry de provider atual.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
 
 
 class RunningRunResponse(BaseModel):
@@ -614,6 +627,12 @@ class RunningRunResponse(BaseModel):
     # Um run "running" NOVO sempre tem valor concreto (mesma garantia de
     # `save_accepted`); `None` só numa linha legada pré-upgrade.
     provider_execution_policy: ProviderExecutionPolicy | None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata
+    # (autoridade de deployment/aceite, nunca dentro de `RunConfigPublic`).
+    # `None` só pra runs persistidos antes desta coluna existir --
+    # nunca inferido do registry de provider atual.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
 
 
 class FailedRunResponse(BaseModel):
@@ -635,6 +654,12 @@ class FailedRunResponse(BaseModel):
     config: RunConfigPublic
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
     provider_execution_policy: ProviderExecutionPolicy | None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata
+    # (autoridade de deployment/aceite, nunca dentro de `RunConfigPublic`).
+    # `None` só pra runs persistidos antes desta coluna existir --
+    # nunca inferido do registry de provider atual.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
 
 
 RunResponse = Annotated[
@@ -764,6 +789,12 @@ class CompletedRunAudit(BaseModel):
     accounting: AccountingSummary
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
     provider_execution_policy: ProviderExecutionPolicy | None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata
+    # (autoridade de deployment/aceite, nunca dentro de `RunConfigPublic`).
+    # `None` só pra runs persistidos antes desta coluna existir --
+    # nunca inferido do registry de provider atual.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
     # Cross-Channel Reconciliation V1 -- ver docstring de
     # SourceJudgeReconciliationResultPublic pros 3 estados distintos.
     reconciliation: SourceJudgeReconciliationResultPublic | None
@@ -783,6 +814,12 @@ class QuorumFailureAudit(BaseModel):
     round_result: RoundAudit
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
     provider_execution_policy: ProviderExecutionPolicy | None
+    # Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+    # `provider_execution_policy` acima, mesma disciplina exata
+    # (autoridade de deployment/aceite, nunca dentro de `RunConfigPublic`).
+    # `None` só pra runs persistidos antes desta coluna existir --
+    # nunca inferido do registry de provider atual.
+    default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
 
 
 # T02.4: um run "running"/"failed" nunca tem detalhe de auditoria pra

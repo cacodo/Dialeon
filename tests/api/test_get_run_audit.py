@@ -480,7 +480,10 @@ def test_get_run_audit_running_never_invents_detail():
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "running"
-    assert set(body.keys()) == {"status", "id", "started_at", "config", "provider_execution_policy"}
+    assert set(body.keys()) == {
+        "status", "id", "started_at", "config", "provider_execution_policy",
+        "default_model_authority_snapshot",
+    }
 
 
 def test_get_run_audit_not_found_returns_404():

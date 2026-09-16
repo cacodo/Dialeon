@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.models.domain import ClaimAssessment, ClaimSupport
-from app.models.provider_models import ModelIdentitySource
+from app.models.provider_models import DefaultModelAuthoritySnapshot, ModelIdentitySource
 from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
 from app.reconciliation.errors import ReconciliationError
 from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
@@ -144,6 +144,46 @@ async def test_historical_provider_execution_policy_with_infinite_timeout_still_
     )
 
     loaded = await repo.get_run("run-historical-inf-timeout")
+
+    assert math.isinf(loaded.provider_execution_policy.attempt_timeout_seconds)
+
+
+@pytest.mark.asyncio
+async def test_historical_policy_reconstruction_never_invokes_new_execution_validator(
+    repo, monkeypatch
+):
+    """Provider Execution Policy Finite New-Execution Boundary V1, B10 --
+    sentinela direto: a reconstrução histórica (`_policy_from_json`)
+    NUNCA chama `validate_provider_execution_policy_for_new_execution`
+    -- reforça, além do teste acima (que só prova que +inf sobrevive),
+    que o CAMINHO em si é estruturalmente distinto da boundary de
+    execução nova."""
+    import app.models.provider_models as provider_models_module
+    from app.models.provider_models import ProviderExecutionPolicy
+
+    def _should_never_be_called(policy):
+        raise AssertionError(
+            "validate_provider_execution_policy_for_new_execution nunca deveria "
+            "ser chamado durante reconstrução histórica"
+        )
+
+    monkeypatch.setattr(
+        provider_models_module,
+        "validate_provider_execution_policy_for_new_execution",
+        _should_never_be_called,
+    )
+
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=float("inf"), max_transport_attempts_per_completion=3
+    )
+    await repo.save_accepted(
+        "run-historical-inf-timeout-2",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=policy,
+    )
+
+    loaded = await repo.get_run("run-historical-inf-timeout-2")
 
     assert math.isinf(loaded.provider_execution_policy.attempt_timeout_seconds)
 
@@ -2319,3 +2359,207 @@ async def test_legacy_accepted_row_without_policy_finalizes_with_policy_none(eng
     loaded = await repo.get_run(result.id)
     assert isinstance(loaded, CompletedRunRecord)
     assert loaded.provider_execution_policy is None  # nunca herdou o `policy` original
+
+
+# ---------------------------------------------------------------------------
+# Provider Default-Model Snapshot Provenance V1 -- SIBLING de
+# `provider_execution_policy` acima, mesma disciplina de persistência
+# (matriz C8-C15 do contrato desta slice).
+# ---------------------------------------------------------------------------
+
+
+def _snapshot(**configured_default_models) -> DefaultModelAuthoritySnapshot:
+    fields = configured_default_models or {"openai": "gpt-x", "anthropic": "claude-x"}
+    return DefaultModelAuthoritySnapshot(configured_default_models=fields)
+
+
+@pytest.mark.asyncio
+async def test_c8_snapshot_persisted_at_acceptance(repo):
+    rc = run_config()
+    snapshot = _snapshot()
+    await repo.save_accepted(
+        "run-snapshot-accept-1",
+        run_config=rc,
+        started_at=now(),
+        provider_execution_policy=provider_execution_policy(),
+        default_model_authority_snapshot=snapshot,
+    )
+
+    loaded = await repo.get_run("run-snapshot-accept-1")
+    assert isinstance(loaded, AcceptedRunRecord)
+    assert loaded.default_model_authority_snapshot == snapshot
+
+
+@pytest.mark.asyncio
+async def test_c9_running_and_accepted_expose_snapshot(repo):
+    """C9 -- exposição em `AcceptedRunRecord` (consumida por
+    running_run_response/failed_run_response, tanto em detail quanto em
+    audit -- ver app/presentation/mappers.py)."""
+    snapshot = _snapshot(openai="gpt-running")
+    await repo.save_accepted(
+        "run-snapshot-running-1",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=provider_execution_policy(),
+        default_model_authority_snapshot=snapshot,
+    )
+
+    loaded = await repo.get_run("run-snapshot-running-1")
+    assert loaded.status == "running"
+    assert loaded.default_model_authority_snapshot.configured_default_models == {
+        "openai": "gpt-running"
+    }
+
+
+@pytest.mark.asyncio
+async def test_c10_completed_terminal_root_preserves_exact_snapshot(repo):
+    result = full_council_run_result()
+    snapshot = _snapshot(openai="gpt-accept-time", anthropic="claude-accept-time")
+    await repo.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=provider_execution_policy(),
+        default_model_authority_snapshot=snapshot,
+    )
+
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.default_model_authority_snapshot == snapshot
+
+
+@pytest.mark.asyncio
+async def test_c11_quorum_failure_terminal_root_preserves_exact_snapshot(repo):
+    exc = quorum_failure_exception()
+    rc = run_config()
+    snapshot = _snapshot(openai="gpt-accept-time")
+    run_id = "run-snapshot-quorum-1"
+    await repo.save_accepted(
+        run_id,
+        run_config=rc,
+        started_at=now(),
+        provider_execution_policy=provider_execution_policy(),
+        default_model_authority_snapshot=snapshot,
+    )
+
+    await repo.save_quorum_failure(
+        exc, run_config=rc, started_at=now(), failed_at=now(), run_id=run_id
+    )
+
+    loaded = await repo.get_run(run_id)
+    assert isinstance(loaded, QuorumFailureRecord)
+    assert loaded.default_model_authority_snapshot == snapshot
+
+
+@pytest.mark.asyncio
+async def test_c12_unexpected_failed_terminal_root_preserves_exact_snapshot(repo):
+    run_id = "run-snapshot-failed-1"
+    snapshot = _snapshot(openai="gpt-accept-time")
+    await repo.save_accepted(
+        run_id,
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=provider_execution_policy(),
+        default_model_authority_snapshot=snapshot,
+    )
+
+    await repo.save_unexpected_failure(
+        run_id,
+        failed_at=now(),
+        failure_classification="WeirdBug",
+        failure_message="Erro interno inesperado durante a execução.",
+    )
+
+    loaded = await repo.get_run(run_id)
+    assert isinstance(loaded, AcceptedRunRecord)
+    assert loaded.status == "failed"
+    assert loaded.default_model_authority_snapshot == snapshot
+
+
+@pytest.mark.asyncio
+async def test_c13_configuration_change_after_acceptance_does_not_alter_historical_snapshot(repo):
+    """C13/seção 22 do contrato -- o teste de fechamento chave desta
+    slice: aceitar com `provider A default_model = model-old`, persistir,
+    depois "reconfigurar" o runtime (`provider A default_model =
+    model-new`) e carregar o run original -- o snapshot histórico
+    precisa continuar dizendo `model-old`, NUNCA `model-new`."""
+    from app.application.service import build_default_model_authority_snapshot
+
+    class _MutableFakeProvider:
+        def __init__(self, default_model: str):
+            self.default_model = default_model
+
+    provider_a = _MutableFakeProvider("model-old")
+    rc = run_config(
+        enabled_providers=["openai"],
+        claim_processor_provider="openai",
+        judge_provider="openai",
+        editor_provider="openai",
+        source_analyzer_provider="openai",
+    )
+    snapshot_at_acceptance = build_default_model_authority_snapshot(rc, {"openai": provider_a})
+
+    result = full_council_run_result(run_config=rc)
+    await repo.save_accepted(
+        result.id,
+        run_config=rc,
+        started_at=result.started_at,
+        provider_execution_policy=provider_execution_policy(),
+        default_model_authority_snapshot=snapshot_at_acceptance,
+    )
+    await repo.save_success(result)
+
+    # "Reconfiguração de deployment" -- o MESMO objeto de provider muda
+    # de configuração depois que o aceite já foi persistido.
+    provider_a.default_model = "model-new"
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.default_model_authority_snapshot.configured_default_models == {
+        "openai": "model-old"
+    }
+    assert loaded.default_model_authority_snapshot.configured_default_models["openai"] != (
+        "model-new"
+    )
+
+
+@pytest.mark.asyncio
+async def test_c14_c15_historical_rows_load_with_snapshot_none_never_backfilled(engine, repo):
+    """C14/C15 -- mesma técnica de `test_legacy_rows_without_policy_column_reconstruct_as_none`
+    acima: simula uma linha "pré-slice" via UPDATE direto pra NULL --
+    nunca deve reconstruir com o registry de provider ATUAL."""
+    from app.storage.database import make_session_factory
+    from app.storage.repository import CouncilRepository
+
+    result = full_council_run_result()
+    await repo.save_success(result)
+    session_factory = make_session_factory(engine)
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "UPDATE council_runs SET default_model_authority_snapshot_json = NULL "
+                "WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+        await session.commit()
+
+    fresh_repo = CouncilRepository(session_factory)
+    loaded = await fresh_repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.default_model_authority_snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_save_success_without_prior_accepted_row_leaves_snapshot_none(repo):
+    """Mesma disciplina de `test_save_success_without_prior_accepted_row_leaves_policy_none`
+    -- chamador direto de `save_success`, sem `save_accepted` antes: não
+    há linha de aceite de onde copiar, então `None` honesto."""
+    result = full_council_run_result()
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.default_model_authority_snapshot is None

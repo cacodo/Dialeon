@@ -121,3 +121,22 @@ def test_build_all_providers_never_calls_provider_execution_policy_from_settings
 
     source = inspect.getsource(factory_module)
     assert "ProviderExecutionPolicy.from_settings(" not in source
+
+
+# ---------------------------------------------------------------------------
+# Provider Execution Policy Finite New-Execution Boundary V1 -- B11
+# ---------------------------------------------------------------------------
+
+
+def test_b11_build_all_providers_rejects_infinite_supplied_policy():
+    """Um `policy` externamente construído com `attempt_timeout_seconds=+inf`
+    (CONSTRUÍVEL, mas não AUTORIZADO pra execução nova) nunca produz
+    providers "usáveis" com esse timeout -- a rejeição acontece ANTES
+    de qualquer `LLMProvider` ser instanciado."""
+    settings = _settings()
+    bad_policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=float("inf"), max_transport_attempts_per_completion=3
+    )
+
+    with pytest.raises(ValueError):
+        build_all_providers(settings, bad_policy)

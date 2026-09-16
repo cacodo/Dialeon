@@ -25,10 +25,12 @@ modelados). Três estados, nunca confundidos entre si:
 
 from __future__ import annotations
 
+import math
 from enum import Enum
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from app.config import Settings
 
@@ -228,6 +230,141 @@ class ProviderExecutionPolicy(BaseModel):
             attempt_timeout_seconds=float(settings.provider_timeout_seconds),
             max_transport_attempts_per_completion=settings.provider_max_retries + 1,
         )
+
+
+def validate_provider_execution_policy_for_new_execution(
+    policy: ProviderExecutionPolicy,
+) -> None:
+    """Provider Execution Policy Finite New-Execution Boundary V1 --
+    ÚNICA função de validação de FACTIBILIDADE de
+    `ProviderExecutionPolicy` pra ACEITE DE EXECUÇÕES NOVAS (mesma
+    disciplina de `validate_question`/`validate_quorum_feasibility`,
+    app/orchestrator/config.py):
+
+        math.isfinite(policy.attempt_timeout_seconds)
+        and policy.attempt_timeout_seconds > 0
+
+    `ProviderExecutionPolicy` (`Field(gt=0)`, sem `allow_inf_nan=False`)
+    continua CONSTRUÍVEL diretamente com `attempt_timeout_seconds=+inf`
+    -- deliberadamente: `_policy_from_json`
+    (app/storage/repository.py) reconstrói o objeto a partir de JSON
+    persistido, e um deployment de ANTES desta correção existir não
+    podia produzir +inf pelo caminho suportado
+    (`Settings.provider_timeout_seconds` é `int`, então
+    `float(int)` nunca é +inf/NaN) -- mas mesmo que um valor assim
+    tivesse sido persistido, ele precisa continuar reconstruível
+    verbatim pra auditoria, nunca rejeitado/reinterpretado na carga
+    histórica. CONSTRUÍVEL != AUTORIZADO PRA EXECUÇÃO NOVA: esta função
+    é a boundary separada que aplica a segunda metade dessa distinção,
+    chamada pelas autoridades de composição de execução NOVA
+    (`build_all_providers`, `CouncilExecutionService.__init__`), NUNCA
+    pela reconstrução histórica.
+
+    ÚNICO ponto de comparação numérica desta regra no repositório --
+    qualquer chamador delega aqui, nunca reimplementa a comparação."""
+    value = policy.attempt_timeout_seconds
+    if not (math.isfinite(value) and value > 0):
+        raise ValueError(
+            "ProviderExecutionPolicy.attempt_timeout_seconds "
+            f"({value!r}) não é válido pra execução nova -- precisa ser positivo "
+            "e finito, mesmo que o objeto em si permaneça construível com outros "
+            "valores pra fins de reconstrução histórica."
+        )
+
+
+class DefaultModelAuthoritySnapshot(BaseModel):
+    """Provider Default-Model Snapshot Provenance V1 -- snapshot IMUTÁVEL,
+    tomado no instante do ACEITE de uma execução NOVA, da autoridade de
+    modelo padrão/fallback CONFIGURADA em cada provider autorizado
+    (`RunConfig.all_provider_authorities`) pra essa execução --
+    construído a partir dos objetos `LLMProvider` REALMENTE instanciados
+    no registry de runtime vigente naquele momento (`provider.default_model`),
+    nunca recalculado depois a partir de `Settings`/objetos de provider
+    reconstruídos posteriormente.
+
+    O QUE ISTO SIGNIFICA, exclusivamente:
+
+        "esta era a autoridade de modelo fallback configurada, disponível
+        a esta execução aceita, no momento do aceite."
+
+    O QUE ISTO NÃO SIGNIFICA (nunca deve ser apresentado como
+    significando):
+
+    - que aquele provider foi de fato chamado;
+    - que aquele modelo foi solicitado em algum `CompletionRequest`
+      (isso é `RequestProvenance`/`CompletionRequest.model`, inteiramente
+      separado -- ver `app/models/request_provenance.py`);
+    - que aquele modelo foi reportado pelo provider como tendo executado
+      (isso é `ModelIdentitySource`/`ModelResponse.model` -- inteiramente
+      separado);
+    - que a chamada teve sucesso;
+    - que aquele modelo estava disponível remotamente;
+    - que as credenciais eram válidas.
+
+    Deliberadamente nomeado `configured_default_models` (nunca
+    `models_used`/`models_executed`/`requested_models`) -- nenhum desses
+    rótulos seria verdadeiro sobre o que este snapshot prova.
+
+    Existe EXCLUSIVAMENTE pra fechar um gap de auditoria: execuções
+    aceitas/em andamento/falhas inesperadas podem não ter NENHUMA
+    evidência de resposta de provider persistida (falha antes de
+    qualquer child record existir) -- sem este snapshot, um restart de
+    processo ou mudança de configuração de deployment tornaria
+    impossível recuperar qual autoridade de modelo fallback estava
+    configurada quando aquela execução foi aceita.
+
+    Chaves são os identificadores canônicos de provider EXATAMENTE de
+    `RunConfig.all_provider_authorities` (participantes selecionados +
+    os 4 papéis internos, deduplicados por construção de `frozenset`) --
+    nunca todo provider instalado, nunca todo provider do Settings.
+
+    F2 (repair pós-revisão independente, MEDIUM) -- `frozen=True` do
+    Pydantic só impede REATRIBUIR o campo (`snapshot.configured_default_models
+    = {...}`); o `dict` mutável por baixo continuava aceitando mutação
+    de ITEM (`snapshot.configured_default_models["x"] = "y"`) sem
+    levantar nada -- uma cópia defensiva sozinha não bastaria, porque o
+    campo EXPOSTO continuaria mutável pra qualquer referência que o
+    chamador guardasse. `configured_default_models` é tipado como
+    `Mapping[str, str]` (nunca `dict[str, str]`) e o validador abaixo
+    congela o valor validado num `types.MappingProxyType` -- item
+    assignment levanta `TypeError` genuíno, em toda instância (aceita,
+    reconstruída de storage, ou pública), sem exceção. `field_serializer`
+    devolve um `dict` comum na serialização -- o formato de wire/
+    persistência (`{"configured_default_models": {"provider": "model",
+    ...}}`) permanece BYTE-IDÊNTICO ao de antes deste repair."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    configured_default_models: Mapping[str, str] = Field(min_length=1)
+
+    @field_validator("configured_default_models")
+    @classmethod
+    def _provider_and_model_identifiers_are_well_formed(
+        cls, value: Mapping[str, str]
+    ) -> MappingProxyType[str, str]:
+        for provider_name, model_name in value.items():
+            if not provider_name or not provider_name.strip():
+                raise ValueError(
+                    "configured_default_models não pode ter chave de provider vazia"
+                )
+            if not model_name or not model_name.strip():
+                raise ValueError(
+                    f"configured_default_models[{provider_name!r}] não pode ser um "
+                    "modelo padrão vazio/só espaço em branco"
+                )
+        # Congela DEPOIS de validar -- devolve um mapping genuinamente
+        # imutável (item assignment levanta TypeError), nunca o dict
+        # mutável original recebido como input.
+        return MappingProxyType(dict(value))
+
+    @field_serializer("configured_default_models")
+    def _serialize_configured_default_models(
+        self, value: Mapping[str, str]
+    ) -> dict[str, str]:
+        # O wire format continua um dict JSON comum -- MappingProxyType
+        # é só a representação INTERNA imutável, nunca o formato
+        # persistido/público.
+        return dict(value)
 
 
 class ProviderResponse(BaseModel):

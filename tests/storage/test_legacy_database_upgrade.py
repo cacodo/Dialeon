@@ -951,3 +951,131 @@ async def test_request_provenance_upgrade_is_idempotent_across_repeated_init_db(
     conn.close()
     assert value is None
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Provider Default-Model Snapshot Provenance V1 -- mesmas 3 tabelas de
+# _PROVIDER_EXECUTION_POLICY_TABLES (council_runs/quorum_failures/
+# accepted_runs), nunca uma tupla nova/independente.
+# ---------------------------------------------------------------------------
+
+
+async def _make_pre_default_model_snapshot_db(db_path: str) -> None:
+    """Cria o schema ATUAL e remove só `default_model_authority_snapshot_json`
+    das 3 tabelas -- mesma disciplina de `_make_pre_t02_2_db`."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN default_model_authority_snapshot_json")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_default_model_snapshot_database_gets_column_added_to_all_three_tables(tmp_path):
+    db_path = str(tmp_path / "pre_default_model_snapshot.db")
+    await _make_pre_default_model_snapshot_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns_before = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "default_model_authority_snapshot_json" not in columns_before, table
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns_after = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "default_model_authority_snapshot_json" in columns_after, table
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_default_model_snapshot_council_run_gets_null_never_current_registry(tmp_path):
+    """Uma linha `council_runs` persistida antes desta coluna existir
+    precisa reconstruir com `default_model_authority_snapshot_json=NULL`
+    -- NUNCA um snapshot derivado do registry de provider atual."""
+    db_path = str(tmp_path / "pre_default_model_snapshot_with_row.db")
+    await _make_pre_default_model_snapshot_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="legacy-run-snapshot-1")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    (snapshot_json,) = conn.execute(
+        "SELECT default_model_authority_snapshot_json FROM council_runs "
+        "WHERE id = 'legacy-run-snapshot-1'"
+    ).fetchone()
+    conn.close()
+    assert snapshot_json is None
+
+
+@pytest.mark.asyncio
+async def test_default_model_snapshot_upgrade_does_not_touch_provider_execution_policy_column(
+    tmp_path,
+):
+    """Upgrades independentes -- adicionar `default_model_authority_snapshot_json`
+    não deve tocar `provider_execution_policy_json` (já testado isoladamente
+    acima) mesmo quando ambas as colunas estão ausentes ao mesmo tempo
+    (ex.: banco genuinamente pré-T02.2 fazendo upgrade direto pra esta
+    versão, pulando o estado intermediário)."""
+    db_path = str(tmp_path / "pre_default_model_snapshot_full_legacy.db")
+    await _make_pre_t02_2_db(db_path)  # remove provider_execution_policy_json
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN default_model_authority_snapshot_json")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "provider_execution_policy_json" in columns, table
+        assert "default_model_authority_snapshot_json" in columns, table
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_default_model_snapshot_upgrade_is_idempotent_across_repeated_init_db(tmp_path):
+    db_path = str(tmp_path / "pre_default_model_snapshot_idempotent.db")
+    await _make_pre_default_model_snapshot_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="legacy-run-snapshot-2")
+    conn.commit()
+    conn.close()
+
+    for _ in range(3):
+        engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+        await init_db(engine)
+        await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    for table in _PROVIDER_EXECUTION_POLICY_TABLES:
+        columns = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
+        assert "default_model_authority_snapshot_json" in columns, table
+    (value,) = conn.execute(
+        "SELECT default_model_authority_snapshot_json FROM council_runs "
+        "WHERE id = 'legacy-run-snapshot-2'"
+    ).fetchone()
+    count = conn.execute("SELECT COUNT(*) FROM council_runs").fetchone()[0]
+    conn.close()
+    assert value is None
+    assert count == 1

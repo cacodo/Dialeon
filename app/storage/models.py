@@ -107,6 +107,13 @@ class CouncilRunRow(Base):
     # `_upgrade_legacy_provider_execution_policy`, app/storage/database.py)
     # -- nunca backfillado com o default atual.
     provider_execution_policy_json: Mapped[dict | None] = mapped_column(JSON)
+    # Provider Default-Model Snapshot Provenance V1 -- ver docstring
+    # de DefaultModelAuthoritySnapshot (app/models/provider_models.py).
+    # Mesma disciplina de provider_execution_policy_json acima: um
+    # único campo JSON estruturado, validado como uma unidade só na
+    # reconstrução, NULL só pra linhas persistidas antes desta coluna
+    # existir -- nunca backfillado.
+    default_model_authority_snapshot_json: Mapped[dict | None] = mapped_column(JSON)
 
 
 class AcceptedRunRow(Base):
@@ -164,6 +171,13 @@ class AcceptedRunRow(Base):
     # Sobrevive INTACTO à transição "running" -> "failed"
     # (`save_unexpected_failure` nunca toca esta coluna).
     provider_execution_policy_json: Mapped[dict | None] = mapped_column(JSON)
+    # Provider Default-Model Snapshot Provenance V1 -- ver docstring
+    # de DefaultModelAuthoritySnapshot (app/models/provider_models.py).
+    # Mesma disciplina de provider_execution_policy_json acima: um
+    # único campo JSON estruturado, validado como uma unidade só na
+    # reconstrução, NULL só pra linhas persistidas antes desta coluna
+    # existir -- nunca backfillado.
+    default_model_authority_snapshot_json: Mapped[dict | None] = mapped_column(JSON)
 
 
 class ModelResponseRow(Base):
@@ -733,3 +747,10 @@ class QuorumFailureRow(Base):
     # transação (ver CouncilRepository.save_quorum_failure), NULL só
     # pra linhas legadas pré-upgrade.
     provider_execution_policy_json: Mapped[dict | None] = mapped_column(JSON)
+    # Provider Default-Model Snapshot Provenance V1 -- ver docstring
+    # de DefaultModelAuthoritySnapshot (app/models/provider_models.py).
+    # Mesma disciplina de provider_execution_policy_json acima: um
+    # único campo JSON estruturado, validado como uma unidade só na
+    # reconstrução, NULL só pra linhas persistidas antes desta coluna
+    # existir -- nunca backfillado.
+    default_model_authority_snapshot_json: Mapped[dict | None] = mapped_column(JSON)

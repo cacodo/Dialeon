@@ -11,7 +11,10 @@ toda vez que algo precisar de um provider.
 from __future__ import annotations
 
 from app.config import Settings
-from app.models.provider_models import ProviderExecutionPolicy
+from app.models.provider_models import (
+    ProviderExecutionPolicy,
+    validate_provider_execution_policy_for_new_execution,
+)
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import LLMProvider
 from app.providers.gemini_provider import GeminiProvider
@@ -56,7 +59,19 @@ def build_all_providers(
     atualmente -- um `int(...)` aqui truncava 0.9s->0s silenciosamente,
     violando esse invariante. `max_transport_attempts_per_completion - 1`
     continua desfazendo exatamente o `+ 1` que `from_settings` aplicou
-    -- conversão inalterada, já aprovada independentemente."""
+    -- conversão inalterada, já aprovada independentemente.
+
+    Provider Execution Policy Finite New-Execution Boundary V1 --
+    `validate_provider_execution_policy_for_new_execution` roda ANTES
+    de qualquer `LLMProvider` ser construído -- defesa em profundidade
+    pra chamadores diretos desta função (testes, código interno) que
+    não passaram por `app/bootstrap.py`, que já resolve a política via
+    `ProviderExecutionPolicy.from_settings` (garantidamente finita/
+    positiva). Um `policy` externamente construído com
+    `attempt_timeout_seconds` não-finito/não-positivo nunca produz
+    providers "usáveis" com esse timeout -- a validação FALHA antes."""
+    validate_provider_execution_policy_for_new_execution(provider_execution_policy)
+
     timeout_seconds = provider_execution_policy.attempt_timeout_seconds
     max_retries = provider_execution_policy.max_transport_attempts_per_completion - 1
     return {

@@ -70,8 +70,21 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
     )
 
     result = await components.service.run(run_config)
+    # Provider Default-Model Snapshot Provenance V1 (F1 repair,
+    # review de independência) -- NUNCA recomputar o snapshot a partir
+    # do registry de provider AO VIVO aqui: o fato de provenance
+    # autoritativo é o que `CouncilExecutionService.run()` já construiu
+    # e persistiu ANTES do aceite durável. Recarrega o registro recém-
+    # gravado (a MESMA transação de `save_success` já commitou) e
+    # reusa exatamente `record.default_model_authority_snapshot`/
+    # `record.provider_execution_policy` -- o MESMO caminho de leitura
+    # que `GET /runs/{id}` já usa, nunca uma segunda fonte de verdade.
+    record = await components.repository.get_run(result.id)
+    assert isinstance(record, CompletedRunRecord)
     return completed_run_response(
-        result, provider_execution_policy=components.provider_execution_policy
+        record.council_run_result,
+        provider_execution_policy=record.provider_execution_policy,
+        default_model_authority_snapshot=record.default_model_authority_snapshot,
     )
 
 
@@ -97,7 +110,9 @@ async def get_run(run_id: str, request: Request) -> RunResponse:
 
     if isinstance(record, CompletedRunRecord):
         return completed_run_response(
-            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+            record.council_run_result,
+            provider_execution_policy=record.provider_execution_policy,
+            default_model_authority_snapshot=record.default_model_authority_snapshot,
         )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_run_response(record)
@@ -116,7 +131,9 @@ async def get_run_audit(run_id: str, request: Request) -> RunAuditResponse:
 
     if isinstance(record, CompletedRunRecord):
         return completed_run_audit(
-            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+            record.council_run_result,
+            provider_execution_policy=record.provider_execution_policy,
+            default_model_authority_snapshot=record.default_model_authority_snapshot,
         )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_audit(record)

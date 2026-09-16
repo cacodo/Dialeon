@@ -32,7 +32,7 @@ from app.editor.result import EditorResult
 from app.judge.result import JudgeResult
 from app.source_analysis.result import SourceAnalysisResult
 from app.models.domain import ClaimAssessment, ClaimSupport
-from app.models.provider_models import ProviderExecutionPolicy
+from app.models.provider_models import DefaultModelAuthoritySnapshot, ProviderExecutionPolicy
 from app.orchestrator.budget import sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
@@ -110,6 +110,18 @@ def _policy_from_json(data: dict | None) -> ProviderExecutionPolicy | None:
     return ProviderExecutionPolicy(**data) if data is not None else None
 
 
+def _default_model_authority_snapshot_from_json(
+    data: dict | None,
+) -> DefaultModelAuthoritySnapshot | None:
+    """Provider Default-Model Snapshot Provenance V1 -- mesma disciplina
+    de `_policy_from_json`: `None` é o valor HONESTO pra runs
+    persistidos antes desta coluna existir (ver
+    `_upgrade_legacy_default_model_authority_snapshot`,
+    app/storage/database.py) -- NUNCA substituído por um snapshot atual
+    reconstruído do registry de provider vigente agora."""
+    return DefaultModelAuthoritySnapshot(**data) if data is not None else None
+
+
 def _run_config_from_json(data: dict) -> RunConfig:
     """Reconstrói `RunConfig` a partir do JSON persistido -- nunca muta o
     dict recebido (sempre trabalha sobre uma cópia), porque este blob
@@ -177,6 +189,7 @@ class CouncilRepository:
         run_config: RunConfig,
         started_at: datetime,
         provider_execution_policy: ProviderExecutionPolicy,
+        default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None,
     ) -> None:
         """T02.4 -- grava o registro mínimo de aceite ANTES de qualquer
         chamada ao `CouncilRunner` (contrato de `CouncilExecutionService`).
@@ -186,7 +199,18 @@ class CouncilRepository:
         `provider_execution_policy` (T02.2): obrigatório, nunca `None` --
         um NOVO accepted run SEMPRE tem um snapshot concreto (é assim
         que este campo fica `None` só pra linhas legadas, nunca pra
-        escritas novas). Persistido verbatim, nunca recalculado."""
+        escritas novas). Persistido verbatim, nunca recalculado.
+
+        `default_model_authority_snapshot` (Provider Default-Model
+        Snapshot Provenance V1): OPCIONAL neste nível de repositório
+        (default `None`) -- diferente de `provider_execution_policy`,
+        deliberadamente, pra não forçar todo chamador direto de
+        `save_accepted` em teste (que não exercita esta provenance
+        específica) a passar um valor. O único chamador de PRODUÇÃO
+        (`CouncilExecutionService.run()`) SEMPRE constrói e passa um
+        valor concreto pra toda execução nova -- `None` aqui só ocorre
+        em chamadores de teste que não passam pelo service, nunca no
+        caminho de produção real."""
         async with session_scope(self._session_factory) as session:
             session.add(
                 AcceptedRunRow(
@@ -199,6 +223,11 @@ class CouncilRepository:
                     failure_message=None,
                     provider_execution_policy_json=provider_execution_policy.model_dump(
                         mode="json"
+                    ),
+                    default_model_authority_snapshot_json=(
+                        default_model_authority_snapshot.model_dump(mode="json")
+                        if default_model_authority_snapshot is not None
+                        else None
                     ),
                 )
             )
@@ -281,6 +310,11 @@ class CouncilRepository:
             provider_execution_policy_json = (
                 accepted_row.provider_execution_policy_json if accepted_row is not None else None
             )
+            default_model_authority_snapshot_json = (
+                accepted_row.default_model_authority_snapshot_json
+                if accepted_row is not None
+                else None
+            )
             session.add(
                 CouncilRunRow(
                     id=result.id,
@@ -289,6 +323,7 @@ class CouncilRepository:
                     completed_at=dt_to_naive_utc(result.completed_at),
                     run_config_json=result.run_config.model_dump(mode="json"),
                     provider_execution_policy_json=provider_execution_policy_json,
+                    default_model_authority_snapshot_json=default_model_authority_snapshot_json,
                     claim_processor_provider=debate.claim_processor_provider,
                     debate_skipped_reason=debate.debate_skipped_reason,
                     debate_cumulative_budget_exceeded=debate.cumulative_budget_exceeded,
@@ -455,6 +490,11 @@ class CouncilRepository:
             provider_execution_policy_json = (
                 accepted_row.provider_execution_policy_json if accepted_row is not None else None
             )
+            default_model_authority_snapshot_json = (
+                accepted_row.default_model_authority_snapshot_json
+                if accepted_row is not None
+                else None
+            )
             session.add(
                 QuorumFailureRow(
                     id=failure_id,
@@ -467,6 +507,7 @@ class CouncilRepository:
                     min_to_return=exc.min_to_return,
                     round_number=round_result.round_number,
                     provider_execution_policy_json=provider_execution_policy_json,
+                    default_model_authority_snapshot_json=default_model_authority_snapshot_json,
                 )
             )
             await session.flush()
@@ -908,6 +949,9 @@ class CouncilRepository:
         return CompletedRunRecord(
             council_run_result=council_run_result,
             provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
+            default_model_authority_snapshot=_default_model_authority_snapshot_from_json(
+                row.default_model_authority_snapshot_json
+            ),
         )
 
     async def _reconstruct_quorum_failure(
@@ -937,6 +981,9 @@ class CouncilRepository:
             min_to_return=row.min_to_return,
             round_result=round_result,
             provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
+            default_model_authority_snapshot=_default_model_authority_snapshot_from_json(
+                row.default_model_authority_snapshot_json
+            ),
         )
 
 
@@ -961,6 +1008,9 @@ def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord:
         failure_classification=row.failure_classification,
         failure_message=row.failure_message,
         provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
+        default_model_authority_snapshot=_default_model_authority_snapshot_from_json(
+            row.default_model_authority_snapshot_json
+        ),
     )
 
 

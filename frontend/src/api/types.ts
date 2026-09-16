@@ -34,6 +34,19 @@ export interface ProviderExecutionPolicy {
   max_transport_attempts_per_completion: number
 }
 
+// Provider Default-Model Snapshot Provenance V1 -- snapshot IMUTÁVEL,
+// tomado no aceite, da autoridade de modelo padrão/fallback CONFIGURADA
+// pra cada provider autorizado (ver
+// app/models/provider_models.py:DefaultModelAuthoritySnapshot). SIBLING
+// de RunConfigPublic, mesma disciplina de ProviderExecutionPolicy acima.
+//
+// NÃO significa que aquele modelo foi solicitado/executado/reportado --
+// é observacional/histórico, nunca uma opção de configuração editável
+// aqui. `null` só pra runs persistidos antes desta feature existir.
+export interface DefaultModelAuthoritySnapshot {
+  configured_default_models: Record<string, string>
+}
+
 // Provenance FECHADA de um campo `model`/`judge_model`/`editor_model` --
 // distingue um identificador de modelo genuinamente REPORTADO pelo
 // provider de um substituto de fallback pro modelo solicitado (ver
@@ -295,6 +308,7 @@ export interface CompletedRunResponse {
   accounting: AccountingSummary
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
+  default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
 }
 
 export interface QuorumFailureRunResponse {
@@ -308,6 +322,7 @@ export interface QuorumFailureRunResponse {
   accounting: RoundAccountingPublic
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
+  default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
 }
 
 // T02.4 -- run aceito ainda sem desfecho terminal: em andamento, ou o
@@ -320,6 +335,7 @@ export interface RunningRunResponse {
   started_at: string
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
+  default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
 }
 
 // T02.4 -- exceção inesperada durante a execução (nem validação de
@@ -334,6 +350,7 @@ export interface FailedRunResponse {
   message: string
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
+  default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
 }
 
 export type RunResponse =
@@ -377,6 +394,7 @@ export interface CompletedRunAudit {
   final_answer: FinalAnswerPublic
   accounting: AccountingSummary
   provider_execution_policy: ProviderExecutionPolicy | null
+  default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
   // Cross-Channel Reconciliation V1 -- null SÓ em execuções persistidas
   // antes deste recurso existir; nunca reinterpretado como
   // status="judge_unavailable" nem como nenhum channel_relationship.
@@ -394,6 +412,7 @@ export interface QuorumFailureAudit {
   min_to_return: number
   round_result: RoundAudit
   provider_execution_policy: ProviderExecutionPolicy | null
+  default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
 }
 
 // T02.4 -- um run "running"/"failed" nunca tem detalhe de auditoria

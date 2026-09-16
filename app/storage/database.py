@@ -73,7 +73,12 @@ async def init_db(engine: AsyncEngine) -> None:
     Provider-Neutral Request Provenance V1: mesmo tratamento pra
     `request_provenance_json` nas mesmas 5 tabelas de
     `_upgrade_legacy_model_identity_source` -- também sem backfill, ver
-    docstring de `_upgrade_legacy_request_provenance`."""
+    docstring de `_upgrade_legacy_request_provenance`.
+
+    Provider Default-Model Snapshot Provenance V1: mesmo tratamento pra
+    `default_model_authority_snapshot_json` nas mesmas 3 tabelas de
+    `_upgrade_legacy_provider_execution_policy` -- também sem backfill,
+    ver docstring de `_upgrade_legacy_default_model_authority_snapshot`."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_upgrade_legacy_had_uncertain_prior_attempts)
@@ -82,6 +87,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_provider_execution_policy)
         await conn.run_sync(_upgrade_legacy_model_identity_source)
         await conn.run_sync(_upgrade_legacy_request_provenance)
+        await conn.run_sync(_upgrade_legacy_default_model_authority_snapshot)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -232,6 +238,35 @@ def _upgrade_legacy_provider_execution_policy(sync_conn) -> None:  # noqa: ANN00
 
         sync_conn.execute(
             text(f"ALTER TABLE {table_name} ADD COLUMN provider_execution_policy_json TEXT")
+        )
+
+
+def _upgrade_legacy_default_model_authority_snapshot(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- Provider Default-Model Snapshot
+    Provenance V1. Mesma disciplina de
+    `_upgrade_legacy_provider_execution_policy` (mesmas 3 tabelas, e
+    reusa a MESMA tupla `_PROVIDER_EXECUTION_POLICY_TABLES` -- nenhuma
+    tupla nova/independente, já que as duas colunas compartilham
+    EXATAMENTE o mesmo conjunto de tabelas de envelope de aceite): só
+    `ALTER TABLE` quando a coluna genuinamente não existe, nunca
+    recalcula/backfilla um valor a partir de `Settings`/registry de
+    provider atual -- `default_model_authority_snapshot_json=NULL` é o
+    valor HONESTO pra toda linha persistida antes desta etapa (nenhuma
+    execução histórica pode ter esse fato reconstituído retroativamente
+    de forma confiável)."""
+    inspector = sa_inspect(sync_conn)
+    for table_name in _PROVIDER_EXECUTION_POLICY_TABLES:
+        if table_name not in inspector.get_table_names():
+            continue  # tabela nova, create_all() já a criou com a coluna
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        if "default_model_authority_snapshot_json" in existing_columns:
+            continue  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
+
+        sync_conn.execute(
+            text(
+                f"ALTER TABLE {table_name} ADD COLUMN "
+                "default_model_authority_snapshot_json TEXT"
+            )
         )
 
 

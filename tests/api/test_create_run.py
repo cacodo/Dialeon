@@ -4,7 +4,11 @@ from fastapi.testclient import TestClient
 
 from app.api.app import create_app
 from app.config import Settings
-from tests.api.helpers import make_components_factory
+from tests.api.helpers import (
+    SelfMutatingRegistryProvider,
+    _FakeRegistryProvider,
+    make_components_factory,
+)
 from tests.storage.fixtures import full_council_run_result, quorum_failure_exception
 
 
@@ -34,6 +38,58 @@ def test_create_run_completed_returns_201():
     body = resp.json()
     assert body["status"] == "completed"
     assert body["final_answer"]["answer_text"] == result.final_answer.answer_text
+
+
+def test_create_run_immediate_response_reports_accepted_time_default_model_not_live_registry():
+    """F1 (repair pós-revisão independente, MEDIUM) -- Provider
+    Default-Model Snapshot Provenance V1: a resposta imediata de
+    `POST /runs` precisa reportar o valor ACEITO no momento do aceite
+    durável, NUNCA um valor recomputado lendo o registry de provider ao
+    vivo de novo. `SelfMutatingRegistryProvider` devolve `default_model`
+    diferente na 2a leitura -- se a apresentação relesse o registry, o
+    corpo da resposta reportaria o valor ERRADO."""
+    result = full_council_run_result()
+    openai_provider = SelfMutatingRegistryProvider("model-A", "model-B")
+    factory = make_components_factory(
+        debate_result=result.debate_result,
+        judge_result=result.judge_result,
+        editor_result=result.editor_result,
+        provider_instances={
+            "openai": openai_provider,
+            "anthropic": _FakeRegistryProvider("claude-fixed"),
+        },
+    )
+    app = create_app(settings=_settings(), components_factory=factory)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/runs",
+            json={
+                "question": "Qual a capital do Brasil?",
+                "enabled_providers": ["openai"],
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["default_model_authority_snapshot"]["configured_default_models"][
+            "openai"
+        ] == "model-A"
+        # exatamente 1 leitura -- prova que nenhum caminho de
+        # apresentação relê `.default_model` depois do aceite.
+        assert openai_provider.read_count == 1
+
+        run_id = body["id"]
+
+        # GET /runs/{id} também precisa continuar reportando o valor
+        # ACEITO, nunca o valor "atual" (que já teria mudado pra
+        # model-B se algo tivesse lido o registry de novo).
+        get_resp = client.get(f"/runs/{run_id}")
+
+    get_body = get_resp.json()
+    assert get_body["default_model_authority_snapshot"]["configured_default_models"][
+        "openai"
+    ] == "model-A"
+    assert openai_provider.read_count == 1
     assert "id" in body
 
 

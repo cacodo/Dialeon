@@ -173,8 +173,18 @@ async def cmd_run(
             output.print_error(f"quórum insuficiente: {message}")
         return EXIT_INSUFFICIENT_QUORUM
 
+    # Provider Default-Model Snapshot Provenance V1 (F1 repair, review
+    # de independência) -- ver docstring equivalente em
+    # app/api/routes.py::create_run: NUNCA recomputar o snapshot a
+    # partir do registry de provider AO VIVO -- recarrega o registro
+    # recém-persistido e reusa o valor EXATO que já foi aceito/gravado,
+    # o MESMO caminho de leitura que `cmd_get` já usa.
+    record = await components.repository.get_run(result.id)
+    assert isinstance(record, CompletedRunRecord)
     response = completed_run_response(
-        result, provider_execution_policy=components.provider_execution_policy
+        record.council_run_result,
+        provider_execution_policy=record.provider_execution_policy,
+        default_model_authority_snapshot=record.default_model_authority_snapshot,
     )
     if as_json:
         output.emit_json(response)
@@ -218,7 +228,9 @@ async def cmd_get(components: AppComponents, *, run_id: str, as_json: bool) -> i
 
     if isinstance(record, CompletedRunRecord):
         response = completed_run_response(
-            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+            record.council_run_result,
+            provider_execution_policy=record.provider_execution_policy,
+            default_model_authority_snapshot=record.default_model_authority_snapshot,
         )
         if as_json:
             output.emit_json(response)
@@ -254,7 +266,9 @@ async def cmd_audit(components: AppComponents, *, run_id: str, as_json: bool) ->
 
     if isinstance(record, CompletedRunRecord):
         audit = completed_run_audit(
-            record.council_run_result, provider_execution_policy=record.provider_execution_policy
+            record.council_run_result,
+            provider_execution_policy=record.provider_execution_policy,
+            default_model_authority_snapshot=record.default_model_authority_snapshot,
         )
     elif isinstance(record, QuorumFailureRecord):
         audit = quorum_failure_audit(record)

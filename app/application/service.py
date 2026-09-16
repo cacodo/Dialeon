@@ -27,6 +27,10 @@ abaixo):
          `quorum.min_to_return > len(enabled_providers)`; nenhum
          registro é criado nesse caso -- uma execução assim NUNCA
          poderia satisfazer seu próprio quórum, mesmo com sucesso total)
+      -> constrói o snapshot de autoridade de modelo fallback CONFIGURADA
+         (Provider Default-Model Snapshot Provenance V1 --
+         `build_default_model_authority_snapshot`, a partir dos
+         objetos `LLMProvider` REALMENTE construídos, nunca de Settings)
       -> minta run_id + started_at (autoritativos a partir daqui)
       -> persiste o registro de aceite (repo.save_accepted) -- esta
          transação PRECISA completar antes de qualquer chamada ao runner
@@ -66,9 +70,14 @@ from app.application.errors import (
 )
 from app.council.result import CouncilRunResult
 from app.council.runner import CouncilRunner
-from app.models.provider_models import ProviderExecutionPolicy
+from app.models.provider_models import (
+    DefaultModelAuthoritySnapshot,
+    ProviderExecutionPolicy,
+    validate_provider_execution_policy_for_new_execution,
+)
 from app.orchestrator.config import RunConfig, validate_question, validate_quorum_feasibility
 from app.orchestrator.errors import InsufficientQuorumError
+from app.providers.base import LLMProvider
 from app.storage.repository import CouncilRepository
 
 # Mensagem sanitizada FIXA -- nunca `str(exc)`, nunca traceback, nunca
@@ -85,6 +94,37 @@ def _now() -> datetime:
 
 def _new_id() -> str:
     return str(uuid4())
+
+
+def build_default_model_authority_snapshot(
+    run_config: RunConfig, providers: dict[str, LLMProvider]
+) -> DefaultModelAuthoritySnapshot:
+    """Provider Default-Model Snapshot Provenance V1 -- constrói o
+    snapshot de autoridade de modelo fallback CONFIGURADA, a partir dos
+    objetos `LLMProvider` REALMENTE instanciados no registry de runtime
+    (`provider.default_model`), nunca de `Settings` recalculado. O
+    conjunto de providers snapshotado é EXATAMENTE
+    `run_config.all_provider_authorities` (participantes selecionados +
+    os 4 papéis internos, deduplicados por `frozenset` -- nunca todo
+    provider instalado, nunca só participantes).
+
+    Fail-closed: se `run_config` autoriza um provider ausente do
+    registry `providers`, levanta `UnknownProviderError` -- MESMA
+    convenção de erro de composição inválida já usada por
+    `CouncilExecutionService.run()` pra essa exata situação (nunca uma
+    segunda arquitetura de exceção). Redundante no caminho normal de
+    `.run()` (que já valida isso antes de chamar esta função), mas
+    mantém esta função independentemente correta/testável -- nunca
+    omite silenciosamente um provider autorizado ausente."""
+    missing = sorted(p for p in run_config.all_provider_authorities if p not in providers)
+    if missing:
+        raise UnknownProviderError(unknown_providers=missing, known_providers=sorted(providers))
+
+    configured_default_models = {
+        name: providers[name].default_model
+        for name in sorted(run_config.all_provider_authorities)
+    }
+    return DefaultModelAuthoritySnapshot(configured_default_models=configured_default_models)
 
 
 def _sanitize_unexpected_failure(exc: Exception) -> tuple[str, str]:
@@ -107,21 +147,29 @@ class CouncilExecutionService:
     de quórum, ou falha inesperada -- numa única chamada. `CouncilRunner`/
     `Orchestrator` nunca precisam saber que isso existe.
 
-    `known_providers` (Etapa 14, T19A.1): o conjunto de nomes de provider
-    realmente construídos (mesma fonte que `AppComponents.providers`) --
-    é contra ele que TODA autoridade de provider do `RunConfig`
-    (`run_config.all_provider_authorities` -- Etapa 14 validava só
-    `enabled_providers`; T02.4 repair, achado MEDIUM da revisão
-    independente, estendeu pros 4 papéis internos também) é validada,
-    ANTES de qualquer chamada ao `CouncilRunner`. Essa checagem morava só
-    em `app/api/routes.py` até a Etapa 14; movida pra cá porque é a
-    boundary reutilizável de verdade -- API e CLI (e qualquer cliente
-    futuro) compartilham a MESMA regra por construção, em vez de cada um
-    reimplementá-la (achado do Repo Evidence Pack de T19A.1). Esta
-    validação NUNCA depende de `bootstrap._validate_internal_provider_config`
-    ter rodado -- `CouncilExecutionService` é a boundary de aceite
-    arquitetural e pode ser construído/testado independentemente da
-    composition root normal (achado da revisão independente do T02.4).
+    `providers` (Etapa 14/T19A.1, ampliado no Provider Default-Model
+    Snapshot Provenance V1): o registry REAL de `LLMProvider`
+    construídos (mesma instância que `AppComponents.providers`) -- é
+    contra `frozenset(providers)` que TODA autoridade de provider do
+    `RunConfig` (`run_config.all_provider_authorities` -- Etapa 14
+    validava só `enabled_providers`; T02.4 repair, achado MEDIUM da
+    revisão independente, estendeu pros 4 papéis internos também) é
+    validada, ANTES de qualquer chamada ao `CouncilRunner`. Essa
+    checagem morava só em `app/api/routes.py` até a Etapa 14; movida pra
+    cá porque é a boundary reutilizável de verdade -- API e CLI (e
+    qualquer cliente futuro) compartilham a MESMA regra por construção,
+    em vez de cada um reimplementá-la (achado do Repo Evidence Pack de
+    T19A.1). Esta validação NUNCA depende de
+    `bootstrap._validate_internal_provider_config` ter rodado --
+    `CouncilExecutionService` é a boundary de aceite arquitetural e pode
+    ser construído/testado independentemente da composition root normal
+    (achado da revisão independente do T02.4).
+
+    Antes só um `frozenset[str]`/`set[str]` de NOMES bastava
+    (`known_providers`) -- agora os objetos de provider EM SI são
+    necessários pra construir `DefaultModelAuthoritySnapshot`
+    (`provider.default_model`, ver `build_default_model_authority_snapshot`
+    acima) no momento do aceite de cada execução nova.
 
     `provider_execution_policy` (T02.2): a MESMA instância resolvida
     (`ProviderExecutionPolicy.from_settings`, chamada uma única vez em
@@ -137,12 +185,26 @@ class CouncilExecutionService:
         self,
         runner: CouncilRunner,
         repository: CouncilRepository,
-        known_providers: frozenset[str] | set[str],
+        providers: dict[str, LLMProvider],
         provider_execution_policy: ProviderExecutionPolicy,
     ):
+        """Provider Execution Policy Finite New-Execution Boundary V1 --
+        `provider_execution_policy` é resolvido UMA ÚNICA VEZ por
+        aplicação composta (mesma instância reusada em todo `.run()`
+        desta instância de service, nunca revalidada por chamada) --
+        validar aqui, no construtor, é a boundary de aceite mais cedo
+        possível: um `provider_execution_policy` inválido pra execução
+        nova nunca deixa este objeto sequer existir, então nenhum
+        `.run()` posterior poderia alcançar `save_accepted`/o runner
+        com ele. `ValueError` propaga sem interceptação -- mesma
+        disciplina de `validate_quorum_feasibility` chamada por
+        `Orchestrator.run()`."""
+        validate_provider_execution_policy_for_new_execution(provider_execution_policy)
+
         self._runner = runner
         self._repository = repository
-        self._known_providers = frozenset(known_providers)
+        self._providers = providers
+        self._known_providers = frozenset(providers)
         self._provider_execution_policy = provider_execution_policy
 
     async def run(self, run_config: RunConfig) -> CouncilRunResult:
@@ -228,6 +290,16 @@ class CouncilExecutionService:
                 participant_count=len(run_config.enabled_providers),
             ) from None
 
+        # Provider Default-Model Snapshot Provenance V1 -- construído
+        # ANTES de mintar run_id/aceite durável (mesma ordem de
+        # `provider_execution_policy`/checagem de quórum acima): usa o
+        # MESMO registry `self._providers` já validado pela checagem de
+        # autoridade de provider logo acima (`unknown` vazio garante que
+        # todo autorizado existe em `self._providers`).
+        default_model_authority_snapshot = build_default_model_authority_snapshot(
+            run_config, self._providers
+        )
+
         run_id = _new_id()
         started_at = _now()
         await self._repository.save_accepted(
@@ -235,6 +307,7 @@ class CouncilExecutionService:
             run_config=run_config,
             started_at=started_at,
             provider_execution_policy=self._provider_execution_policy,
+            default_model_authority_snapshot=default_model_authority_snapshot,
         )
 
         try:
