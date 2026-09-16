@@ -1,0 +1,186 @@
+/*
+ * Design tokens -- fundação visual (UI Slice 1).
+ *
+ * Nenhum destes valores carrega significado de veredito/verdade. A marca
+ * (indigo/violeta) é identidade visual, nunca um sinal de "correto" --
+ * os estados semânticos (success/danger/warning/info/neutral) abaixo são
+ * uma família DELIBERADAMENTE separada da marca, e mesmo eles nunca
+ * substituem o rótulo textual: cor nunca é o único portador de sentido
+ * (WCAG 1.4.1) -- quem consome estes tokens continua precisando de texto/
+ * ícone/estrutura ao lado da cor.
+ *
+ * `--color-*`/`--space-*`/`--radius`/`--font-family` (nomes já existentes
+ * antes desta slice) são preservados como aliases estáveis pros seletores
+ * de componente que já existiam -- nenhuma classe precisou mudar de nome
+ * pra ganhar os novos valores.
+ */
+
+:root {
+  /* Deixa o navegador escolher a paleta nativa (scrollbar, campos de
+     formulário, date/time picker) que combina com o tema ativo, sem
+     precisar duplicar isso manualmente no bloco dark abaixo. */
+  color-scheme: light dark;
+
+  /* --- Marca: indigo/blue-violet --- */
+  --brand-100: #eeecfc;
+  --brand-300: #a79bf2;
+  --brand-500: #6558e8;
+  --brand-600: #564adf;
+  --brand-700: #493db8;
+  --brand-900: #2c2570;
+
+  /* --- Acento dourado restrito -- ênfase pontual, NUNCA veredito --- */
+  --accent-gold-100: #fbf1da;
+  --accent-gold-500: #e6b94a;
+  --accent-gold-700: #a97c1c;
+
+  /* --- Estados semânticos, independentes da marca --- */
+  --state-success-fg: #1f7a4d;
+  --state-success-bg: #e7f5ec;
+  --state-success-border: #a9dabe;
+
+  --state-danger-fg: #b23b32;
+  --state-danger-bg: #fcebea;
+  --state-danger-border: #efb6b0;
+
+  --state-warning-fg: #92590d;
+  --state-warning-bg: #fbf0de;
+  --state-warning-border: #e9c888;
+
+  --state-info-fg: #35608a;
+  --state-info-bg: #e8f1f9;
+  --state-info-border: #b7d3e8;
+
+  /* "contested/unresolved" -- neutro, deliberadamente cinza (nem marca,
+     nem nenhum dos quatro estados de valor acima). */
+  --state-neutral-fg: #55536b;
+  --state-neutral-bg: #efeef4;
+  --state-neutral-border: #d2d0de;
+
+  /* --- Superfícies / texto / bordas --- */
+  --color-bg: #fbfafc;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-fg: #201f2b;
+  --color-fg-muted: #5b5a6b;
+  --color-border: #e1dfe8;
+  --color-border-strong: #c7c4d6;
+
+  --color-link: var(--brand-700);
+  --color-link-hover: var(--brand-500);
+  --color-focus-ring: var(--brand-500);
+
+  /* Aliases estáveis (nomes usados por regras/seletores já existentes) */
+  --color-accent: var(--brand-500);
+  --color-danger: var(--state-danger-fg);
+  --color-warning: var(--state-warning-fg);
+  --color-muted: var(--color-fg-muted);
+
+  /* --- Espaçamento --- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.5rem;
+  --space-6: 4rem;
+
+  /* --- Raios --- */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  /* --- Elevação --- */
+  --shadow-sm: 0 1px 2px rgba(32, 31, 43, 0.06);
+  --shadow-md: 0 4px 14px rgba(32, 31, 43, 0.08);
+  --shadow-lg: 0 16px 36px rgba(32, 31, 43, 0.12);
+
+  /* --- Tipografia ---
+     "Inter" entra só como preferência de fonte instalada localmente
+     (sistema/navegador) -- nunca via @import/<link> de serviço externo
+     nem via pacote de fonte empacotado nesta slice, pra não introduzir
+     uma dependência de rede em runtime nem inflar o bundle empacotado
+     (ver Release Packaging Contract V1). Sem "Inter" instalada, o
+     fallback recai integralmente na pilha system-ui, que já é bastante
+     legível em qualquer plataforma suportada. */
+  --font-family:
+    'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-md: 1.0625rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.75rem;
+  --font-size-2xl: 2.25rem;
+
+  --line-height-tight: 1.25;
+  --line-height-base: 1.6;
+
+  /* Largura de linha legível pro texto corrido (resposta final, claims). */
+  --measure: 68ch;
+
+  /* --- Movimento --- */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand-100: #2c2770;
+    --brand-300: #7c71e0;
+    --brand-500: #8478f0;
+    --brand-600: #9186f4;
+    --brand-700: #a79bf7;
+    --brand-900: #e4e1fb;
+
+    --accent-gold-100: #3a2e12;
+    --accent-gold-500: #e6b94a;
+    --accent-gold-700: #f3d07e;
+
+    --state-success-fg: #7fd9a8;
+    --state-success-bg: #16321f;
+    --state-success-border: #2e6647;
+
+    --state-danger-fg: #f0928b;
+    --state-danger-bg: #3a1917;
+    --state-danger-border: #7a3934;
+
+    --state-warning-fg: #f0c878;
+    --state-warning-bg: #362708;
+    --state-warning-border: #7a5a1c;
+
+    --state-info-fg: #92c0e8;
+    --state-info-bg: #142331;
+    --state-info-border: #2e4e6d;
+
+    --state-neutral-fg: #b7b4c9;
+    --state-neutral-bg: #201f2c;
+    --state-neutral-border: #3b394d;
+
+    --color-bg: #131218;
+    --color-surface: #1b1a22;
+    --color-surface-raised: #21202a;
+    --color-fg: #edebf4;
+    --color-fg-muted: #a9a6bb;
+    --color-border: #302e3b;
+    --color-border-strong: #423f52;
+
+    --color-link: var(--brand-500);
+    --color-link-hover: var(--brand-300);
+    --color-focus-ring: var(--brand-500);
+
+    --color-accent: var(--brand-500);
+    --color-danger: var(--state-danger-fg);
+    --color-warning: var(--state-warning-fg);
+    --color-muted: var(--color-fg-muted);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 20px 44px rgba(0, 0, 0, 0.55);
+  }
+}

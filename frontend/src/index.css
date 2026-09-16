@@ -1,70 +1,266 @@
-:root {
-  --color-bg: #ffffff;
-  --color-fg: #1a1a1a;
-  --color-muted: #666666;
-  --color-border: #d9d9d9;
-  --color-accent: #2f6f4f;
-  --color-danger: #a3312a;
-  --color-warning: #8a6100;
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 1rem;
-  --space-4: 1.5rem;
-  --space-5: 2.5rem;
-  --radius: 8px;
-  --font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-}
+@import './styles/tokens.css';
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font-family: var(--font-family);
+  font-size: var(--font-size-base);
   color: var(--color-fg);
   background: var(--color-bg);
-  line-height: 1.5;
+  line-height: var(--line-height-base);
 }
 
+/* --- Tipografia --- */
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  line-height: var(--line-height-tight);
+  color: var(--color-fg);
+}
+
+h1 {
+  font-size: var(--font-size-xl);
+  margin: 0 0 var(--space-4);
+}
+
+h2 {
+  font-size: var(--font-size-lg);
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+h3 {
+  font-size: var(--font-size-md);
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+p {
+  margin: 0 0 var(--space-3);
+  max-width: var(--measure);
+}
+
+code,
+pre {
+  font-family: var(--font-family-mono);
+}
+
+/* --- Links --- */
+
+a {
+  color: var(--color-link);
+  text-decoration-thickness: from-font;
+  text-underline-offset: 0.15em;
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+a:hover {
+  color: var(--color-link-hover);
+}
+
+/* --- Foco acessível ---
+   Só aparece pra navegação por teclado/AT (:focus-visible), nunca pra
+   clique de mouse -- o anel usa a MESMA cor de marca em ambos os temas,
+   nunca um estado semântico (foco não é "correto"/"incorreto"). */
+
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* --- Controles de formulário --- */
+
+textarea,
+input,
+select,
+button {
+  font-family: inherit;
+  font-size: var(--font-size-base);
+  color: var(--color-fg);
+}
+
+textarea,
+input,
+select {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+textarea:hover,
+input:hover,
+select:hover {
+  border-color: var(--color-border-strong);
+}
+
+textarea:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px var(--brand-100);
+}
+
+textarea:disabled,
+input:disabled,
+select:disabled {
+  background: var(--color-bg);
+  color: var(--color-fg-muted);
+  cursor: not-allowed;
+}
+
+fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin: 0;
+}
+
+legend {
+  padding: 0 var(--space-1);
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* --- Botões ---
+   Reset único de base -- todo <button> (com ou sem classe própria) ganha
+   uma aparência de controle secundário coerente; `.run-composer__submit`
+   sobrescreve pra virar o botão primário (preenchido) da tela. */
+
+button {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  color: var(--color-fg-muted);
+  border-color: var(--color-border);
+  background: var(--color-bg);
+}
+
+/* --- Movimento reduzido ---
+   Zera duração/deslocamento de transições e animações, sem remover o
+   estado final (hover/focus continuam funcionando, só sem a animação). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* --- Container / legibilidade responsiva --- */
+
 main {
-  max-width: 720px;
+  max-width: 860px;
   margin: 0 auto;
   padding: var(--space-4);
 }
 
-h1 {
-  font-size: 1.75rem;
-  margin-bottom: var(--space-4);
+@media (max-width: 480px) {
+  main {
+    padding: var(--space-3);
+  }
+
+  h1 {
+    font-size: var(--font-size-lg);
+  }
 }
 
-textarea, input, button {
-  font-family: inherit;
-  font-size: 1rem;
-}
+/* --- Componentes existentes, restyled sobre os novos tokens --- */
 
 .run-composer__input {
   width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
   resize: vertical;
+}
+
+.run-composer__label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-weight: 600;
+}
+
+.run-composer__source-toggle {
+  margin-top: var(--space-2);
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-link);
+  font-weight: 600;
+}
+
+.run-composer__source-toggle:hover:not(:disabled) {
+  background: none;
+  border: none;
+  color: var(--color-link-hover);
+}
+
+.run-composer__source {
+  margin-top: var(--space-3);
+}
+
+.run-composer__source-hint {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
 }
 
 .run-composer__submit {
   margin-top: var(--space-3);
   padding: var(--space-2) var(--space-4);
-  background: var(--color-accent);
-  color: white;
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
+  background: var(--brand-500);
+  color: #ffffff;
+  border: 1px solid var(--brand-500);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.run-composer__submit:hover:not(:disabled) {
+  background: var(--brand-700);
+  border-color: var(--brand-700);
 }
 
 .run-composer__submit:disabled {
   background: var(--color-border);
-  color: var(--color-muted);
-  cursor: not-allowed;
+  border-color: var(--color-border);
+  color: var(--color-fg-muted);
+  box-shadow: none;
 }
 
 .run-composer__error {
@@ -76,17 +272,10 @@ textarea, input, button {
 }
 
 .provider-selector__summary {
-  background: none;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: var(--space-2) var(--space-3);
-  cursor: pointer;
+  background: var(--color-surface);
 }
 
 .provider-selector__panel {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: var(--space-3);
   margin-top: var(--space-2);
 }
 
@@ -98,18 +287,21 @@ textarea, input, button {
 .final-answer {
   margin-top: var(--space-4);
   padding: var(--space-4);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .final-answer__text {
-  font-size: 1.1rem;
+  font-size: var(--font-size-md);
+  max-width: var(--measure);
   white-space: pre-wrap;
 }
 
 .final-answer__status {
-  color: var(--color-muted);
-  font-size: 0.9rem;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
 }
 
 .accounting {
@@ -141,20 +333,35 @@ textarea, input, button {
   display: flex;
   justify-content: space-between;
   padding: var(--space-3);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   margin-bottom: var(--space-2);
   text-decoration: none;
   color: inherit;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
 }
 
-.claims-list, .participant-responses, .deliberation-outcomes,
-.source-analysis__relations, .source-analysis__rejected {
+.history__item a:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.claims-list,
+.participant-responses,
+.deliberation-outcomes,
+.source-analysis__relations,
+.source-analysis__rejected {
   list-style: none;
   padding: 0;
 }
 
-.claims-list__item, .participant-response, .source-analysis__relation {
+.claims-list__item,
+.participant-response,
+.source-analysis__relation {
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: var(--space-3);
@@ -164,21 +371,39 @@ textarea, input, button {
 .source-analysis__excerpt {
   margin: var(--space-2) 0 0;
   padding-left: var(--space-3);
-  border-left: 3px solid var(--color-border);
+  border-left: 3px solid var(--color-border-strong);
   font-style: italic;
+  color: var(--color-fg-muted);
 }
 
-.claims-list__toggle, .participant-response__toggle, .inspection-panel__open {
+.claims-list__toggle,
+.participant-response__toggle,
+.inspection-panel__open {
   background: none;
   border: none;
   text-align: left;
-  cursor: pointer;
   padding: 0;
-  color: var(--color-accent);
+  color: var(--color-link);
   font-weight: 600;
 }
 
-[role="alert"] {
-  border-left: 4px solid var(--color-danger);
+.claims-list__toggle:hover:not(:disabled),
+.participant-response__toggle:hover:not(:disabled),
+.inspection-panel__open:hover:not(:disabled) {
+  background: none;
+  border: none;
+  color: var(--color-link-hover);
+}
+
+/* role="alert" continua um sinal de ATENÇÃO genérico (erro de request,
+   quórum insuficiente, falha inesperada) -- deliberadamente restrito a um
+   traço lateral discreto, nunca um bloco colorido cheio: uma seção de
+   "quórum insuficiente" não é o mesmo tipo de evento que uma falha
+   inesperada, e um preenchimento sólido de "danger" pra ambos exageraria
+   a severidade da primeira. A distinção fina entre esses subtipos de
+   alerta permanece só no texto desta slice (fora de escopo -- ver
+   "redesign da informação de auditoria"). */
+[role='alert'] {
   padding-left: var(--space-3);
+  border-left: 3px solid var(--color-danger);
 }
