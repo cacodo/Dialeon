@@ -1,8 +1,14 @@
-// DTOs HTTP -- espelham exatamente os schemas de app/api/schemas.py.
-// Etapa 12, Decision Delta secao 21: tipos do frontend podem representar
-// os Literals conhecidos mesmo que o OpenAPI atual exponha alguns como
-// string solta no backend -- isso e so tipagem estatica do lado do
-// client, nao exige nem implica patch no backend.
+// DTOs HTTP -- espelham os schemas públicos de app/presentation/schemas.py
+// (consumidos por app/api/routes.py e app/cli/commands.py; não existe
+// mais um app/api/schemas.py separado). Etapa 12, Decision Delta secao
+// 21: tipos do frontend podem representar os Literals conhecidos mesmo
+// que o schema atual exponha alguns como string solta no backend --
+// isso e so tipagem estatica do lado do client, nao exige nem implica
+// patch no backend. Mantido em paridade de campo com os schemas
+// públicos -- tipar um campo aqui é só contrato estático, nunca implica
+// que algum componente o exibe de forma exaustiva (ex.:
+// `numeric_verification_attempts`/campos brutos de
+// `SourceAnalysisAttemptPublic`).
 
 export interface TokenUsage {
   input_tokens: number | null
@@ -14,6 +20,25 @@ export interface PricingProvenance {
   tier: 'standard' | 'long_context'
   input_rate_usd_per_million_tokens: number
   output_rate_usd_per_million_tokens: number
+  // `null` quando a chave (provider, model) bateu diretamente na tabela
+  // de preços (sem alias envolvido) -- preenchido só quando a taxa foi
+  // resolvida através de um alias explícito de snapshot, contendo o
+  // identifier canônico cuja taxa foi efetivamente usada. Nunca reescreve
+  // `model`/`requested_model` -- só documenta a proveniência do preço.
+  canonical_model_id: string | null
+}
+
+// Provider-Neutral Request Provenance V1 -- proveniência de UM
+// CompletionRequest provider-neutro já finalizado (versão do contrato de
+// request da operação + digest determinístico SHA-256 do conteúdo
+// semântico do request). NUNCA prova que o provider remoto aceitou o
+// request, nem é o payload exato enviado via SDK/HTTP nativo do
+// provider. `null` no nível de quem referencia isto (ModelResponsePublic/
+// *AttemptPublic) significa "proveniência de request não foi registrada
+// pra este registro histórico".
+export interface RequestProvenance {
+  contract_version: string
+  request_digest: string
 }
 
 export interface ProviderErrorInfo {
@@ -71,6 +96,16 @@ export interface ModelResponsePublic {
   latency_ms: number
   attempts: number
   error: ProviderErrorInfo | null
+  // True se ao menos uma tentativa de transporte ANTES da última
+  // (sucesso ou falha) já tinha discado de verdade e falhou -- sinal
+  // adicional de incompletude de accounting, nunca substitui
+  // usage/cost_usd conhecidos por null.
+  had_uncertain_prior_attempts: boolean
+  // Motivo de parada NATIVO do provider (ex.: "end_turn"/"max_tokens"),
+  // preservado verbatim, nunca normalizado pra um enum cross-provider.
+  // `null` quando desconhecido/indisponível.
+  provider_finish_reason: string | null
+  request_provenance: RequestProvenance | null
   created_at: string
 }
 
@@ -154,6 +189,9 @@ export interface ClaimProcessingAttemptPublic {
   cost_usd: number | null
   pricing_provenance: PricingProvenance | null
   latency_ms: number
+  had_uncertain_prior_attempts: boolean
+  provider_finish_reason: string | null
+  request_provenance: RequestProvenance | null
   created_at: string
 }
 
@@ -199,6 +237,9 @@ export interface JudgeAttemptPublic {
   cost_usd: number | null
   pricing_provenance: PricingProvenance | null
   latency_ms: number
+  had_uncertain_prior_attempts: boolean
+  provider_finish_reason: string | null
+  request_provenance: RequestProvenance | null
   created_at: string
 }
 
@@ -218,6 +259,9 @@ export interface EditorAttemptPublic {
   cost_usd: number | null
   pricing_provenance: PricingProvenance | null
   latency_ms: number
+  had_uncertain_prior_attempts: boolean
+  provider_finish_reason: string | null
+  request_provenance: RequestProvenance | null
   created_at: string
 }
 
@@ -374,6 +418,28 @@ export interface EditorOutcome {
   cumulative_budget_exceeded: boolean
 }
 
+// Etapa 15 -- asserção aritmética normalizada exata que foi avaliada.
+// Strings decimais (nunca número JSON), mesmo contrato do backend.
+export interface ArithmeticAssertionPublic {
+  kind: 'arithmetic'
+  left: string
+  operator: '+' | '-' | '*' | '/'
+  right: string
+  asserted_result: string
+}
+
+// Etapa 15 -- audit-only: os 4 estados reais aparecem aqui
+// ('invalid_proposal'/'computation_failed' nunca chegam ao Judge).
+export interface DeterministicVerificationAttemptPublic {
+  id: string
+  claim_id: string
+  state: 'invalid_proposal' | 'computation_failed' | 'supports' | 'contradicts'
+  raw_proposal: unknown
+  assertion: ArithmeticAssertionPublic | null
+  computed_result: string | null
+  created_at: string
+}
+
 export interface CompletedRunAudit {
   status: 'completed'
   id: string
@@ -388,6 +454,7 @@ export interface CompletedRunAudit {
   critique_round: RoundAudit | null
   claims: ClaimPublic[]
   claim_processing_attempts: ClaimProcessingAttemptPublic[]
+  numeric_verification_attempts: DeterministicVerificationAttemptPublic[]
   judge_verdict: JudgeVerdictPublic | null
   judge_attempts: JudgeAttemptPublic[]
   editor_attempts: EditorAttemptPublic[]
@@ -445,9 +512,17 @@ export interface SourceAnalysisAttemptPublic {
   model: string
   model_identity_source: ModelIdentitySource | null
   transport_status: 'success' | 'error'
+  transport_error: ProviderErrorInfo | null
+  raw_output_text: string | null
   parse_status: 'accepted' | 'malformed' | 'not_attempted'
   parse_error_message: string | null
+  usage: TokenUsage | null
+  cost_usd: number | null
+  pricing_provenance: PricingProvenance | null
   latency_ms: number
+  had_uncertain_prior_attempts: boolean
+  provider_finish_reason: string | null
+  request_provenance: RequestProvenance | null
   created_at: string
 }
 
@@ -467,6 +542,7 @@ export interface RejectedSourceEntryPublic {
   id: string
   claim_id: string | null
   reason: 'omitted_by_model' | 'duplicate_claim_id' | 'invalid_entry'
+  raw_entry: unknown
   created_at: string
 }
 

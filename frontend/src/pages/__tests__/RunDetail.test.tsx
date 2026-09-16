@@ -70,6 +70,12 @@ const completedRun = {
     quorum: { min_for_debate: 1, min_to_return: 1 },
   },
   provider_execution_policy: { attempt_timeout_seconds: 45, max_transport_attempts_per_completion: 3 },
+  // Snapshot concreto -- `completedRun` representa uma execução real
+  // com provenance de deployment conhecida (sibling de
+  // provider_execution_policy acima, mesma disciplina).
+  default_model_authority_snapshot: {
+    configured_default_models: { openai: 'gpt-5.5', anthropic: 'claude-sonnet-5' },
+  },
 }
 
 const quorumRun = {
@@ -102,20 +108,29 @@ const quorumRun = {
     round_dispatch_timeout_seconds: 30,
     quorum: { min_for_debate: 2, min_to_return: 2 },
   },
+  // null junto de provider_execution_policy: null acima -- mesma
+  // disciplina de sibling (T02.2/Provider Default-Model Snapshot
+  // Provenance V1): registro tratado aqui como histórico/pré-feature,
+  // nunca uma execução nova sem provenance.
   provider_execution_policy: null,
+  default_model_authority_snapshot: null,
 }
 
 // T02.4 -- run aceito sem desfecho terminal ainda. T02.2 -- policy=null
 // (histórico/desconhecido) pra exercitar a renderização honesta.
+// default_model_authority_snapshot=null pelo mesmo motivo -- sibling de
+// provider_execution_policy, mesma disciplina de registro histórico.
 const runningRun = {
   status: 'running' as const,
   id: 'run-3',
   started_at: '2026-09-06T00:00:00Z',
   config: completedRun.config,
   provider_execution_policy: null,
+  default_model_authority_snapshot: null,
 }
 
-// T02.4 -- exceção inesperada durante a execução.
+// T02.4 -- exceção inesperada durante a execução. default_model_authority_snapshot=null
+// -- mesma disciplina de provider_execution_policy=null acima (registro histórico).
 const failedRun = {
   status: 'failed' as const,
   id: 'run-4',
@@ -125,6 +140,7 @@ const failedRun = {
   message: 'Erro interno inesperado durante a execução.',
   config: completedRun.config,
   provider_execution_policy: null,
+  default_model_authority_snapshot: null,
 }
 
 describe('RunDetail', () => {
@@ -184,12 +200,14 @@ describe('RunDetail', () => {
       critique_round: null,
       claims: [],
       claim_processing_attempts: [],
+      numeric_verification_attempts: [],
       judge_verdict: null,
       judge_attempts: [],
       editor_attempts: [],
       final_answer: completedRun.final_answer,
       accounting: completedRun.accounting,
       provider_execution_policy: completedRun.provider_execution_policy,
+      default_model_authority_snapshot: completedRun.default_model_authority_snapshot,
       reconciliation: {
         contract_version: 'source_judge_reconciliation_v1',
         status: 'complete',

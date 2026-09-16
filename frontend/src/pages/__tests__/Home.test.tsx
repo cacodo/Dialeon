@@ -63,6 +63,12 @@ const completedResult = {
     quorum: { min_for_debate: 1, min_to_return: 1 },
   },
   provider_execution_policy: null,
+  // Snapshot concreto: `completedResult` representa uma execução NOVA
+  // recém-aceita (retorno de POST /runs), nunca um registro histórico
+  // pré-feature -- ver docstring de DefaultModelAuthoritySnapshot.
+  default_model_authority_snapshot: {
+    configured_default_models: { openai: 'gpt-5.5', anthropic: 'claude-sonnet-5' },
+  },
 }
 
 beforeEach(() => {

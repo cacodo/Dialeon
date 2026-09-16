@@ -96,6 +96,7 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       },
     ],
     claim_processing_attempts: [],
+    numeric_verification_attempts: [],
     judge_verdict: {
       id: 'verdict-1',
       evaluated_through_round: 1,
@@ -127,6 +128,9 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       has_unknown_accounting_components: false,
     },
     provider_execution_policy: null,
+    default_model_authority_snapshot: {
+      configured_default_models: { openai: 'gpt-5.5', anthropic: 'claude-sonnet-5' },
+    },
     reconciliation: {
       contract_version: 'source_judge_reconciliation_v1',
       status: 'complete',

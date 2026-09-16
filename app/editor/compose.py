@@ -79,15 +79,28 @@ pelo outcome -- nunca pra reclassificar nada.
 
 Bounded contextual opening (patch de legibilidade pós-diagnóstico de run
 real) -- `EditorPlan.opening_style="contextual"` antepunha a `question`
-ORIGINAL inteira, verbatim, sem nenhum limite (`RunConfig.question` só
-valida `min_length=1`, ver app/orchestrator/config.py -- nenhum teto de
-tamanho, nenhuma normalização de whitespace). Pra uma pergunta curta de
-uma linha isso é perfeitamente legível; pra uma pergunta longa, um
-documento de requisitos colado, ou um prompt multi-linha/com bullets, a
-abertura passava a dominar `answer_text` inteiro -- um problema de
-LEGIBILIDADE de apresentação, nunca epistêmico (`question` nunca
-influencia claim/veredito, só é ecoada de volta pro usuário como
-enquadramento).
+ORIGINAL inteira, verbatim, sem nenhum limite de apresentação (Accepted
+Question Size Boundary V1, app/orchestrator/config.py: `validate_question`
+já rejeita, na fronteira de aceite -- `CreateRunRequest`/
+`CouncilExecutionService.run()` --, qualquer `question` acima de
+`MAX_QUESTION_CHARACTERS` [20_000 caracteres]; mas `RunConfig.question`
+em si continua só `min_length=1`, `RunConfig` NUNCA reaplica essa regra
+como field_validator próprio -- ver docstring de `CreateRunRequest.question`,
+app/presentation/schemas.py -- então `RunConfig` é diretamente
+construível, fora da fronteira de aceite, com uma `question` de qualquer
+tamanho). Pra uma pergunta curta de uma linha isso é perfeitamente
+legível; pra uma pergunta longa (mesmo dentro do teto de 20_000
+caracteres da fronteira de aceite), um documento de requisitos colado,
+ou um prompt multi-linha/com bullets, a abertura passava a dominar
+`answer_text` inteiro -- um problema de LEGIBILIDADE de apresentação,
+nunca epistêmico: o excerto limitado usado nesta abertura contextual
+(via `_bounded_question_excerpt`) NUNCA altera claims/veredito -- ambos
+já foram computados por etapas anteriores do pipeline (debate/extração/
+Judge) antes do Editor sequer rodar; aqui `question` só é ecoada de
+volta pro usuário como enquadramento de apresentação -- e este patch
+permanece necessário mesmo com o teto de aceite existente, tanto pra
+questions dentro desse teto quanto pra chamadores diretos de
+`RunConfig` que o contornam.
 
 A correção fica inteiramente em `_bounded_question_excerpt` abaixo,
 puramente determinística, sem nenhuma autoridade nova pra LLM nenhuma

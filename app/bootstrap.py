@@ -6,9 +6,10 @@ sabe nada de HTTP -- monta a cadeia providers -> pipeline -> persistência
 -> `CouncilExecutionService`, que é execution semantics compartilhada,
 não uma preocupação exclusiva da boundary HTTP (CLIENT SURFACE ≠
 EXECUTION AUTHORITY; COMPOSITION ROOT ≠ HTTP API CONCERN). `app/api/`
-usa este módulo como cliente; um futuro `app/cli/` (não implementado
-nesta etapa) poderia reusar exatamente o mesmo `build_app_components`
-sem depender de nada de `app/api/`.
+e `app/cli/` usam este módulo como clientes, cada um chamando o MESMO
+`build_app_components` no início do seu próprio lifecycle (ver
+`app/api/app.py`/`app/cli/main.py`) -- nenhum dos dois depende do
+outro, nem reimplementa a montagem da cadeia.
 
 Primeiro lugar do projeto inteiro que monta a cadeia completa:
 providers -> pipeline -> persistência -> CouncilExecutionService. Nada

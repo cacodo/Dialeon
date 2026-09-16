@@ -71,9 +71,23 @@ abaixo.
 - Contabilização de tokens/custo por execução, com orçamento monetário e
   orçamento agregado de tokens (ambos soft caps — ver
   [Orçamento e contabilização](#orçamento-e-contabilização)).
-- Provenance de identidade de modelo (o identificador solicitado nem
-  sempre é igual ao reportado pelo provider) e de política de execução
-  de provider (timeout/tentativas), preservadas na auditoria.
+- Provenance preservada na auditoria, em quatro dimensões distintas,
+  nenhuma delas prova de execução bem-sucedida ou de conteúdo real:
+  - **identidade de modelo** (`model_identity_source`): se o identificador
+    de modelo foi reportado pelo próprio provider ou é um fallback pro
+    modelo solicitado (o identificador solicitado nem sempre é igual ao
+    reportado);
+  - **autoridade de modelo padrão** (`DefaultModelAuthoritySnapshot`):
+    snapshot, tomado no aceite da execução, de qual modelo padrão/fallback
+    estava configurado por provider — não significa que esse modelo foi
+    de fato solicitado ou executado;
+  - **política de execução de provider** (`ProviderExecutionPolicy`):
+    snapshot do timeout/número de tentativas de transporte vigente no
+    deployment quando a execução foi aceita;
+  - **request provider-neutro** (`RequestProvenance`): versão do contrato
+    de request da operação + digest determinístico (SHA-256) do
+    `CompletionRequest` provider-neutro finalizado — nunca o payload
+    exato enviado ao provider, nunca prova de aceite remoto.
 - CLI (`dialeon`), API HTTP (FastAPI) e frontend (React) para disparar
   execuções e inspecionar resultados.
 

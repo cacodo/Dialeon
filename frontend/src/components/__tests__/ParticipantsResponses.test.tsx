@@ -20,6 +20,9 @@ function makeResponse(overrides: Partial<ModelResponsePublic> = {}): ModelRespon
     latency_ms: 100,
     attempts: 1,
     error: null,
+    had_uncertain_prior_attempts: false,
+    provider_finish_reason: null,
+    request_provenance: null,
     created_at: '2026-09-06T00:00:00Z',
     ...overrides,
   }

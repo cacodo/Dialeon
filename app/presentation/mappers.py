@@ -342,13 +342,18 @@ def completed_run_response(
 ) -> CompletedRunResponse:
     """`provider_execution_policy` (T02.2) é passado explicitamente pelo
     chamador -- `CouncilRunResult` NUNCA carrega isso (autoridade
-    distinta, ver docstring de `ProviderExecutionPolicy`). Quem chama
-    isto no caminho síncrono de criação (`POST /runs`) usa o snapshot
-    que acabou de ser aceito (`AppComponents.provider_execution_policy`);
-    quem chama depois de reconstruir de storage (`GET /runs/{id}`) usa
-    `CompletedRunRecord.provider_execution_policy` -- os dois SEMPRE
-    concordam pra qualquer run real (mesma instância resolvida), mas
-    esta função nunca decide isso por conta própria.
+    distinta, ver docstring de `ProviderExecutionPolicy`). TODO chamador
+    -- tanto o caminho síncrono de criação (`POST /runs`/`dialeon run`,
+    logo depois de `CouncilExecutionService.run()` suceder) quanto o de
+    reconstrução (`GET /runs/{id}`) -- recarrega o registro recém-
+    persistido (`repository.get_run(result.id)`) e usa
+    `CompletedRunRecord.provider_execution_policy` de lá; nenhum dos dois
+    lê `AppComponents.provider_execution_policy` pra montar a resposta de
+    um Run (ver docstring de `AppComponents`, app/bootstrap.py) -- ler de
+    volta o registro persistido é o que garante que a resposta imediata
+    reporte exatamente o que foi aceito, nunca um valor potencialmente
+    diferente observado depois. Esta função nunca decide isso por conta
+    própria, só recebe o valor já resolvido pelo chamador.
 
     `default_model_authority_snapshot` (Provider Default-Model Snapshot
     Provenance V1) segue a MESMA disciplina -- mas, diferente de

@@ -3,9 +3,11 @@ Constrói instâncias de LLMProvider a partir das Settings (app/config.py).
 
 Isto é só wiring — não decide quais providers usar em uma execução, não
 sabe o que é uma "rodada" ou um "debate". Essas decisões pertencem ao
-Orchestrator, que ainda não existe (etapa futura). Aqui existe só para
-não espalhar `OpenAIProvider(settings.openai_api_key, ...)` pelo código
-toda vez que algo precisar de um provider.
+Orchestrator (app/orchestrator/orchestrator.py), construído internamente
+por `DebateEngine` a partir do registry retornado aqui (ver
+app/bootstrap.py). Aqui existe só para não espalhar
+`OpenAIProvider(settings.openai_api_key, ...)` pelo código toda vez que
+algo precisar de um provider.
 """
 
 from __future__ import annotations

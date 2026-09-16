@@ -4,9 +4,9 @@ pra cá na Etapa 14 (patch de revisão, T19A.1): originalmente descritos
 como "Schemas HTTP", mas seu conteúdo real (Pydantic puro, sem FastAPI,
 sem Settings/secrets) é consumido tanto por `app/api/` (rotas HTTP)
 quanto por `app/cli/` (comandos embarcados) -- os dois são clientes do
-MESMO contrato de apresentação, nenhum importa o outro.
-`app/api/schemas.py` continua existindo como re-export fino, só pra não
-forçar churn em `routes.py`/`error_handlers.py` além do necessário.
+MESMO contrato de apresentação, nenhum importa o outro. `app/api/schemas.py`
+não existe mais -- `app/api/routes.py`/`app/api/error_handlers.py`
+importam diretamente deste módulo.
 
 Dedicados, não aliases de domínio/storage (Decision Delta secao 16) --
 exceto `TokenUsage`/`PricingProvenance`/`ProviderErrorInfo`

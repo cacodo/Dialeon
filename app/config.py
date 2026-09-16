@@ -66,7 +66,15 @@ class Settings(BaseSettings):
     # --- Banco de dados ---
     database_url: str = "sqlite+aiosqlite:///./llm_council.db"
 
-    # --- Limites padrão de execução (podem ser sobrescritos por request) ---
+    # --- Limites padrão de execução ---
+    # Aplicados a toda execução via `RunConfig.from_settings` -- as
+    # superfícies de criação atualmente suportadas (`POST /runs` via
+    # `CreateRunRequest`, `dialeon run`) não expõem nenhum campo pra
+    # sobrescrever estes valores por request; só question/enabled_providers/
+    # source_text são aceitos (ver app/presentation/schemas.py:CreateRunRequest).
+    # `RunConfig` continua diretamente construível com valores distintos por
+    # chamadores internos (ex.: testes), mas isso não é uma superfície de
+    # request suportada.
     # Dois conceitos distintos de "tokens", nunca confundidos entre si:
     # default_max_total_tokens = orçamento AGREGADO da execução inteira
     #   (soma de input+output de todos os providers), verificado DEPOIS
