@@ -92,18 +92,55 @@ export function RunComposer({
       {/* Barra de configuração secundária -- fonte opcional e seleção de
           participantes nunca competem visualmente com a pergunta em si
           (Decision Delta secao 6/7: provider selection nunca é a
-          identidade principal da tela). */}
+          identidade principal da tela). Fonte e Participantes são
+          controles-irmãos genuínos dentro do MESMO container flex: cada
+          botão fica na linha de controles, e o painel que ele abre
+          (`.run-composer__control-panel`) quebra pra própria linha cheia
+          logo abaixo -- nunca aninhado dentro de outro controle, nunca
+          flutuando numa coluna diferente (Polish dos controles
+          secundários do composer). */}
       <div className="run-composer__toolbar">
         <button
           type="button"
-          className="run-composer__source-toggle"
+          className="run-composer__control-toggle run-composer__source-toggle"
           onClick={() => setSourceExpanded((expanded) => !expanded)}
           disabled={submitting}
           aria-expanded={sourceExpanded}
           aria-controls="run-composer-source-panel"
         >
-          {sourceExpanded ? 'Ocultar fonte de texto' : '+ Adicionar fonte de texto (opcional)'}
+          Fonte (opcional)
+          <span className="run-composer__control-chevron" aria-hidden="true">
+            ▾
+          </span>
         </button>
+
+        {sourceExpanded && (
+          // Colapsar só oculta este painel -- `sourceText` continua vivo no
+          // estado do componente pai, nunca é limpo aqui, então reabrir
+          // depois de fechar mostra exatamente o que já tinha sido digitado.
+          <div
+            id="run-composer-source-panel"
+            className="run-composer__control-panel run-composer__source"
+          >
+            <label htmlFor="source-input" className="run-composer__label">
+              Fonte de texto (opcional)
+            </label>
+            <textarea
+              id="source-input"
+              className="run-composer__input"
+              value={sourceText}
+              onChange={(e) => setSourceText(e.target.value)}
+              placeholder="Cole um trecho de texto para comparar com as claims do debate…"
+              rows={4}
+              disabled={submitting}
+            />
+            <p className="run-composer__source-hint">
+              A fonte é comparada com as afirmações do debate como um canal independente do
+              julgamento -- não altera a avaliação do juiz, mas o relacionamento entre os dois
+              pode aparecer na resposta final.
+            </p>
+          </div>
+        )}
 
         {providersError && (
           <p role="alert" className="run-composer__error">
@@ -124,31 +161,6 @@ export function RunComposer({
           />
         )}
       </div>
-
-      {sourceExpanded && (
-        // Colapsar só oculta este painel -- `sourceText` continua vivo no
-        // estado do componente pai, nunca é limpo aqui, então reabrir
-        // depois de fechar mostra exatamente o que já tinha sido digitado.
-        <div id="run-composer-source-panel" className="run-composer__source">
-          <label htmlFor="source-input" className="run-composer__label">
-            Fonte de texto (opcional)
-          </label>
-          <textarea
-            id="source-input"
-            className="run-composer__input"
-            value={sourceText}
-            onChange={(e) => setSourceText(e.target.value)}
-            placeholder="Cole um trecho de texto para comparar com as claims do debate…"
-            rows={4}
-            disabled={submitting}
-          />
-          <p className="run-composer__source-hint">
-            A fonte é comparada com as afirmações do debate como um canal independente do
-            julgamento -- não altera a avaliação do juiz, mas o relacionamento entre os dois pode
-            aparecer na resposta final.
-          </p>
-        </div>
-      )}
 
       <button type="submit" disabled={!canSubmit} className="run-composer__submit">
         {submitting ? 'Investigando…' : 'Investigar'}

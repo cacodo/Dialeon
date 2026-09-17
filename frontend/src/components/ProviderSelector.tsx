@@ -29,20 +29,32 @@ export function ProviderSelector({ providers, selected, onChange, disabled }: Pr
     }
   }
 
+  // Fragment (não `<div>` wrapper) -- botão e painel viram filhos diretos
+  // de `.run-composer__toolbar`, o mesmo container flex que o controle de
+  // Fonte usa, pra que os dois leiam como controles-irmãos genuínos (não
+  // um aninhado dentro do outro) e o painel expandido quebre pra própria
+  // linha do jeito previsível de `.run-composer__control-panel` (Polish
+  // dos controles secundários do composer).
   return (
-    <div className="provider-selector">
+    <>
       <button
         type="button"
-        className="provider-selector__summary"
+        className="run-composer__control-toggle provider-selector__summary"
         aria-expanded={expanded}
         aria-controls="provider-selector-panel"
         onClick={() => setExpanded((v) => !v)}
         disabled={disabled}
       >
-        Participantes: {selected.length} selecionado{selected.length === 1 ? '' : 's'} ▾
+        Participantes: {selected.length} selecionado{selected.length === 1 ? '' : 's'}
+        <span className="run-composer__control-chevron" aria-hidden="true">
+          ▾
+        </span>
       </button>
       {expanded && (
-        <fieldset id="provider-selector-panel" className="provider-selector__panel">
+        <fieldset
+          id="provider-selector-panel"
+          className="run-composer__control-panel provider-selector__panel"
+        >
           <legend>Escolha os participantes</legend>
           {providers.map((providerId) => (
             <label key={providerId} className="provider-selector__option">
@@ -57,6 +69,6 @@ export function ProviderSelector({ providers, selected, onChange, disabled }: Pr
           ))}
         </fieldset>
       )}
-    </div>
+    </>
   )
 }

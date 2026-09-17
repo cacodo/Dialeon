@@ -334,12 +334,18 @@ main {
 
 /* Barra de configuração secundária -- fonte opcional + participantes,
    deliberadamente pequena/discreta (nunca do mesmo peso visual da
-   pergunta ou do botão de submit). */
+   pergunta ou do botão de submit). Fonte e Participantes são
+   controles-irmãos DENTRO do mesmo flex container: os dois botões ficam
+   na mesma linha (`align-items: center`), e cada painel que um deles
+   abre usa `flex-basis: 100%` (ver `.run-composer__control-panel`) pra
+   sempre quebrar numa linha cheia própria logo abaixo do botão que o
+   controla -- nunca dividindo espaço com o botão do outro controle, nem
+   ficando um sub-item estreito flutuando dentro de uma coluna diferente. */
 .run-composer__toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2) var(--space-3);
   margin: 0 0 var(--space-3);
 }
 
@@ -355,29 +361,64 @@ main {
   font-weight: 600;
 }
 
-.run-composer__source-toggle {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--color-link);
+/* Afordância de disclosure compartilhada por Fonte e Participantes --
+   mesmo tamanho, mesmo peso, mesmo estado de hover/foco/expandido, pra
+   que os dois botões leiam como o MESMO tipo de controle (Polish dos
+   controles secundários do composer). O estado expandido nunca depende
+   só de cor: a borda fica mais forte, o fundo muda de leve, E o chevron
+   gira -- três sinais redundantes, não um só. */
+.run-composer__control-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-fg-muted);
   font-size: var(--font-size-sm);
   font-weight: 600;
 }
 
-.run-composer__source-toggle:hover:not(:disabled) {
-  background: none;
-  border: none;
-  color: var(--color-link-hover);
+.run-composer__control-toggle:hover:not(:disabled) {
+  color: var(--color-fg);
+  border-color: var(--color-border-strong);
 }
 
-.run-composer__source {
-  margin-bottom: var(--space-3);
+.run-composer__control-toggle[aria-expanded='true'] {
+  color: var(--color-fg);
+  border-color: var(--color-border-strong);
+  background: var(--color-bg);
+}
+
+.run-composer__control-chevron {
+  font-size: 0.7em;
+  line-height: 1;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.run-composer__control-toggle[aria-expanded='true'] .run-composer__control-chevron {
+  transform: rotate(180deg);
+}
+
+/* Painel expandido compartilhado por Fonte e Participantes -- mesma
+   moldura (borda/raio/fundo/respiro) nos dois, e `flex-basis: 100%`
+   dentro do `.run-composer__toolbar` (que já é `flex-wrap`) garante que
+   QUALQUER um dos dois sempre quebre pra própria linha cheia, na ordem
+   em que aparece no documento (Fonte antes de Participantes) -- nunca
+   competindo por coluna com o botão do controle vizinho, mesmo quando os
+   dois estão abertos ao mesmo tempo. */
+.run-composer__control-panel {
+  flex-basis: 100%;
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
   animation: fade-in-up var(--duration-base) var(--ease-out);
 }
 
 .run-composer__source-hint {
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);
+  margin-bottom: 0;
 }
 
 .run-composer__submit {
@@ -406,29 +447,10 @@ main {
   color: var(--color-danger);
 }
 
-/* Configuração secundária -- deliberadamente pequena/discreta, nunca
-   com o peso visual de um mecanismo de provider (Decision Delta secao
-   6: provider mechanics nunca é a tarefa principal da tela). */
-.provider-selector {
-  margin: 0;
-}
-
-.provider-selector__summary {
-  background: var(--color-surface);
-  color: var(--color-fg-muted);
-  font-size: var(--font-size-sm);
-  padding: var(--space-1) var(--space-2);
-}
-
-.provider-selector__summary:hover:not(:disabled) {
-  color: var(--color-fg);
-}
-
-.provider-selector__panel {
-  margin-top: var(--space-2);
-  animation: fade-in-up var(--duration-base) var(--ease-out);
-}
-
+/* Participantes reusa inteiramente a afordância compartilhada
+   (`.run-composer__control-toggle` / `.run-composer__control-panel`) --
+   as únicas regras próprias que sobram aqui são as que não têm
+   equivalente em Fonte (o layout de cada opção de checkbox). */
 .provider-selector__option {
   display: block;
   padding: var(--space-1) 0;
