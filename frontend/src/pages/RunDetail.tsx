@@ -80,7 +80,14 @@ export function RunDetail() {
       <p>
         <Link to="/runs">← Histórico</Link>
       </p>
-      <h1>{run.config.question}</h1>
+      {/* Polimento visual UI Slice 2 -- a pergunta é contexto pra
+          resposta, nunca o protagonista visual desta tela (o resultado
+          da execução é quem tem maior autoridade visual aqui). O h1
+          continua sendo o heading primário da página -- só deliberadamente
+          pequeno/restrito, com a pergunta completa (que pode ser longa)
+          como texto legível logo abaixo, nunca truncada/reinterpretada. */}
+      <h1 className="run-detail__question-label">Pergunta</h1>
+      <p className="run-detail__question-text">{run.config.question}</p>
 
       {run.status === 'completed' && (
         <>

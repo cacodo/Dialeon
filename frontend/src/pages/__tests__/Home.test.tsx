@@ -109,7 +109,7 @@ describe('Home', () => {
 
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'Qual a capital do Brasil?')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
   })
@@ -124,7 +124,7 @@ describe('Home', () => {
     await screen.findByRole('button', { name: /3 selecionados/i })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(apiClient.createRun).toHaveBeenCalledWith({
       question: 'pergunta',
@@ -144,7 +144,7 @@ describe('Home', () => {
     // literalmente, nunca colapsados/removidos pelo próprio evento de
     // digitação.
     await userEvent.type(question, '  pergunta válida  ')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(apiClient.createRun).toHaveBeenCalledWith({
       question: '  pergunta válida  ',
@@ -161,7 +161,7 @@ describe('Home', () => {
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, '   ')
 
-    expect(screen.getByRole('button', { name: /perguntar/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
     expect(apiClient.createRun).not.toHaveBeenCalled()
   })
 
@@ -178,7 +178,7 @@ describe('Home', () => {
 
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(apiClient.createRun).toHaveBeenCalledWith({
       question: 'pergunta',
@@ -199,7 +199,7 @@ describe('Home', () => {
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
 
-    expect(screen.getByRole('button', { name: /perguntar/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
   })
 
   it('resposta vazia de GET /providers mantém seleção vazia e submit bloqueado', async () => {
@@ -211,7 +211,7 @@ describe('Home', () => {
 
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    expect(screen.getByRole('button', { name: /perguntar/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
   })
 
   it('mostra loading honesto (sem progresso falso) durante a execução', async () => {
@@ -222,9 +222,9 @@ describe('Home', () => {
     await screen.findByRole('button', { name: /1 selecionado\b/i })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent('Executando…')
+    expect(await screen.findByRole('status')).toHaveTextContent('Investigando…')
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
     expect(screen.queryByText(/extraindo claims/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/debatendo/i)).not.toBeInTheDocument()
@@ -238,7 +238,7 @@ describe('Home', () => {
     await screen.findByRole('button', { name: /1 selecionado\b/i })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'Qual a capital do Brasil?')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
     expect(screen.getByText('Só uma rodada de debate.')).toBeInTheDocument()
@@ -263,7 +263,7 @@ describe('Home', () => {
     await screen.findByRole('button', { name: /2 selecionados/i })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(await screen.findByText(/não houve participantes suficientes/i)).toBeInTheDocument()
     const link = screen.getByRole('link', { name: /ver detalhes/i })
@@ -280,7 +280,7 @@ describe('Home', () => {
     await screen.findByRole('button', { name: /1 selecionado\b/i })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(await screen.findByText(/participantes selecionados não existem/i)).toBeInTheDocument()
   })
@@ -295,7 +295,7 @@ describe('Home', () => {
     await screen.findByRole('button', { name: /1 selecionado\b/i })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /perguntar/i }))
+    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     const errorText = await screen.findByText(/algo deu errado do nosso lado/i)
     expect(errorText).toBeInTheDocument()

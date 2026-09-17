@@ -67,29 +67,64 @@ export function RunComposer({
 
   return (
     <form className="run-composer" onSubmit={handleSubmit}>
-      <label htmlFor="question-input" className="run-composer__label">
-        Faça uma pergunta
-      </label>
-      <textarea
-        id="question-input"
-        className="run-composer__input"
-        value={question}
-        onChange={(e) => setQuestion(e.target.value)}
-        placeholder="O que você quer investigar?"
-        rows={3}
-        disabled={submitting}
-      />
-
-      {!sourceExpanded && (
-        <button
-          type="button"
-          className="run-composer__source-toggle"
-          onClick={() => setSourceExpanded(true)}
+      <div className="run-composer__question">
+        {/* Único heading primário da tela agora (Polimento visual UI
+            Slice 2) -- "Nova pergunta"/"Faça uma pergunta" foram
+            colapsados nesta única frase, pra remover a hierarquia
+            redundante que existia antes. O label continua existindo
+            (acessibilidade nunca é sacrificada por simplicidade visual),
+            só visualmente oculto via `.sr-only`. */}
+        <h1 className="run-composer__heading">O que você quer investigar?</h1>
+        <label htmlFor="question-input" className="run-composer__label sr-only">
+          Faça uma pergunta
+        </label>
+        <textarea
+          id="question-input"
+          className="run-composer__input run-composer__input--question"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          placeholder="Escreva sua pergunta…"
+          rows={4}
           disabled={submitting}
-        >
-          + Adicionar fonte de texto (opcional)
-        </button>
-      )}
+        />
+      </div>
+
+      {/* Barra de configuração secundária -- fonte opcional e seleção de
+          participantes nunca competem visualmente com a pergunta em si
+          (Decision Delta secao 6/7: provider selection nunca é a
+          identidade principal da tela). */}
+      <div className="run-composer__toolbar">
+        {!sourceExpanded && (
+          <button
+            type="button"
+            className="run-composer__source-toggle"
+            onClick={() => setSourceExpanded(true)}
+            disabled={submitting}
+          >
+            + Adicionar fonte de texto (opcional)
+          </button>
+        )}
+
+        {providersError && (
+          <p role="alert" className="run-composer__error">
+            Não foi possível carregar os participantes disponíveis: {providersError}
+          </p>
+        )}
+        {providersLoading && (
+          <p aria-live="polite" className="run-composer__providers-status">
+            Carregando participantes disponíveis…
+          </p>
+        )}
+        {!providersLoading && !providersError && (
+          <ProviderSelector
+            providers={providers}
+            selected={selected}
+            onChange={setSelected}
+            disabled={submitting}
+          />
+        )}
+      </div>
+
       {sourceExpanded && (
         <div className="run-composer__source">
           <label htmlFor="source-input" className="run-composer__label">
@@ -112,23 +147,8 @@ export function RunComposer({
         </div>
       )}
 
-      {providersError && (
-        <p role="alert" className="run-composer__error">
-          Não foi possível carregar os participantes disponíveis: {providersError}
-        </p>
-      )}
-      {providersLoading && <p aria-live="polite">Carregando participantes disponíveis…</p>}
-      {!providersLoading && !providersError && (
-        <ProviderSelector
-          providers={providers}
-          selected={selected}
-          onChange={setSelected}
-          disabled={submitting}
-        />
-      )}
-
       <button type="submit" disabled={!canSubmit} className="run-composer__submit">
-        {submitting ? 'Executando…' : 'Perguntar'}
+        {submitting ? 'Investigando…' : 'Investigar'}
       </button>
     </form>
   )

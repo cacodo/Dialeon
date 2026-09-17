@@ -216,3 +216,21 @@ const CHANNEL_RELATIONSHIP_LABELS: Record<ChannelRelationship, string> = {
 export function formatChannelRelationship(relationship: ChannelRelationship): string {
   return CHANNEL_RELATIONSHIP_LABELS[relationship] ?? relationship
 }
+
+/**
+ * UI Slice 2 -- quebra puramente TIPOGRÁFICA de `answer_text` em blocos,
+ * pra leitura longa (parágrafos com respiro visual em vez de um único
+ * bloco `pre-wrap`). Divide só em linhas em branco literais (o mesmo
+ * separador que `_render_final_answer_text` já usa entre seções, ver
+ * app/editor/compose.py) -- NUNCA interpreta "- " como marcador de lista,
+ * nem promove nenhuma linha a heading: nenhuma estrutura nova é inventada
+ * sobre um texto cujo formato não é parte do contrato de tipos
+ * (`answer_text: string`). Quebras de linha simples DENTRO de um bloco
+ * são preservadas verbatim pelo chamador via `white-space: pre-wrap`.
+ */
+export function splitAnswerParagraphs(answerText: string): string[] {
+  return answerText
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter((block) => block.length > 0)
+}

@@ -5,6 +5,7 @@ import {
   formatDebateOutcome,
   formatFinalAnswerStatus,
   formatModelIdentitySource,
+  splitAnswerParagraphs,
 } from '../formatting'
 
 describe('formatEstimatedCost', () => {
@@ -95,5 +96,37 @@ describe('formatDebateOutcome', () => {
       cumulative_budget_exceeded: false,
     })
     expect(result).toBe('motivo_novo_desconhecido')
+  })
+})
+
+describe('splitAnswerParagraphs', () => {
+  it('devolve um único bloco quando não há linha em branco', () => {
+    expect(splitAnswerParagraphs('Uma resposta de uma linha só.')).toEqual([
+      'Uma resposta de uma linha só.',
+    ])
+  })
+
+  it('divide só em linhas em branco literais, preservando quebras simples dentro de um bloco', () => {
+    const text = 'Primeiro bloco.\n\nSegundo bloco,\ncom uma quebra simples dentro dele.'
+    expect(splitAnswerParagraphs(text)).toEqual([
+      'Primeiro bloco.',
+      'Segundo bloco,\ncom uma quebra simples dentro dele.',
+    ])
+  })
+
+  it('nunca interpreta "- " como marcador de lista nem promove nada a heading (só divide em blocos)', () => {
+    const text = 'Conclusões sustentadas pelo debate:\n- claim um\n- claim dois'
+    expect(splitAnswerParagraphs(text)).toEqual([
+      'Conclusões sustentadas pelo debate:\n- claim um\n- claim dois',
+    ])
+  })
+
+  it('tolera múltiplas linhas em branco seguidas sem gerar blocos vazios', () => {
+    expect(splitAnswerParagraphs('bloco um\n\n\n\nbloco dois')).toEqual(['bloco um', 'bloco dois'])
+  })
+
+  it('nunca inventa conteúdo pra uma resposta vazia/só-espaço', () => {
+    expect(splitAnswerParagraphs('')).toEqual([])
+    expect(splitAnswerParagraphs('   \n\n  ')).toEqual([])
   })
 })

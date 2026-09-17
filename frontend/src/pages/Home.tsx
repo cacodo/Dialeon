@@ -77,8 +77,6 @@ export function Home() {
 
   return (
     <main className="home">
-      <h1>Dialeon</h1>
-
       <RunComposer
         providers={providers}
         providersLoading={providersLoading}
@@ -88,7 +86,7 @@ export function Home() {
       />
 
       <div aria-live="polite" className="home__result">
-        {submission.phase === 'submitting' && <p role="status">Executando…</p>}
+        {submission.phase === 'submitting' && <p role="status">Investigando…</p>}
 
         {submission.phase === 'completed' && (
           <>
@@ -114,10 +112,6 @@ export function Home() {
           </p>
         )}
       </div>
-
-      <p className="home__history-link">
-        <Link to="/runs">Ver histórico de execuções</Link>
-      </p>
     </main>
   )
 }

@@ -2,7 +2,7 @@
 // aparecem logo abaixo, sempre que existirem (nunca escondidas).
 
 import type { FinalAnswerPublic } from '../api/types'
-import { formatFinalAnswerStatus } from '../api/formatting'
+import { formatFinalAnswerStatus, splitAnswerParagraphs } from '../api/formatting'
 
 interface FinalAnswerViewProps {
   finalAnswer: FinalAnswerPublic
@@ -12,7 +12,11 @@ export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
   return (
     <section aria-labelledby="final-answer-heading" className="final-answer">
       <h2 id="final-answer-heading">Resposta</h2>
-      <p className="final-answer__text">{finalAnswer.answer_text}</p>
+      <div className="final-answer__text">
+        {splitAnswerParagraphs(finalAnswer.answer_text).map((paragraph, index) => (
+          <p key={index}>{paragraph}</p>
+        ))}
+      </div>
 
       {finalAnswer.limitations.length > 0 && (
         <div className="final-answer__limitations">

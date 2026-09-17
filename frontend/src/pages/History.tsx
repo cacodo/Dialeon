@@ -52,9 +52,6 @@ export function History() {
   return (
     <main className="history">
       <h1>Histórico</h1>
-      <p>
-        <Link to="/">← Nova pergunta</Link>
-      </p>
 
       {state.phase === 'loading' && <p role="status">Carregando histórico…</p>}
       {state.phase === 'error' && <p role="alert">{state.message}</p>}
