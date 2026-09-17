@@ -46,6 +46,7 @@ import type {
   ClaimAssessmentPublic,
   ClaimPublic,
   ClaimReconciliationOutcomePublic,
+  ModelResponsePublic,
   ProviderExecutionPolicy,
   RoundAccountingPublic,
   RunAuditResponse,
@@ -53,10 +54,17 @@ import type {
 import {
   formatChannelRelationship,
   formatClaimVerdict,
+  formatDateTime,
   formatErrorCode,
+  formatEstimatedCost,
+  formatExactCost,
+  formatModelIdentitySource,
+  formatPricingCanonicalModelId,
   formatSourceChannelState,
   formatSourceRejectionReason,
   formatSourceRelation,
+  formatTokenCount,
+  formatUsageRecordPresence,
 } from '../api/formatting'
 import { AccountingView } from './AccountingView'
 import { ClaimInspectionList } from './ClaimInspectionList'
@@ -101,6 +109,7 @@ function TechnicalAudit({
   quarantinedAssessments,
   quarantinedSourceResults,
   quarantinedReconciliationOutcomes,
+  participantResponses,
 }: {
   accounting: AccountingSummary | RoundAccountingPublic
   policy: ProviderExecutionPolicy | null
@@ -112,6 +121,7 @@ function TechnicalAudit({
   quarantinedAssessments: QuarantinedAssessment[]
   quarantinedSourceResults: QuarantinedSourceResult[]
   quarantinedReconciliationOutcomes: QuarantinedReconciliationOutcome[]
+  participantResponses: ModelResponsePublic[]
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -138,6 +148,104 @@ function TechnicalAudit({
 
           <h3>Política de execução do provider</h3>
           <ProviderExecutionPolicyView policy={policy} />
+
+          {participantResponses.length > 0 && (
+            <>
+              <h3>Respostas dos participantes — registros técnicos</h3>
+              <p className="inspection-panel__technical-hint">
+                Um registro por resposta (distinto do consumo AGREGADO acima) -- identidade bruta
+                de modelo, erro completo e proveniência de request/preço, nunca inferidos quando
+                não registrados.
+              </p>
+              <dl className="participant-technical-records">
+                {participantResponses.map((response, index) => (
+                  <div
+                    // Chave de APRESENTAÇÃO, nunca uma identidade
+                    // persistida -- posição na lista JÁ combinada
+                    // inicial+crítica, colisão-segura mesmo se o mesmo
+                    // response.id aparecesse nas duas rodadas.
+                    // response.id continua exibido verbatim abaixo, só
+                    // como CONTEÚDO.
+                    key={`participant-response-${index}`}
+                    className="participant-technical-records__row"
+                  >
+                    <dt>id</dt>
+                    <dd>{response.id}</dd>
+                    <dt>provider</dt>
+                    <dd>{response.provider}</dd>
+                    <dt>Rodada</dt>
+                    <dd>{response.round_number}</dd>
+                    <dt>Modelo solicitado</dt>
+                    <dd>{response.requested_model}</dd>
+                    <dt>Modelo efetivo</dt>
+                    <dd>{response.model}</dd>
+                    <dt>Identidade do modelo</dt>
+                    <dd>{formatModelIdentitySource(response.model_identity_source)}</dd>
+                    <dt>Status</dt>
+                    <dd>{response.status === 'success' ? 'Sucesso' : 'Erro'}</dd>
+                    <dt>Registro de uso</dt>
+                    <dd>{formatUsageRecordPresence(response.usage)}</dd>
+                    <dt>Tokens de entrada</dt>
+                    <dd>{formatTokenCount(response.usage?.input_tokens ?? null)}</dd>
+                    <dt>Tokens de saída</dt>
+                    <dd>{formatTokenCount(response.usage?.output_tokens ?? null)}</dd>
+                    <dt>Custo estimado</dt>
+                    <dd>{formatEstimatedCost(response.cost_usd, false)}</dd>
+                    <dt>Custo exato (USD, valor persistido)</dt>
+                    <dd>{formatExactCost(response.cost_usd)}</dd>
+                    {response.pricing_provenance ? (
+                      <>
+                        <dt>Proveniência de preço — fonte</dt>
+                        <dd>{response.pricing_provenance.source_id}</dd>
+                        <dt>Proveniência de preço — camada</dt>
+                        <dd>{response.pricing_provenance.tier}</dd>
+                        <dt>Proveniência de preço — modelo canônico</dt>
+                        <dd>
+                          {formatPricingCanonicalModelId(
+                            response.pricing_provenance.canonical_model_id,
+                          )}
+                        </dd>
+                        <dt>Proveniência de preço — taxa de entrada (USD/milhão de tokens)</dt>
+                        <dd>{response.pricing_provenance.input_rate_usd_per_million_tokens}</dd>
+                        <dt>Proveniência de preço — taxa de saída (USD/milhão de tokens)</dt>
+                        <dd>{response.pricing_provenance.output_rate_usd_per_million_tokens}</dd>
+                      </>
+                    ) : (
+                      <>
+                        <dt>Proveniência de preço</dt>
+                        <dd>não registrada (sem cálculo de preço associado a esta resposta)</dd>
+                      </>
+                    )}
+                    <dt>Latência</dt>
+                    <dd>{response.latency_ms} ms</dd>
+                    <dt>Tentativas</dt>
+                    <dd>{response.attempts}</dd>
+                    <dt>Tipo de erro</dt>
+                    <dd>{response.error ? response.error.type : '—'}</dd>
+                    <dt>Mensagem de erro</dt>
+                    <dd>{response.error ? response.error.message : '—'}</dd>
+                    <dt>Retryable</dt>
+                    <dd>{response.error ? (response.error.retryable ? 'Sim' : 'Não') : '—'}</dd>
+                    <dt>Tentativas anteriores incertas</dt>
+                    <dd>{response.had_uncertain_prior_attempts ? 'Sim' : 'Não'}</dd>
+                    <dt>Motivo de parada do provider</dt>
+                    <dd>{response.provider_finish_reason ?? '—'}</dd>
+                    <dt>Proveniência do request</dt>
+                    <dd>
+                      {response.request_provenance
+                        ? `${response.request_provenance.contract_version} (${response.request_provenance.request_digest})`
+                        : '—'}
+                    </dd>
+                    <dt>Criado em</dt>
+                    <dd>
+                      <time dateTime={response.created_at}>{formatDateTime(response.created_at)}</time>{' '}
+                      ({response.created_at})
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </>
+          )}
 
           {claims !== null && (
             <>
@@ -355,6 +463,14 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
   // histórico (execução anterior a este recurso), nunca inferido.
   const reconciliationAvailable = audit.status === 'completed' && audit.reconciliation !== null
 
+  // Registros de TODAS as rodadas -- usados só pela Auditoria técnica
+  // (ver TechnicalAudit abaixo); a apresentação product-facing continua
+  // separando inicial/crítica explicitamente via `ParticipantsResponses`.
+  const participantResponses: ModelResponsePublic[] =
+    audit.status === 'completed'
+      ? [...audit.initial_round.responses, ...(audit.critique_round?.responses ?? [])]
+      : audit.round_result.responses
+
   return (
     <div className="inspection-panel__content">
       {audit.status === 'completed' && (
@@ -375,14 +491,18 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
 
       <section aria-labelledby="participants-heading">
         <h2 id="participants-heading">Perspectivas dos participantes</h2>
+        <p className="participant-responses-caveat">
+          Estas são perspectivas individuais dos participantes, não a conclusão do Dialeon. As
+          revisões mostram uma etapa posterior do debate, não uma correção comprovada.
+        </p>
         <ParticipantsResponses
           responses={
             audit.status === 'completed' ? audit.initial_round.responses : audit.round_result.responses
           }
-          title="Rodada inicial"
+          round="initial"
         />
         {audit.status === 'completed' && audit.critique_round && (
-          <ParticipantsResponses responses={audit.critique_round.responses} title="Rodada de crítica" />
+          <ParticipantsResponses responses={audit.critique_round.responses} round="critique" />
         )}
       </section>
 
@@ -419,6 +539,7 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
         policy={audit.provider_execution_policy}
         claims={audit.status === 'completed' ? audit.claims : null}
         assessmentsByClaimId={assessmentsByClaimId}
+        participantResponses={participantResponses}
         reconciliationOutcomes={
           audit.status === 'completed' && audit.reconciliation !== null
             ? audit.reconciliation.claim_outcomes

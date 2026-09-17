@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   formatEstimatedCost,
+  formatExactCost,
   formatTokenCount,
   formatDebateOutcome,
+  formatFailureCategory,
   formatFinalAnswerStatus,
   formatModelIdentitySource,
+  formatPricingCanonicalModelId,
+  formatProviderName,
+  formatUsageRecordPresence,
   splitAnswerParagraphs,
 } from '../formatting'
 
@@ -128,5 +133,68 @@ describe('splitAnswerParagraphs', () => {
   it('nunca inventa conteúdo pra uma resposta vazia/só-espaço', () => {
     expect(splitAnswerParagraphs('')).toEqual([])
     expect(splitAnswerParagraphs('   \n\n  ')).toEqual([])
+  })
+})
+
+describe('formatProviderName', () => {
+  it('formata os 3 providers conhecidos com nome próprio de display', () => {
+    expect(formatProviderName('openai')).toBe('OpenAI')
+    expect(formatProviderName('anthropic')).toBe('Anthropic')
+    expect(formatProviderName('gemini')).toBe('Gemini')
+  })
+
+  it('provider desconhecido cai num fallback honesto (capitalização simples), nunca inventa um nome', () => {
+    expect(formatProviderName('novoprovider')).toBe('Novoprovider')
+  })
+})
+
+describe('formatFailureCategory', () => {
+  it('formata os 6 valores reais de ProviderErrorType com uma categoria humana e limitada', () => {
+    expect(formatFailureCategory('timeout')).toBe('tempo limite excedido')
+    expect(formatFailureCategory('auth')).toBe('falha de autenticação')
+    expect(formatFailureCategory('rate_limit')).toBe('limite de taxa atingido')
+    expect(formatFailureCategory('api_error')).toBe('erro do provider')
+    expect(formatFailureCategory('malformed_response')).toBe('resposta em formato inesperado')
+    expect(formatFailureCategory('unknown')).toBe('motivo não identificado')
+  })
+
+  it('tipo de erro desconhecido (schema drift futuro) cai num rótulo honesto, nunca inventa a causa', () => {
+    expect(formatFailureCategory('algum_tipo_novo')).toBe('motivo não identificado')
+  })
+})
+
+describe('formatUsageRecordPresence — repair pós-revisão adversarial', () => {
+  it('usage === null (nenhum objeto persistido) é distinto de um objeto presente', () => {
+    expect(formatUsageRecordPresence(null)).toBe('não registrado (nenhum objeto de uso persistido)')
+  })
+
+  it('usage presente (mesmo com contadores internos null) nunca é confundido com ausência do objeto', () => {
+    expect(formatUsageRecordPresence({ input_tokens: null, output_tokens: null })).toBe('registrado')
+    expect(formatUsageRecordPresence({ input_tokens: 10, output_tokens: 5 })).toBe('registrado')
+  })
+})
+
+describe('formatPricingCanonicalModelId — repair pós-revisão adversarial', () => {
+  it('null significa RESOLUÇÃO DIRETA na tabela de preços, nunca "dado ausente"', () => {
+    expect(formatPricingCanonicalModelId(null)).toBe('resolução direta na tabela de preços (sem alias)')
+  })
+
+  it('valor preenchido é reportado como resolução via alias, distinta da resolução direta', () => {
+    expect(formatPricingCanonicalModelId('gpt-5.5')).toBe('via alias de gpt-5.5')
+  })
+})
+
+describe('formatExactCost — repair pós-revisão adversarial', () => {
+  it('distingue null, 0 e um valor positivo minúsculo sem arredondar', () => {
+    expect(formatExactCost(null)).toBe('não registrado')
+    expect(formatExactCost(0)).toBe('0')
+    expect(formatExactCost(0.00001)).toBe('0.00001')
+  })
+
+  it('nunca colapsa um valor positivo minúsculo pro mesmo texto que zero (diferente de formatEstimatedCost, que arredonda pra exibição amigável)', () => {
+    expect(formatExactCost(0.00001)).not.toBe(formatExactCost(0))
+    // formatEstimatedCost (.toFixed(4)) arredondaria os dois pro mesmo
+    // "~$0.0000" -- por isso formatExactCost existe separadamente.
+    expect(formatEstimatedCost(0.00001, false)).toBe('~$0.0000')
   })
 })

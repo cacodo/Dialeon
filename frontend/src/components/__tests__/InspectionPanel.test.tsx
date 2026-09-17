@@ -762,3 +762,525 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     consoleError.mockRestore()
   })
 })
+
+describe('InspectionPanel — Participant Perspectives Document Disclosure', () => {
+  it('identidade bruta de modelo/erro completo/proveniência nunca aparecem na perspectiva product-facing, mas continuam na Auditoria técnica', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            {
+              id: 'mr-1',
+              provider: 'openai',
+              requested_model: 'gpt-5.5',
+              model: 'gpt-5.5-2026-01-15',
+              model_identity_source: 'provider_reported',
+              round_number: 1,
+              status: 'success',
+              response_text: 'A receita cresceu.',
+              usage: { input_tokens: 120, output_tokens: 40 },
+              cost_usd: 0.002,
+              pricing_provenance: {
+                source_id: 'openai-2026-01',
+                tier: 'standard',
+                input_rate_usd_per_million_tokens: 1,
+                output_rate_usd_per_million_tokens: 2,
+                canonical_model_id: 'gpt-5.5',
+              },
+              latency_ms: 842,
+              attempts: 1,
+              error: null,
+              had_uncertain_prior_attempts: false,
+              provider_finish_reason: 'end_turn',
+              request_provenance: { contract_version: 'v1', request_digest: 'abc123digest' },
+              created_at: '2026-09-06T00:00:01Z',
+            },
+          ],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    const participantsHeading = await screen.findByRole('heading', {
+      name: /perspectivas dos participantes/i,
+    })
+    const participantsSection = participantsHeading.closest('section') as HTMLElement
+
+    // Perspectiva product-facing: provider visível, identidade
+    // bruta/erro/proveniência ausentes.
+    expect(within(participantsSection).getByRole('button', { name: /perspectiva.*openai/i })).toBeInTheDocument()
+    expect(within(participantsSection).queryByText('gpt-5.5-2026-01-15')).not.toBeInTheDocument()
+    expect(within(participantsSection).queryByText('gpt-5.5')).not.toBeInTheDocument()
+    expect(within(participantsSection).queryByText(/abc123digest/i)).not.toBeInTheDocument()
+    expect(within(participantsSection).queryByText(/end_turn/i)).not.toBeInTheDocument()
+
+    // Auditoria técnica: tudo continua inspecionável.
+    await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
+    const technicalHeading = screen.getByRole('heading', {
+      name: /respostas dos participantes — registros técnicos/i,
+    })
+    const technicalPanel = technicalHeading.nextElementSibling?.nextElementSibling as HTMLElement
+
+    expect(within(technicalPanel).getByText('mr-1')).toBeInTheDocument()
+    expect(within(technicalPanel).getByText('gpt-5.5-2026-01-15')).toBeInTheDocument()
+    expect(within(technicalPanel).getByText('gpt-5.5')).toBeInTheDocument()
+    expect(within(technicalPanel).getByText(/reportado pelo provider/i)).toBeInTheDocument()
+    expect(within(technicalPanel).getByText(/end_turn/i)).toBeInTheDocument()
+    expect(within(technicalPanel).getByText(/abc123digest/i)).toBeInTheDocument()
+    expect(within(technicalPanel).getByText(/openai-2026-01/i)).toBeInTheDocument()
+    expect(within(technicalPanel).getByText('842 ms')).toBeInTheDocument()
+  })
+
+  it('erro completo (mensagem bruta/retryable) só aparece na Auditoria técnica; a perspectiva mostra só a categoria limitada', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            {
+              id: 'mr-1',
+              provider: 'openai',
+              requested_model: 'gpt-5.5',
+              model: 'gpt-5.5',
+              model_identity_source: null,
+              round_number: 1,
+              status: 'error',
+              response_text: null,
+              usage: null,
+              cost_usd: null,
+              pricing_provenance: null,
+              latency_ms: 5000,
+              attempts: 0,
+              error: { type: 'rate_limit', message: 'raw SDK 429 body xyz', retryable: true },
+              had_uncertain_prior_attempts: true,
+              provider_finish_reason: null,
+              request_provenance: null,
+              created_at: '2026-09-06T00:00:01Z',
+            },
+          ],
+          successful_count: 0,
+          total_providers: 1,
+          insufficient_data_for_consensus: true,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    const participantsHeading = await screen.findByRole('heading', {
+      name: /perspectivas dos participantes/i,
+    })
+    const participantsSection = participantsHeading.closest('section') as HTMLElement
+    await userEvent.click(within(participantsSection).getByRole('button', { name: /perspectiva/i }))
+
+    expect(
+      within(participantsSection).getByText(/não produziu uma perspectiva nesta rodada/i),
+    ).toBeInTheDocument()
+    expect(within(participantsSection).getByText(/limite de taxa atingido/i)).toBeInTheDocument()
+    expect(within(participantsSection).queryByText(/raw sdk 429 body xyz/i)).not.toBeInTheDocument()
+    expect(within(participantsSection).queryByRole('alert')).not.toBeInTheDocument()
+
+    // Auditoria técnica: mensagem bruta, retryable, tentativas (0),
+    // model_identity_source null (nunca inferido) e o sinal de
+    // "tentativas anteriores incertas" continuam honestos.
+    await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
+    const technicalHeading = screen.getByRole('heading', {
+      name: /respostas dos participantes — registros técnicos/i,
+    })
+    const technicalPanel = technicalHeading.nextElementSibling?.nextElementSibling as HTMLElement
+
+    expect(within(technicalPanel).getByText(/raw sdk 429 body xyz/i)).toBeInTheDocument()
+    expect(within(technicalPanel).getByText('rate_limit')).toBeInTheDocument()
+    // Retryable=true E tentativas anteriores incertas=true -- dois "Sim"
+    // distintos, ambos honestos.
+    expect(within(technicalPanel).getAllByText('Sim')).toHaveLength(2)
+    // Tentativas=0 -- honesto, nunca omitido.
+    expect(within(technicalPanel).getByText('0')).toBeInTheDocument()
+    expect(
+      within(technicalPanel).getByText(/não registrada \(execução anterior a este registro\)/i),
+    ).toBeInTheDocument()
+    // usage/cost null (nunca reconstruído como zero conhecido).
+    expect(within(technicalPanel).getByText('Estimativa indisponível')).toBeInTheDocument()
+  })
+
+  it('custo/tokens ZERO conhecidos permanecem distintos de null (nunca confundidos)', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            {
+              id: 'mr-1',
+              provider: 'openai',
+              requested_model: 'gpt-5.5',
+              model: 'gpt-5.5',
+              model_identity_source: 'provider_reported',
+              round_number: 1,
+              status: 'success',
+              response_text: 'Ok.',
+              usage: { input_tokens: 0, output_tokens: 0 },
+              cost_usd: 0,
+              pricing_provenance: null,
+              latency_ms: 10,
+              attempts: 1,
+              error: null,
+              had_uncertain_prior_attempts: false,
+              provider_finish_reason: null,
+              request_provenance: null,
+              created_at: '2026-09-06T00:00:01Z',
+            },
+          ],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await screen.findByRole('heading', { name: /perspectivas dos participantes/i })
+
+    await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
+    const technicalHeading = screen.getByRole('heading', {
+      name: /respostas dos participantes — registros técnicos/i,
+    })
+    const technicalPanel = technicalHeading.nextElementSibling?.nextElementSibling as HTMLElement
+
+    // Tokens de entrada E saída (ambos conhecidos como zero, nunca '—')
+    // MAIS o custo exato persistido (também 0) -- três "0" honestos,
+    // nunca confundidos com null.
+    expect(within(technicalPanel).getAllByText('0')).toHaveLength(3)
+    expect(within(technicalPanel).getByText('$0,00 (estimativa conhecida)')).toBeInTheDocument()
+    expect(within(technicalPanel).queryByText('Estimativa indisponível')).not.toBeInTheDocument()
+  })
+
+  it('sem rodada de crítica: nenhuma seção "Revisões após o debate" é fabricada', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit({ critique_round: null }))
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    await screen.findByRole('heading', { name: /perspectivas dos participantes/i })
+    expect(screen.getByRole('heading', { name: 'Perspectivas iniciais' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Revisões após o debate' })).not.toBeInTheDocument()
+  })
+
+  it('consumo AGREGADO (Consumo e custo) permanece distinto dos registros POR RESPOSTA', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        accounting: {
+          total_input_tokens: 999,
+          total_output_tokens: 888,
+          estimated_cost_usd: 0.5,
+          has_unknown_accounting_components: false,
+        },
+        initial_round: {
+          responses: [
+            {
+              id: 'mr-1',
+              provider: 'openai',
+              requested_model: 'gpt-5.5',
+              model: 'gpt-5.5',
+              model_identity_source: 'provider_reported',
+              round_number: 1,
+              status: 'success',
+              response_text: 'Ok.',
+              usage: { input_tokens: 10, output_tokens: 5 },
+              cost_usd: 0.001,
+              pricing_provenance: null,
+              latency_ms: 10,
+              attempts: 1,
+              error: null,
+              had_uncertain_prior_attempts: false,
+              provider_finish_reason: null,
+              request_provenance: null,
+              created_at: '2026-09-06T00:00:01Z',
+            },
+          ],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
+
+    const aggregateHeading = screen.getByRole('heading', { name: /^consumo e custo$/i })
+    const aggregatePanel = aggregateHeading.nextElementSibling as HTMLElement
+    expect(within(aggregatePanel).getByText('~$0.5000')).toBeInTheDocument()
+
+    const perResponseHeading = screen.getByRole('heading', {
+      name: /respostas dos participantes — registros técnicos/i,
+    })
+    const perResponsePanel = perResponseHeading.nextElementSibling?.nextElementSibling as HTMLElement
+    // O custo por-resposta (0.001) é um registro DISTINTO do agregado
+    // (0.5) -- nunca a mesma seção, nunca duplicado como se fosse o
+    // mesmo dado.
+    expect(within(perResponsePanel).getByText('~$0.0010')).toBeInTheDocument()
+    expect(aggregateHeading).not.toBe(perResponseHeading)
+  })
+})
+
+describe('InspectionPanel — repair pós-revisão adversarial: fidelidade de auditoria técnica (pricing/usage/cost/timestamp)', () => {
+  function baseResponse(overrides: Partial<import('../../api/types').ModelResponsePublic>) {
+    return {
+      id: 'mr-1',
+      provider: 'openai',
+      requested_model: 'gpt-5.5',
+      model: 'gpt-5.5',
+      model_identity_source: 'provider_reported' as const,
+      round_number: 1,
+      status: 'success' as const,
+      response_text: 'Ok.',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      cost_usd: 0.001,
+      pricing_provenance: null,
+      latency_ms: 10,
+      attempts: 1,
+      error: null,
+      had_uncertain_prior_attempts: false,
+      provider_finish_reason: null,
+      request_provenance: null,
+      created_at: '2026-09-06T00:00:01Z',
+      ...overrides,
+    }
+  }
+
+  async function openTechnicalAudit() {
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await screen.findByRole('heading', { name: /perspectivas dos participantes/i })
+    await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
+    const technicalHeading = screen.getByRole('heading', {
+      name: /respostas dos participantes — registros técnicos/i,
+    })
+    return technicalHeading.nextElementSibling?.nextElementSibling as HTMLElement
+  }
+
+  it('as DUAS taxas de preço (entrada e saída) ficam visíveis, nunca só uma', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            baseResponse({
+              pricing_provenance: {
+                source_id: 'openai-2026-01',
+                tier: 'standard',
+                input_rate_usd_per_million_tokens: 1.5,
+                output_rate_usd_per_million_tokens: 6,
+                canonical_model_id: null,
+              },
+            }),
+          ],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    const technicalPanel = await openTechnicalAudit()
+
+    expect(within(technicalPanel).getByText('1.5')).toBeInTheDocument()
+    expect(within(technicalPanel).getByText('6')).toBeInTheDocument()
+  })
+
+  it('canonical_model_id=null é representado como RESOLUÇÃO DIRETA (nunca como dado ausente)', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            baseResponse({
+              pricing_provenance: {
+                source_id: 'openai-2026-01',
+                tier: 'standard',
+                input_rate_usd_per_million_tokens: 1,
+                output_rate_usd_per_million_tokens: 2,
+                canonical_model_id: null,
+              },
+            }),
+          ],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    const technicalPanel = await openTechnicalAudit()
+
+    expect(within(technicalPanel).getByText(/resolução direta na tabela de preços/i)).toBeInTheDocument()
+    expect(within(technicalPanel).queryByText(/via alias de/i)).not.toBeInTheDocument()
+  })
+
+  it('canonical_model_id preenchido é representado como resolução VIA ALIAS, distinta da resolução direta', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            baseResponse({
+              pricing_provenance: {
+                source_id: 'openai-2026-01',
+                tier: 'standard',
+                input_rate_usd_per_million_tokens: 1,
+                output_rate_usd_per_million_tokens: 2,
+                canonical_model_id: 'gpt-5.5',
+              },
+            }),
+          ],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    const technicalPanel = await openTechnicalAudit()
+
+    expect(within(technicalPanel).getByText(/via alias de gpt-5\.5/i)).toBeInTheDocument()
+    expect(within(technicalPanel).queryByText(/resolução direta/i)).not.toBeInTheDocument()
+  })
+
+  it('usage === null é distinto de usage presente com contadores null (nunca colapsam pro mesmo estado)', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            baseResponse({ id: 'mr-usage-null', usage: null }),
+            baseResponse({
+              id: 'mr-usage-present-null',
+              provider: 'anthropic',
+              usage: { input_tokens: null, output_tokens: null },
+            }),
+          ],
+          successful_count: 2,
+          total_providers: 2,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    const technicalPanel = await openTechnicalAudit()
+
+    expect(
+      within(technicalPanel).getByText(/não registrado \(nenhum objeto de uso persistido\)/i),
+    ).toBeInTheDocument()
+    expect(within(technicalPanel).getByText(/^registrado$/i)).toBeInTheDocument()
+    // Mesmo com o objeto presente, os contadores em si continuam
+    // honestamente desconhecidos ('—'), nunca virando 0.
+    expect(within(technicalPanel).getAllByText('—').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('custo null, 0 e 0.00001 permanecem três valores distintos (nunca arredondados pro mesmo texto)', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [
+            baseResponse({ id: 'mr-null', cost_usd: null }),
+            baseResponse({ id: 'mr-zero', provider: 'anthropic', cost_usd: 0 }),
+            baseResponse({ id: 'mr-tiny', provider: 'gemini', cost_usd: 0.00001 }),
+          ],
+          successful_count: 3,
+          total_providers: 3,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    const technicalPanel = await openTechnicalAudit()
+
+    // "Custo exato" -- o valor persistido, sem arredondar 0.00001 pra
+    // algo que pareça zero.
+    expect(within(technicalPanel).getByText('não registrado')).toBeInTheDocument()
+    const zeroExact = within(technicalPanel).getAllByText('0')
+    expect(zeroExact.length).toBeGreaterThanOrEqual(1)
+    expect(within(technicalPanel).getByText('0.00001')).toBeInTheDocument()
+  })
+
+  it('created_at exato (ISO bruto) continua inspecionável como texto visível, além do valor amigável', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [baseResponse({ created_at: '2026-09-06T13:45:12.345Z' })],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    const technicalPanel = await openTechnicalAudit()
+
+    expect(within(technicalPanel).getByText(/2026-09-06T13:45:12\.345Z/)).toBeInTheDocument()
+    const timeElement = technicalPanel.querySelector('time')
+    expect(timeElement).not.toBeNull()
+    expect(timeElement).toHaveAttribute('dateTime', '2026-09-06T13:45:12.345Z')
+  })
+
+  it('o mesmo response.id em rodada inicial E de crítica aparece DUAS vezes na Auditoria técnica, sem colisão de key', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        initial_round: {
+          responses: [baseResponse({ id: 'mr-mesmo-id', response_text: 'Perspectiva inicial.' })],
+          successful_count: 1,
+          total_providers: 1,
+          insufficient_data_for_consensus: false,
+          budget_exceeded: false,
+          accounting: baseRoundAccounting,
+        },
+        critique_round: {
+          responses: [
+            baseResponse({
+              id: 'mr-mesmo-id',
+              round_number: 2,
+              response_text: 'Perspectiva revisada.',
+            }),
+          ],
+          successful_count: 1,
+          total_participants: 1,
+          accounting: baseRoundAccounting,
+        },
+      }),
+    )
+
+    const technicalPanel = await openTechnicalAudit()
+
+    const keyWarning = consoleError.mock.calls.some((call) => String(call[0]).toLowerCase().includes('key'))
+    expect(keyWarning).toBe(false)
+    consoleError.mockRestore()
+
+    // O mesmo id bruto ('mr-mesmo-id') aparece DUAS vezes -- uma por
+    // registro real -- nunca deduplicado/colidido.
+    expect(within(technicalPanel).getAllByText('mr-mesmo-id')).toHaveLength(2)
+  })
+})

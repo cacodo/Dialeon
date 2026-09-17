@@ -711,7 +711,6 @@ main {
 }
 
 .claims-list__item,
-.participant-response,
 .source-analysis__relation {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -730,7 +729,6 @@ main {
 }
 
 .claims-list__toggle,
-.participant-response__toggle,
 .inspection-panel__open,
 .inspection-panel__technical-toggle {
   background: none;
@@ -742,7 +740,6 @@ main {
 }
 
 .claims-list__toggle:hover:not(:disabled),
-.participant-response__toggle:hover:not(:disabled),
 .inspection-panel__open:hover:not(:disabled),
 .inspection-panel__technical-toggle:hover:not(:disabled) {
   background: none;
@@ -912,6 +909,96 @@ main {
   color: var(--color-fg-muted);
 }
 
+/* Participant Perspectives Document Disclosure (UI Slice) -- mesma
+   disciplina de outline/documento de `.claim-inspection-list`: nenhuma
+   caixa/fundo/borda ao redor do item inteiro, só espaço + traço
+   superior sutil entre perspectivas (nunca na primeira). O rótulo
+   ("Perspectiva — Provider") fica deliberadamente mais LEVE
+   (font-weight normal) que o texto de uma claim -- provider é
+   identificável, mas nunca compete com a hierarquia de Afirmações.
+   Indigo só em hover/foco/expandido, nunca uma cor "por provider". */
+.participant-responses-round {
+  margin-bottom: var(--space-4);
+}
+
+.participant-responses-round:last-child {
+  margin-bottom: 0;
+}
+
+.participant-responses-caveat {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.participant-perspective {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.participant-perspective:first-child {
+  padding-top: 0;
+}
+
+.participant-perspective + .participant-perspective {
+  border-top: 1px solid var(--color-border);
+}
+
+.participant-perspective__toggle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  color: var(--color-fg);
+}
+
+.participant-perspective__toggle:hover:not(:disabled) {
+  background: none;
+  border: none;
+  color: var(--brand-700);
+}
+
+.participant-perspective__toggle[aria-expanded='true'] {
+  color: var(--brand-700);
+}
+
+.participant-perspective__label {
+  font-weight: 500;
+}
+
+.participant-perspective__chevron {
+  flex: none;
+  font-size: 0.7em;
+  color: var(--color-fg-muted);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.participant-perspective__toggle[aria-expanded='true'] .participant-perspective__chevron {
+  transform: rotate(180deg);
+  color: var(--brand-500);
+}
+
+.participant-perspective__panel {
+  margin-top: var(--space-3);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--color-border);
+}
+
+.participant-perspective__text {
+  white-space: pre-wrap;
+  color: var(--color-fg);
+  line-height: var(--line-height-base);
+  margin: 0;
+}
+
+.participant-perspective__absent {
+  color: var(--color-fg-muted);
+  margin: 0;
+}
+
 .inspection-panel__technical-refs-row {
   padding-bottom: var(--space-2);
   margin-bottom: var(--space-2);
@@ -931,6 +1018,54 @@ main {
 
 .inspection-panel__technical-refs-row dd {
   margin: 0 0 var(--space-1);
+}
+
+/* Registros técnicos por resposta de participante -- mesma disciplina
+   de "restrito/técnico" das outras listas de Auditoria técnica, só mais
+   DENSA (18 campos por registro): em telas suficientemente largas,
+   rótulo/valor viram duas colunas alinhadas (grid), com ritmo vertical
+   compacto; valores longos (digest, mensagem de erro) continuam
+   quebrando naturalmente, nunca cortados. Em telas estreitas, cai de
+   volta pro empilhamento rótulo/valor padrão de <dl> -- sem media
+   query nenhuma pra isso, só a ausência da regra de grid abaixo. */
+.participant-technical-records {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.participant-technical-records__row {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.participant-technical-records__row:last-child {
+  border-bottom: none;
+}
+
+.participant-technical-records__row dt {
+  color: var(--color-fg-muted);
+  font-weight: 600;
+}
+
+.participant-technical-records__row dd {
+  margin: 0 0 var(--space-1);
+  word-break: break-word;
+}
+
+@media (min-width: 640px) {
+  .participant-technical-records__row {
+    display: grid;
+    grid-template-columns: 12rem 1fr;
+    column-gap: var(--space-3);
+    row-gap: var(--space-1);
+    align-items: baseline;
+  }
+
+  .participant-technical-records__row dd {
+    margin: 0;
+  }
 }
 
 .inspection-panel__integrity-issues {

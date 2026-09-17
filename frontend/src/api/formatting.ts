@@ -14,6 +14,7 @@ import type {
   JudgeOutcome,
   ModelIdentitySource,
   SourceChannelState,
+  TokenUsage,
 } from './types'
 
 // Provenance de identidade de modelo (ver ModelIdentitySource, ./types.ts)
@@ -32,6 +33,45 @@ export function formatModelIdentitySource(source: ModelIdentitySource | null): s
   return MODEL_IDENTITY_SOURCE_LABELS[source] ?? source
 }
 
+// Participant Perspectives (UI Slice) -- nome de display do provider,
+// nunca o ID enviado/persistido (mesma disciplina de
+// ProviderSelector.tsx::displayName). Um mapa FECHADO só pros 3
+// providers reais conhecidos hoje (ver app/providers/*.py:
+// provider_name) -- um provider novo/desconhecido cai no fallback
+// (capitalização simples), nunca quebra nem inventa um nome bonito.
+const PROVIDER_DISPLAY_NAME_LABELS: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  gemini: 'Gemini',
+}
+
+export function formatProviderName(providerId: string): string {
+  return (
+    PROVIDER_DISPLAY_NAME_LABELS[providerId] ??
+    providerId.charAt(0).toUpperCase() + providerId.slice(1)
+  )
+}
+
+// Participant Perspectives (UI Slice) -- categoria HUMANA e LIMITADA de
+// falha, derivada só de `ProviderErrorInfo.type` (ver
+// app/models/provider_models.py::ProviderErrorType, os 6 únicos valores
+// reais). NUNCA expõe `error.message`/`retryable`/detalhe de
+// transporte -- isso continua só na Auditoria técnica. Um `type`
+// desconhecido (schema drift futuro) cai num rótulo honesto, nunca
+// finge saber a causa.
+const FAILURE_CATEGORY_LABELS: Record<string, string> = {
+  timeout: 'tempo limite excedido',
+  auth: 'falha de autenticação',
+  rate_limit: 'limite de taxa atingido',
+  api_error: 'erro do provider',
+  malformed_response: 'resposta em formato inesperado',
+  unknown: 'motivo não identificado',
+}
+
+export function formatFailureCategory(type: string): string {
+  return FAILURE_CATEGORY_LABELS[type] ?? 'motivo não identificado'
+}
+
 /** UNKNOWN NÃO PODE SER FORMATADO COMO ZERO -- distinção explícita entre
  * os 3 estados reais (>0 conhecido, ===0 conhecido, null desconhecido). */
 export function formatEstimatedCost(cost: number | null, hasUnknown: boolean): string {
@@ -44,6 +84,40 @@ export function formatEstimatedCost(cost: number | null, hasUnknown: boolean): s
 
 export function formatTokenCount(tokens: number | null): string {
   return tokens === null ? '—' : tokens.toLocaleString('pt-BR')
+}
+
+// Auditoria técnica (repair pós-revisão adversarial) -- distingue
+// "nenhum objeto de uso persistido" (usage === null) de "objeto de uso
+// presente, mas com contadores desconhecidos" (usage != null com
+// input_tokens/output_tokens null cada um) -- os dois nunca podem
+// colapsar pro mesmo "—" visual sem MAIS NENHUM sinal, senão a
+// Auditoria técnica perde exatamente a distinção que existe pra
+// registrar. `formatTokenCount` acima continua correta pra cada
+// CONTADOR individual -- esta função só cobre a presença do objeto.
+export function formatUsageRecordPresence(usage: TokenUsage | null): string {
+  return usage === null ? 'não registrado (nenhum objeto de uso persistido)' : 'registrado'
+}
+
+// Auditoria técnica -- `canonical_model_id === null` significa
+// RESOLUÇÃO DIRETA na tabela de preços (a chave provider/modelo bateu
+// sem nenhum alias envolvido) -- NUNCA "dado ausente"/"não registrado"
+// (ver PricingProvenance.canonical_model_id, app/models/
+// provider_models.py). Reinterpretar null aqui como ausência inventaria
+// uma semântica de degradação que o contrato não tem.
+export function formatPricingCanonicalModelId(canonicalModelId: string | null): string {
+  return canonicalModelId === null
+    ? 'resolução direta na tabela de preços (sem alias)'
+    : `via alias de ${canonicalModelId}`
+}
+
+// Auditoria técnica -- valor EXATO de `cost_usd` como persistido, sem
+// arredondar valores positivos minúsculos pra algo que pareça zero
+// (`formatEstimatedCost` acima usa `.toFixed(4)` pra exibição AMIGÁVEL,
+// o que arredondaria 0.00001 pra "0,0000" -- aceitável lá, nunca aqui).
+// `null` continua distinto de `0`, que continua distinto de qualquer
+// valor positivo, por menor que seja.
+export function formatExactCost(cost: number | null): string {
+  return cost === null ? 'não registrado' : String(cost)
 }
 
 const DEBATE_SKIPPED_REASON_LABELS: Record<string, string> = {
