@@ -94,16 +94,16 @@ export function RunComposer({
           (Decision Delta secao 6/7: provider selection nunca é a
           identidade principal da tela). */}
       <div className="run-composer__toolbar">
-        {!sourceExpanded && (
-          <button
-            type="button"
-            className="run-composer__source-toggle"
-            onClick={() => setSourceExpanded(true)}
-            disabled={submitting}
-          >
-            + Adicionar fonte de texto (opcional)
-          </button>
-        )}
+        <button
+          type="button"
+          className="run-composer__source-toggle"
+          onClick={() => setSourceExpanded((expanded) => !expanded)}
+          disabled={submitting}
+          aria-expanded={sourceExpanded}
+          aria-controls="run-composer-source-panel"
+        >
+          {sourceExpanded ? 'Ocultar fonte de texto' : '+ Adicionar fonte de texto (opcional)'}
+        </button>
 
         {providersError && (
           <p role="alert" className="run-composer__error">
@@ -126,7 +126,10 @@ export function RunComposer({
       </div>
 
       {sourceExpanded && (
-        <div className="run-composer__source">
+        // Colapsar só oculta este painel -- `sourceText` continua vivo no
+        // estado do componente pai, nunca é limpo aqui, então reabrir
+        // depois de fechar mostra exatamente o que já tinha sido digitado.
+        <div id="run-composer-source-panel" className="run-composer__source">
           <label htmlFor="source-input" className="run-composer__label">
             Fonte de texto (opcional)
           </label>
