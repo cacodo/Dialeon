@@ -70,6 +70,7 @@ def _accounting(**overrides) -> AccountingSummary:
 def _final_answer(**overrides) -> FinalAnswerPublic:
     fields = dict(
         answer_text="A receita cresceu 12% em 2025, segundo o debate.",
+        answer_blocks=None,
         limitations=[],
         status="llm_planned",
         editor_model="claude-sonnet-5",

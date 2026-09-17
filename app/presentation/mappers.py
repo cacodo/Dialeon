@@ -16,6 +16,10 @@ from typing import Literal
 
 from app.presentation.schemas import (
     AccountingSummary,
+    AnswerBlockPublic,
+    AnswerClaimItemPublic,
+    AnswerClaimSectionBlockPublic,
+    AnswerParagraphBlockPublic,
     ArithmeticAssertionPublic,
     ClaimAssessmentPublic,
     ClaimProcessingAttemptPublic,
@@ -56,6 +60,7 @@ from app.debate.numeric_verification import DeterministicVerificationAttempt
 from app.models.provider_models import DefaultModelAuthoritySnapshot, ProviderExecutionPolicy
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult
+from app.editor.answer_blocks import AnswerBlock, AnswerClaimSectionBlock, AnswerParagraphBlock
 from app.editor.attempt import EditorAttempt
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
@@ -257,9 +262,38 @@ def editor_attempt_public(attempt: EditorAttempt) -> EditorAttemptPublic:
     )
 
 
+def answer_block_public(block: AnswerBlock) -> AnswerBlockPublic:
+    """UI Slice 3 -- projeção 1:1 de app/editor/answer_blocks.py pros
+    schemas públicos (nenhum cálculo, nenhuma decisão nova -- mesmo
+    princípio 1/7 da Decision Delta que todo o resto deste módulo já
+    segue). `isinstance` -- não um dict de despacho por `kind` -- porque
+    só 2 variantes existem hoje e cada uma já carrega seu próprio
+    Literal `kind` fixo; ver `source_claim_analysis_result_public` acima
+    pro mesmo padrão já usado nesta base pra outra union discriminada."""
+    if isinstance(block, AnswerParagraphBlock):
+        return AnswerParagraphBlockPublic(kind="paragraph", text=block.text)
+    assert isinstance(block, AnswerClaimSectionBlock)
+    return AnswerClaimSectionBlockPublic(
+        kind="claim_section",
+        heading=block.heading,
+        items=[
+            AnswerClaimItemPublic(
+                claim_text=item.claim_text,
+                verdict_label=item.verdict_label,
+                explanation=item.explanation,
+                source_relationship_note=item.source_relationship_note,
+            )
+            for item in block.items
+        ],
+    )
+
+
 def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
     return FinalAnswerPublic(
         answer_text=fa.answer_text,
+        answer_blocks=(
+            [answer_block_public(b) for b in fa.answer_blocks] if fa.answer_blocks is not None else None
+        ),
         limitations=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,

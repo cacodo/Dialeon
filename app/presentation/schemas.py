@@ -27,6 +27,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.editor.answer_blocks import AnswerSectionHeading, AnswerVerdictLabel
 from app.models.provider_models import (
     DefaultModelAuthoritySnapshot,
     ModelIdentitySource,
@@ -417,10 +418,65 @@ class EditorAttemptPublic(BaseModel):
     created_at: datetime
 
 
+# UI Slice 3 (Structured Final Answer) -- espelham exatamente
+# app/editor/answer_blocks.py (ver docstring lá pras garantias de
+# segurança/autoridade única). `AnswerClaimItemPublic.claim_text`/
+# `explanation`/`source_relationship_note` continuam NÃO CONFIÁVEIS,
+# sempre strings-folha -- nenhum consumidor deste contrato deve
+# reinterpretá-las como marcação/estrutura.
+#
+# Repair (fechamento do contrato estruturado) -- `heading`/`verdict_label`
+# usam os MESMOS Literals fechados de app/editor/answer_blocks.py
+# (`AnswerSectionHeading`/`AnswerVerdictLabel`), importados diretamente
+# (nunca duplicados como `str`): diferente da relação entre
+# answer_blocks.py e compose.py (onde duplicar evita um ciclo de import,
+# já que compose.py importa DE answer_blocks.py), este módulo de
+# apresentação não é importado por answer_blocks.py -- importar aqui é
+# seguro e fecha o contrato público sem arriscar divergência entre a
+# validação de domínio (app/editor/result.py) e o schema exposto pela
+# API/OpenAPI. Um heading/rótulo fora do vocabulário fechado nunca chega a
+# ser serializado por este modelo -- a mesma garantia que já existia
+# internamente agora também se aplica na fronteira pública.
+class AnswerParagraphBlockPublic(BaseModel):
+    model_config = _CONFIG
+
+    kind: Literal["paragraph"]
+    text: str
+
+
+class AnswerClaimItemPublic(BaseModel):
+    model_config = _CONFIG
+
+    claim_text: str
+    verdict_label: AnswerVerdictLabel
+    explanation: str
+    source_relationship_note: str | None
+
+
+class AnswerClaimSectionBlockPublic(BaseModel):
+    model_config = _CONFIG
+
+    kind: Literal["claim_section"]
+    heading: AnswerSectionHeading
+    items: list[AnswerClaimItemPublic]
+
+
+AnswerBlockPublic = Annotated[
+    Union[AnswerParagraphBlockPublic, AnswerClaimSectionBlockPublic], Field(discriminator="kind")
+]
+
+
 class FinalAnswerPublic(BaseModel):
     model_config = _CONFIG
 
     answer_text: str
+    # `None` pra runs persistidos antes da UI Slice 3 existir, pro
+    # caminho sem veredito (decisão de escopo explícita, ver
+    # app/editor/answer_blocks.py), e pro status histórico
+    # `llm_composed` -- nunca reconstruído a partir de `answer_text`.
+    # Consumidores que não sabem renderizar isso podem ignorar o campo
+    # inteiramente e continuar usando só `answer_text`, inalterado.
+    answer_blocks: list[AnswerBlockPublic] | None
     limitations: list[str]
     # Etapa 17B -- "llm_planned" é o status de runs novos (LLM escolheu
     # EditorPlan, aplicação renderizou o texto); "llm_composed" segue

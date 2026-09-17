@@ -23,6 +23,13 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from app.editor.answer_blocks import (
+    ANSWER_SECTION_HEADING_ORDER,
+    ANSWER_SECTION_HEADING_VALID_VERDICT_LABELS,
+    AnswerBlock,
+    AnswerClaimSectionBlock,
+    AnswerParagraphBlock,
+)
 from app.editor.attempt import EditorAttempt
 from app.models.provider_models import ModelIdentitySource
 from app.orchestrator.budget import sum_usage_and_cost
@@ -48,6 +55,28 @@ class FinalAnswer(BaseModel):
 
     id: str = Field(default_factory=_new_id)
     answer_text: str = Field(min_length=1)
+    # UI Slice 3 (Structured Final Answer) -- representação ADITIVA e
+    # opcional de `answer_text`, produzida pela MESMA chamada de
+    # composição (`_compose_answer`, app/editor/compose.py) que produz
+    # `answer_text` -- nunca uma segunda derivação independente, nunca
+    # por parsing de `answer_text` (ver docstring de
+    # app/editor/answer_blocks.py). `None` em três casos, todos honestos:
+    # (1) run persistido antes desta coluna existir; (2)
+    # `status="deterministic_no_verdict"` (decisão de escopo explícita,
+    # ver docstring de app/editor/answer_blocks.py); (3)
+    # `status="llm_composed"` (histórico, nenhum código novo produz esse
+    # status). O frontend trata `None` sempre da mesma forma -- fallback
+    # pra divisão de parágrafos sobre `answer_text`, nunca reconstrói
+    # estrutura retroativamente.
+    #
+    # Repair (revisão adversarial, achado 2) -- `tuple[...]`, nunca
+    # `list[...]`: mesma disciplina de `AnswerClaimSectionBlock.items`
+    # (ver app/editor/answer_blocks.py) -- `frozen=True` sozinho nunca
+    # impediria `answer_blocks.append(...)` numa lista; a tupla, e a
+    # validação Pydantic que sempre a reconstrói a partir do que for
+    # passado (lista mutável do chamador, ou lista reconstruída de JSON
+    # persistido), fecham essa lacuna sem cópia defensiva manual.
+    answer_blocks: tuple[AnswerBlock, ...] | None = None
     # Sempre cópia VERBATIM de JudgeVerdict.debate_limitations quando há
     # veredito — o Editor nunca reescreve/resume/escolhe limitações
     # (ver app/editor/compose.py). Sem veredito, é texto app-autorado
@@ -118,6 +147,105 @@ class FinalAnswer(BaseModel):
                     "status='deterministic_no_verdict' não deve ter editor_model/"
                     "based_on_verdict_id/judge_confidence"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _answer_blocks_forbidden_for_unstructured_statuses(self) -> FinalAnswer:
+        """Repair (fechamento do contrato estruturado) -- fecha o lado
+        status->estrutura que faltava: `status="llm_composed"` (histórico,
+        nenhum código novo produz esse valor -- a LLM Editor escrevia
+        prosa livre, nunca blocos tipados) e `status="deterministic_no_verdict"`
+        (decisão de escopo explícita, ver docstring de
+        app/editor/answer_blocks.py) NUNCA devem carregar `answer_blocks`
+        não-None -- um valor persistido/construído assim seria uma
+        estrutura sem NENHUM compositor real que a tenha produzido.
+
+        `status in ("llm_planned", "deterministic_from_verdict")` continua
+        SEM exigência aqui de propósito: `answer_blocks=None` continua
+        legítimo pra esses dois (run persistido antes da coluna existir,
+        ver docstring de `answer_blocks` acima) -- este validador só
+        fecha o lado "nunca deveria ter", nunca força "sempre deve ter"."""
+        if self.answer_blocks is not None and self.status in (
+            "llm_composed",
+            "deterministic_no_verdict",
+        ):
+            raise ValueError(
+                f"status={self.status!r} nunca deve ter answer_blocks -- este status "
+                "é intencionalmente não-estruturado"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _answer_blocks_follow_the_fixed_document_shape(self) -> FinalAnswer:
+        """Repair (revisão adversarial, achado 3) -- fecha o contrato do
+        documento estruturado: um `answer_blocks` não-nulo só pode
+        representar a ÚNICA forma que `_compose_answer`
+        (app/editor/compose.py) realmente produz hoje -- nunca uma
+        estrutura arbitrária que `AnswerBlock`, sozinho (união
+        discriminada + tuplas não-vazias), não bastaria pra rejeitar:
+
+        1. nunca vazio (um `[]` explícito é indistinguível de "nenhuma
+           estrutura" pro frontend -- ver Finding #4 -- então nunca deve
+           existir como valor persistido/construído);
+        2. o primeiro bloco é sempre o parágrafo de abertura;
+        3. pelo menos uma seção de claims segue a abertura (Repair,
+           fechamento do contrato estruturado -- um documento
+           "só-abertura", sem NENHUMA seção, nunca é produzido por
+           `_compose_answer`: `verdict.claim_assessments` sempre tem pelo
+           menos uma avaliação em todo caminho que chega a construir
+           `answer_blocks` não-None, ver app/editor/compose.py -- então
+           um `answer_blocks` de comprimento 1 é tão estruturalmente
+           impossível quanto vazio, e fechado pela mesma razão);
+        4. todo bloco subsequente é uma seção de claims, cujo `heading`
+           está em `ANSWER_SECTION_HEADING_ORDER` (fechado, achado 3) e
+           nunca se repete (uma seção forjada/duplicada é rejeitada);
+        5. as seções aparecem na mesma ordem relativa de
+           `ANSWER_SECTION_HEADING_ORDER` (bucket A antes de B) --
+           nunca invertida;
+        6. Repair (fechamento do contrato estruturado) -- COERÊNCIA
+           seção<->veredito: todo `AnswerClaimItem.verdict_label` dentro
+           de uma seção só pode ser um dos rótulos que
+           `ANSWER_SECTION_HEADING_VALID_VERDICT_LABELS[heading]`
+           permite pra aquele heading -- espelha a partição FIXA de
+           `_VERDICT_TO_BUCKET` (app/editor/compose.py): um rótulo de
+           bucket B (ex. "rejeitada pelo juiz...") dentro da seção de
+           bucket A ("Conclusões sustentadas...") é uma combinação
+           semanticamente impossível, mesmo que cada campo, isolado, seja
+           um Literal válido -- nunca aceita como documento genuíno.
+
+        Deliberadamente NÃO um schema/framework de documento genérico --
+        só a validação concreta desta forma específica, única e fixa."""
+        if self.answer_blocks is None:
+            return self
+        if len(self.answer_blocks) == 0:
+            raise ValueError("answer_blocks, quando não None, nunca pode ser vazio")
+        if not isinstance(self.answer_blocks[0], AnswerParagraphBlock):
+            raise ValueError("answer_blocks[0] deve ser sempre o parágrafo de abertura")
+        section_blocks = self.answer_blocks[1:]
+        if len(section_blocks) == 0:
+            raise ValueError(
+                "answer_blocks, quando não None, deve conter pelo menos uma seção de "
+                "claims além do parágrafo de abertura"
+            )
+        seen_headings: set[str] = set()
+        for block in section_blocks:
+            if not isinstance(block, AnswerClaimSectionBlock):
+                raise ValueError("blocos após a abertura só podem ser seções de claims")
+            if block.heading in seen_headings:
+                raise ValueError(f"heading de seção duplicado: {block.heading!r}")
+            seen_headings.add(block.heading)
+            valid_labels = ANSWER_SECTION_HEADING_VALID_VERDICT_LABELS[block.heading]
+            for item in block.items:
+                if item.verdict_label not in valid_labels:
+                    raise ValueError(
+                        f"verdict_label={item.verdict_label!r} não é válido pra seção "
+                        f"heading={block.heading!r} -- combinação seção/veredito "
+                        "semanticamente impossível"
+                    )
+        headings_in_order = [block.heading for block in section_blocks]
+        expected_order = [h for h in ANSWER_SECTION_HEADING_ORDER if h in seen_headings]
+        if headings_in_order != expected_order:
+            raise ValueError("seções de answer_blocks fora da ordem fixa (bucket A antes de B)")
         return self
 
 

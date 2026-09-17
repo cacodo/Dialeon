@@ -274,8 +274,61 @@ export type FinalAnswerStatus =
   | 'deterministic_from_verdict'
   | 'deterministic_no_verdict'
 
+// UI Slice 3 (Structured Final Answer) -- espelham exatamente
+// app/editor/answer_blocks.py/app/presentation/schemas.py. Representação
+// ADITIVA e opcional de `answer_text`, produzida pela MESMA composição
+// determinística no backend -- nunca por parsing de `answer_text` aqui.
+// `claim_text`/`explanation`/`source_relationship_note` continuam NÃO
+// CONFIÁVEIS (modelo participante/Judge/fonte) -- sempre renderizados
+// como texto puro, nunca como HTML/Markdown.
+//
+// Repair (fechamento do contrato estruturado) -- `AnswerSectionHeading`/
+// `AnswerVerdictLabel` são os MESMOS vocabulários fechados de
+// `AnswerSectionHeading`/`AnswerVerdictLabel` (app/editor/answer_blocks.py)
+// e `AnswerClaimItemPublic.verdict_label`/`AnswerClaimSectionBlockPublic.heading`
+// (app/presentation/schemas.py) -- nunca `string` livre aqui, onde o
+// servidor já fechou o contrato. Um valor fora deste vocabulário nunca é
+// produzido pelo backend; o tipo aqui só torna essa garantia visível em
+// tempo de compilação pro frontend, nunca uma segunda validação em
+// runtime.
+export type AnswerSectionHeading =
+  | 'Conclusões sustentadas pelo debate:'
+  | 'Pontos não estabelecidos pelo debate:'
+
+export type AnswerVerdictLabel =
+  | 'sustentada pelo debate'
+  | 'parcialmente sustentada, com ressalvas'
+  | 'rejeitada pelo juiz com base no debate disponível'
+  | 'com posições conflitantes, não resolvida'
+  | 'sem informação suficiente para decidir'
+
+export interface AnswerParagraphBlockPublic {
+  kind: 'paragraph'
+  text: string
+}
+
+export interface AnswerClaimItemPublic {
+  claim_text: string
+  verdict_label: AnswerVerdictLabel
+  explanation: string
+  source_relationship_note: string | null
+}
+
+export interface AnswerClaimSectionBlockPublic {
+  kind: 'claim_section'
+  heading: AnswerSectionHeading
+  items: AnswerClaimItemPublic[]
+}
+
+export type AnswerBlockPublic = AnswerParagraphBlockPublic | AnswerClaimSectionBlockPublic
+
 export interface FinalAnswerPublic {
   answer_text: string
+  // `null` pra runs persistidos antes da UI Slice 3, pro caminho sem
+  // veredito, e pro status histórico `llm_composed` -- o consumidor
+  // sempre cai de volta pra `answer_text` (ver splitAnswerParagraphs,
+  // api/formatting.ts) nesses casos, nunca reconstrói estrutura.
+  answer_blocks: AnswerBlockPublic[] | null
   limitations: string[]
   status: FinalAnswerStatus
   editor_model: string | null

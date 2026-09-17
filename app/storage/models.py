@@ -633,6 +633,14 @@ class FinalAnswerRow(Base):
     council_run_id: Mapped[str] = mapped_column(ForeignKey("council_runs.id"))
 
     answer_text: Mapped[str]
+    # UI Slice 3 (Structured Final Answer) -- representação ADITIVA e
+    # opcional de `answer_text` (ver app/editor/answer_blocks.py).
+    # NULLABLE sem DEFAULT -- `NULL` é honesto pra toda linha persistida
+    # antes desta coluna existir (ver `_upgrade_legacy_answer_blocks`,
+    # app/storage/database.py), pro caminho sem veredito, e pro status
+    # histórico `llm_composed`; nunca reconstruído retroativamente a
+    # partir de `answer_text`.
+    answer_blocks_json: Mapped[list | None] = mapped_column(JSON)
     limitations_json: Mapped[list] = mapped_column(JSON)
     status: Mapped[str]
     editor_model: Mapped[str | None]

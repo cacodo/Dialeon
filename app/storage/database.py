@@ -78,7 +78,11 @@ async def init_db(engine: AsyncEngine) -> None:
     Provider Default-Model Snapshot Provenance V1: mesmo tratamento pra
     `default_model_authority_snapshot_json` nas mesmas 3 tabelas de
     `_upgrade_legacy_provider_execution_policy` -- também sem backfill,
-    ver docstring de `_upgrade_legacy_default_model_authority_snapshot`."""
+    ver docstring de `_upgrade_legacy_default_model_authority_snapshot`.
+
+    UI Slice 3 (Structured Final Answer): mesmo tratamento pra
+    `answer_blocks_json` (`final_answers`) -- também sem backfill, ver
+    docstring de `_upgrade_legacy_answer_blocks`."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_upgrade_legacy_had_uncertain_prior_attempts)
@@ -88,6 +92,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_model_identity_source)
         await conn.run_sync(_upgrade_legacy_request_provenance)
         await conn.run_sync(_upgrade_legacy_default_model_authority_snapshot)
+        await conn.run_sync(_upgrade_legacy_answer_blocks)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -368,6 +373,33 @@ def _upgrade_legacy_request_provenance(sync_conn) -> None:  # noqa: ANN001
         sync_conn.execute(
             text(f"ALTER TABLE {table_name} ADD COLUMN request_provenance_json TEXT")
         )
+
+
+def _upgrade_legacy_answer_blocks(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- UI Slice 3 (Structured Final
+    Answer).
+
+    Mesma disciplina de `_upgrade_legacy_support_scope_model_count`: só
+    `ALTER TABLE` quando a coluna genuinamente não existe (checagem via
+    `PRAGMA table_info`), nunca recalcula um valor já persistido. AQUI
+    também não há nenhum backfill a fazer -- não existe forma honesta de
+    reconstruir `answer_blocks` a partir de `answer_text` já persistido
+    (a string achatada mistura texto app-autorado com texto NÃO
+    CONFIÁVEL sem delimitador reversível, ver app/text_safety.py;
+    qualquer tentativa de parsing retroativo seria exatamente o tipo de
+    reinterpretação histórica que este slice proíbe). SQLite usa `NULL`
+    implicitamente pra linhas existentes quando um `ALTER TABLE ADD
+    COLUMN` não declara `DEFAULT` numa coluna nullable, então nenhum
+    `UPDATE` é necessário."""
+    inspector = sa_inspect(sync_conn)
+    table_name = "final_answers"
+    if table_name not in inspector.get_table_names():
+        return  # tabela nova (já nasce com a coluna via create_all())
+    existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+    if "answer_blocks_json" in existing_columns:
+        return  # já upgradado (ou banco já nasceu com a coluna) -- nunca recalcula
+
+    sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN answer_blocks_json TEXT"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

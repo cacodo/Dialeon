@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
 
+from app.editor.result import FinalAnswer
 from app.models.domain import ClaimAssessment, ClaimSupport
 from app.models.provider_models import DefaultModelAuthoritySnapshot, ModelIdentitySource
 from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
@@ -574,6 +575,122 @@ async def test_final_answer_and_limitations_preserved(repo):
     assert loaded.editor_result.final_answer.answer_text == result.editor_result.final_answer.answer_text
     assert loaded.editor_result.final_answer.limitations == result.editor_result.final_answer.limitations
     assert loaded.editor_result.final_answer.based_on_verdict_id == result.judge_result.verdict.id
+
+
+@pytest.mark.asyncio
+async def test_final_answer_answer_blocks_none_roundtrips_as_none(repo):
+    """`full_council_run_result()` nunca popula `answer_blocks` (fixture
+    histórica, `status="llm_composed"`) -- confirma que a coluna NULLABLE
+    persiste/reconstrói `None` honestamente, nunca inventa estrutura."""
+    result = full_council_run_result()
+    assert result.editor_result.final_answer.answer_blocks is None
+    await repo.save_success(result)
+
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.editor_result.final_answer.answer_blocks is None
+
+
+@pytest.mark.asyncio
+async def test_final_answer_answer_blocks_roundtrip_preserves_structure(repo):
+    """UI Slice 3 -- um `answer_blocks` populado (parágrafo + seção de
+    claims com nota de reconciliação) sobrevive save/load byte-a-byte
+    igual, inclusive a discriminação `kind` de cada variante da union."""
+    from app.editor.answer_blocks import (
+        AnswerClaimItem,
+        AnswerClaimSectionBlock,
+        AnswerParagraphBlock,
+    )
+
+    result = full_council_run_result()
+    # Listas mutáveis deliberadamente (não tuplas) -- exercitam o mesmo
+    # caminho de um chamador real (`FinalAnswer(...)`, nunca `model_copy`,
+    # que puларia a validação/coerção pra tupla que este teste prova).
+    blocks = [
+        AnswerParagraphBlock(text="Resultado da avaliação do debate:"),
+        AnswerClaimSectionBlock(
+            heading="Conclusões sustentadas pelo debate:",
+            items=[
+                AnswerClaimItem(
+                    claim_text="A receita cresceu 12% em 2025.",
+                    verdict_label="sustentada pelo debate",
+                    explanation="Múltiplos participantes concordam.",
+                    source_relationship_note="Relação com a fonte fornecida: a fonte aponta na MESMA direção da avaliação do debate.",
+                )
+            ],
+        ),
+    ]
+    # `model_copy(update=...)` NÃO valida -- passaria `blocks` (lista)
+    # adiante sem coerção pra tupla, mascarando exatamente a garantia do
+    # achado 2. Reconstruir via o construtor normal (`FinalAnswer(...)`)
+    # força a mesma validação real que qualquer caminho de produção
+    # também sofre.
+    #
+    # Repair (fechamento do contrato estruturado) -- `status` sobrescrito
+    # pra `"llm_planned"`: a fixture base usa `status="llm_composed"`
+    # (histórico, nunca produz `answer_blocks` de verdade), que agora é
+    # corretamente rejeitado por `_answer_blocks_forbidden_for_unstructured_statuses`
+    # (app/editor/result.py) quando `answer_blocks` não é `None` -- o
+    # mesmo conjunto de campos (`editor_model`/`based_on_verdict_id`/
+    # `judge_confidence`) continua exigido pelos dois status, então a
+    # troca não precisa de mais nenhum campo.
+    final_answer = FinalAnswer(
+        **{**result.editor_result.final_answer.__dict__, "status": "llm_planned", "answer_blocks": blocks}
+    )
+    editor_result = result.editor_result.model_copy(update={"final_answer": final_answer})
+    result = result.model_copy(update={"editor_result": editor_result})
+
+    assert isinstance(final_answer.answer_blocks, tuple)
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    loaded_blocks = loaded.editor_result.final_answer.answer_blocks
+    assert loaded_blocks is not None
+    assert loaded_blocks == tuple(blocks)
+    assert loaded_blocks[0].kind == "paragraph"
+    assert loaded_blocks[1].kind == "claim_section"
+    assert loaded_blocks[1].items[0].source_relationship_note == blocks[1].items[0].source_relationship_note
+
+
+@pytest.mark.asyncio
+async def test_malformed_answer_blocks_json_fails_closed_on_load(engine, repo):
+    """Achado 3 da revisão adversarial, adjacente -- `answer_blocks_json`
+    persistido malformado (aqui: um heading que não está no vocabulário
+    fechado, ver `AnswerSectionHeading`/`ANSWER_SECTION_HEADING_ORDER`,
+    app/editor/answer_blocks.py) precisa fazer a reconstrução FALHAR
+    explicitamente (`ValidationError`) -- nunca ser silenciosamente
+    reparada/descartada. Mesma disciplina de
+    test_malformed_request_provenance_json_fails_closed_on_load acima,
+    aplicada à coluna nova desta slice."""
+    result = full_council_run_result()
+    await repo.save_success(result)
+    final_answer_id = result.editor_result.final_answer.id
+
+    forged_blocks = [
+        {"kind": "paragraph", "text": "Abertura."},
+        {
+            "kind": "claim_section",
+            "heading": "Um heading forjado que não existe no vocabulário fechado:",
+            "items": [
+                {
+                    "claim_text": "c",
+                    "verdict_label": "sustentada pelo debate",
+                    "explanation": "e",
+                    "source_relationship_note": None,
+                }
+            ],
+        },
+    ]
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE final_answers SET answer_blocks_json = :json WHERE id = :id"),
+            {"json": json.dumps(forged_blocks), "id": final_answer_id},
+        )
+
+    with pytest.raises(ValidationError):
+        await repo.get_run(result.id)
 
 
 @pytest.mark.asyncio

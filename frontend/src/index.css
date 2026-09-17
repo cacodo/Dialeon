@@ -487,6 +487,140 @@ main {
   margin-bottom: 0;
 }
 
+/* UI Slice 3 -- seção de claims avaliadas (bucket A/B), renderizada a
+   partir de `answer_blocks` (JSON tipado) quando presente -- nunca por
+   parsing de texto. `white-space: pre-wrap`/margem dos parágrafos
+   internos já herdam de `.final-answer__text p` acima (seletor de
+   descendente cobre os <p> aninhados aqui também).
+
+   Visual polish -- as duas seções (bucket A/B) precisam ler como
+   passagens distintas de um documento, não como painéis/cards: nenhuma
+   borda/caixa própria por seção, só espaço + um traço horizontal muito
+   sutil quando uma seção segue outra (nunca na primeira). O heading
+   ganha o mesmo tratamento de rótulo discreto já usado em
+   `.run-detail__question-label` (maiúsculas, letter-spacing, cor
+   muted) -- reduz a competição visual com o conteúdo abaixo, mantendo o
+   <h3> real (nenhuma reinterpretação de hierarquia semântica). */
+.final-answer__claim-section {
+  margin-bottom: var(--space-4);
+}
+
+.final-answer__claim-section:last-child {
+  margin-bottom: 0;
+}
+
+.final-answer__claim-section + .final-answer__claim-section {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.final-answer__claim-section h3 {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-fg-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.final-answer__claim-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Cada claim é separada das vizinhas por espaço + um traço superior bem
+   sutil (nunca na primeira) -- substitui a barra lateral contínua/forte
+   de antes, que competia demais com o conteúdo. Sem caixa/borda ao redor
+   do item inteiro -- "documento", não "card". */
+.final-answer__claim-item {
+  padding-top: var(--space-4);
+}
+
+.final-answer__claim-item:first-child {
+  padding-top: 0;
+}
+
+.final-answer__claim-item + .final-answer__claim-item {
+  border-top: 1px solid var(--color-border);
+}
+
+/* Claim: o elemento mais forte do item (ANSWER FIRST se estende pra
+   dentro de cada claim -- a afirmação em si é sempre o que mais chama
+   atenção). */
+.final-answer__claim-text {
+  font-weight: 600;
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+  margin: 0 0 var(--space-2);
+}
+
+/* Avaliação: rótulo/valor deliberadamente SEM cor de estado (nunca
+   codifica veredito por cor -- ver docstring do módulo/tokens.css) e sem
+   pílula/badge (nenhum fundo/borda própria) -- só peso e espaçamento de
+   letra tipográficos, pra não parecer um selo de "verdade absoluta". O
+   rótulo estático ("Avaliação") fica visivelmente mais quieto que o
+   valor, que por sua vez continua mais quieto que a explicação abaixo
+   (hierarquia: claim > veredito > explicação). */
+.final-answer__claim-verdict {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.final-answer__claim-verdict-label {
+  color: var(--color-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+.final-answer__claim-verdict-label::after {
+  content: ':';
+}
+
+.final-answer__claim-verdict-value {
+  color: var(--color-fg-muted);
+  font-weight: 600;
+  margin-left: var(--space-1);
+}
+
+/* Explicação: a prosa mais longa do item -- precisa de conforto de
+   leitura (line-height/medida generosos), nunca da mesma cor apagada
+   que o rótulo do veredito (achado do polish: a linha inteira ficava
+   `--color-fg-muted` antes, incluindo o texto mais denso/importante). */
+.final-answer__claim-explanation {
+  color: var(--color-fg);
+  line-height: var(--line-height-base);
+  margin: 0;
+}
+
+/* Nota de relação com a fonte: camada de evidência secundária e quieta
+   -- nunca itálico (lia como citação/anotação), nunca cor de aviso
+   (não é um alerta), nunca link (não é uma referência clicável). Um
+   rótulo pequeno em versalete + recuo leve marca a mudança de canal
+   (Judge -> Fonte) só por tipografia/espaço, sem nenhuma borda/caixa. */
+.final-answer__claim-source-note {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-3);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  color: var(--color-fg-muted);
+}
+
+.final-answer__claim-source-note-label {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+  margin-right: var(--space-1);
+}
+
+.final-answer__claim-source-note-label::after {
+  content: ':';
+}
+
 .final-answer__status {
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);

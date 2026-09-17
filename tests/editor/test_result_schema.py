@@ -440,6 +440,7 @@ def test_final_answer_public_accepts_llm_planned_status():
 
     public = FinalAnswerPublic(
         answer_text="resposta",
+        answer_blocks=None,
         limitations=[],
         status="llm_planned",
         editor_model="claude-test",
@@ -454,6 +455,7 @@ def test_final_answer_public_still_accepts_historical_llm_composed_status():
 
     public = FinalAnswerPublic(
         answer_text="resposta histórica",
+        answer_blocks=None,
         limitations=[],
         status="llm_composed",
         editor_model="claude-legacy",

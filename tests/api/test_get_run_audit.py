@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api.app import create_app
 from app.config import Settings
+from app.editor.result import FinalAnswer
 from app.models.domain import ClaimAssessment
 from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
 from tests.api.helpers import make_components_factory
@@ -494,3 +495,72 @@ def test_get_run_audit_not_found_returns_404():
 
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "run_not_found"
+
+
+def test_get_run_audit_exposes_answer_blocks_structure_end_to_end():
+    """UI Slice 3 -- `answer_blocks` populado sobrevive save/load e
+    aparece na resposta HTTP de audit com a forma pública correta
+    (discriminador `kind`, itens de claim com `source_relationship_note`)."""
+    from app.editor.answer_blocks import AnswerClaimItem, AnswerClaimSectionBlock, AnswerParagraphBlock
+
+    result = full_council_run_result()
+    blocks = [
+        AnswerParagraphBlock(text="Resultado da avaliação do debate:"),
+        AnswerClaimSectionBlock(
+            heading="Conclusões sustentadas pelo debate:",
+            items=[
+                AnswerClaimItem(
+                    claim_text="A receita cresceu 12% em 2025.",
+                    verdict_label="sustentada pelo debate",
+                    explanation="Múltiplos participantes concordam.",
+                    source_relationship_note=None,
+                )
+            ],
+        ),
+    ]
+    # Reconstrução via construtor normal (não `model_copy`, que não
+    # valida) -- exercita a mesma coerção real lista->tupla de um
+    # chamador de produção (achado 2 da revisão adversarial).
+    #
+    # Repair (fechamento do contrato estruturado) -- `status` sobrescrito
+    # pra `"llm_planned"`: a fixture base usa `status="llm_composed"`
+    # (histórico, nunca produz `answer_blocks` de verdade), agora
+    # corretamente rejeitado com `answer_blocks` não-None (ver
+    # `_answer_blocks_forbidden_for_unstructured_statuses`,
+    # app/editor/result.py).
+    final_answer = FinalAnswer(
+        **{**result.editor_result.final_answer.__dict__, "status": "llm_planned", "answer_blocks": blocks}
+    )
+    editor_result = result.editor_result.model_copy(update={"final_answer": final_answer})
+    result = result.model_copy(update={"editor_result": editor_result})
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_success, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}/audit")
+
+    body = resp.json()
+    api_blocks = body["final_answer"]["answer_blocks"]
+    assert api_blocks is not None
+    assert api_blocks[0] == {"kind": "paragraph", "text": "Resultado da avaliação do debate:"}
+    assert api_blocks[1]["kind"] == "claim_section"
+    assert api_blocks[1]["heading"] == "Conclusões sustentadas pelo debate:"
+    assert api_blocks[1]["items"][0]["claim_text"] == "A receita cresceu 12% em 2025."
+    assert api_blocks[1]["items"][0]["source_relationship_note"] is None
+
+
+def test_get_run_audit_answer_blocks_null_for_historical_final_answer():
+    """`full_council_run_result()` nunca popula `answer_blocks` -- a
+    resposta HTTP precisa expor `null`, nunca reconstruir estrutura a
+    partir de `answer_text`."""
+    result = full_council_run_result()
+    assert result.final_answer.answer_blocks is None
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_success, app.state.components, result)
+        resp = client.get(f"/runs/{run_id}/audit")
+
+    body = resp.json()
+    assert body["final_answer"]["answer_blocks"] is None

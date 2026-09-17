@@ -115,6 +115,7 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
     editor_attempts: [],
     final_answer: {
       answer_text: 'A receita cresceu 12% em 2025, segundo o debate.',
+      answer_blocks: null,
       limitations: [],
       status: 'llm_planned',
       editor_model: 'claude-sonnet-5',

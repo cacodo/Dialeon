@@ -34,6 +34,7 @@ const completedResult = {
   completed_at: '2026-09-06T00:00:05Z',
   final_answer: {
     answer_text: 'Brasília é a capital do Brasil.',
+    answer_blocks: null,
     limitations: ['Só uma rodada de debate.'],
     status: 'llm_composed' as const,
     editor_model: 'claude-sonnet-5',

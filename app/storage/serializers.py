@@ -24,8 +24,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from pydantic import TypeAdapter
+
 from app.debate.numeric_verification import ArithmeticAssertion, DeterministicVerificationAttempt
 from app.debate.processing_record import ClaimProcessingAttempt
+from app.editor.answer_blocks import AnswerBlock
 from app.editor.attempt import EditorAttempt
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
@@ -595,12 +598,42 @@ def editor_attempt_from_row(row: EditorAttemptRow) -> EditorAttempt:
 # FinalAnswer
 # ---------------------------------------------------------------------------
 
+# UI Slice 3 -- `AnswerBlock` é uma union discriminada
+# (`AnswerParagraphBlock | AnswerClaimSectionBlock`), não uma única
+# classe -- `TypeAdapter` é o mecanismo Pydantic pra (de)serializar isso,
+# análogo a `Model(**data)` usado pros demais campos JSON deste módulo.
+#
+# Repair (revisão adversarial, achado 2) -- o adapter usa `tuple[...]`,
+# igual ao tipo real de `FinalAnswer.answer_blocks` (ver
+# app/editor/result.py) -- nunca `list[...]`, pra que a reconstrução a
+# partir de JSON persistido já produza a mesma tupla genuinamente
+# imutável que a construção nova produziria, sem depender de uma
+# segunda coerção implícita ao passar pro construtor de `FinalAnswer`.
+# `.dump_python(..., mode="json")` continua devolvendo uma lista JSON
+# comum pra persistência/transporte público -- só a representação
+# Python EM MEMÓRIA muda, nunca o formato de wire/coluna JSON.
+_ANSWER_BLOCKS_ADAPTER: TypeAdapter[tuple[AnswerBlock, ...]] = TypeAdapter(tuple[AnswerBlock, ...])
+
+
+def _answer_blocks_to_json(blocks: tuple[AnswerBlock, ...] | None) -> list | None:
+    return _ANSWER_BLOCKS_ADAPTER.dump_python(blocks, mode="json") if blocks is not None else None
+
+
+def _answer_blocks_from_json(data: list | None) -> tuple[AnswerBlock, ...] | None:
+    """Reconstrução validada -- um `data` malformado/incompatível com o
+    schema atual de `AnswerBlock` falha fechado aqui (`ValidationError`),
+    nunca é silenciosamente reparado/descartado. `None` (coluna nunca
+    populada, ou run anterior à UI Slice 3) permanece `None` -- nunca
+    reconstruído a partir de `answer_text`."""
+    return _ANSWER_BLOCKS_ADAPTER.validate_python(data) if data is not None else None
+
 
 def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerRow:
     return FinalAnswerRow(
         id=fa.id,
         council_run_id=council_run_id,
         answer_text=fa.answer_text,
+        answer_blocks_json=_answer_blocks_to_json(fa.answer_blocks),
         limitations_json=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -617,6 +650,7 @@ def final_answer_from_row(row: FinalAnswerRow) -> FinalAnswer:
     return FinalAnswer(
         id=row.id,
         answer_text=row.answer_text,
+        answer_blocks=_answer_blocks_from_json(row.answer_blocks_json),
         limitations=list(row.limitations_json),
         status=row.status,
         editor_model=row.editor_model,

@@ -34,13 +34,26 @@ correção NÃO foi adicionar mais validação em cima de texto livre — foi
 remover o canal de texto livre inteiramente: `EditorPlan` (ver
 app/editor/schemas.py) só tem dois enums finitos
 (`opening_style`/`closing_style`); TODA palavra que o usuário lê em
-`FinalAnswer.answer_text` é escrita por `_render_final_answer_text`
-abaixo, o ÚNICO renderizador epistêmico deste módulo, usado tanto no
-sucesso do plano da LLM quanto em qualquer fallback (mesma função, nunca
-dois textos possíveis pro mesmo estado epistêmico dependendo de qual
-caminho de execução foi seguido). A LLM Editor nunca mais vê nem escreve
-claim_text/explanation/debate_limitations -- só os usa a aplicação, que
-os inclui verbatim.
+`FinalAnswer.answer_text` é escrita por `_compose_answer` abaixo
+(`_render_final_answer_text`, mantida por compatibilidade de assinatura
+com chamadores/testes existentes, é hoje uma projeção fina dela -- ver
+UI Slice 3 abaixo), o ÚNICO compositor epistêmico deste módulo, usado
+tanto no sucesso do plano da LLM quanto em qualquer fallback (mesma
+função, nunca dois textos possíveis pro mesmo estado epistêmico
+dependendo de qual caminho de execução foi seguido). A LLM Editor nunca
+mais vê nem escreve claim_text/explanation/debate_limitations -- só os
+usa a aplicação, que os inclui verbatim.
+
+UI Slice 3 (Structured Final Answer) -- `_compose_answer` agora também
+devolve `answer_blocks` (ver app/editor/answer_blocks.py), uma
+representação ADITIVA e tipada dos mesmos dados, produzida NO MESMO
+loop que produz `answer_text` -- nunca por parsing de `answer_text`
+(que mistura texto app-autorado com texto NÃO CONFIÁVEL sem delimitador
+reversível, ver app/text_safety.py), nunca uma segunda derivação
+independente. `answer_blocks` é `None` pra runs históricos, pro caminho
+sem veredito (`_no_verdict_result`, escopo desta slice) e pro status
+histórico `llm_composed` -- o frontend trata todos esses casos da MESMA
+forma (fallback pra divisão de parágrafos sobre `answer_text`).
 
 Isso NÃO resolve (fora de escopo, ver docstring de app/editor/schemas.py):
 se `ClaimAssessment.explanation` (texto livre do PRÓPRIO Judge) é
@@ -196,12 +209,13 @@ from __future__ import annotations
 
 import json
 import unicodedata
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import ValidationError
 
 from app.debate.claims import get_current_claims
 from app.debate.result import DebateResult
+from app.editor.answer_blocks import AnswerBlock, AnswerClaimItem, AnswerClaimSectionBlock, AnswerParagraphBlock
 from app.editor.attempt import EditorAttempt
 from app.editor.context import EDITOR_CONTRACT_VERSION, build_editor_request
 from app.editor.errors import MalformedEditorOutputError
@@ -323,13 +337,23 @@ _JUDGE_REASON_LABELS: dict[str, str] = {
 # - NOT_COMPARABLE: sem fonte utilizável -- o caso mais comum (nenhuma
 #   fonte fornecida); imprimir uma linha aqui pra TODA claim seria ruído
 #   puro pro caso mais frequente do produto.
+#
+# Repair (revisão adversarial, achado 1) -- estes templates NUNCA levam o
+# prefixo de concatenação `"\n  "` embutido (diferente de antes desta
+# correção): o prefixo é só uma decisão de FORMATAÇÃO do renderizador de
+# `answer_text` (ver `_render_reconciliation_suffix`), nunca parte do
+# CONTEÚDO app-autorado. Manter os dois separados aqui é o que permite ao
+# bloco tipado (`AnswerClaimItem.source_relationship_note`) nunca precisar
+# desfazer uma concatenação por substring depois -- ele usa o MESMO texto
+# app-autorado, só que formatado à parte, sem jamais tocar no excerto
+# NÃO CONFIÁVEL que pode acompanhá-lo (ver `_reconciliation_note_parts`).
 _RELATIONSHIP_RENDER_TEMPLATES: dict[ChannelRelationship, str] = {
     ChannelRelationship.DIRECTIONALLY_ALIGNED: (
-        "\n  Relação com a fonte fornecida: a fonte aponta na MESMA direção "
+        "Relação com a fonte fornecida: a fonte aponta na MESMA direção "
         "da avaliação do debate."
     ),
     ChannelRelationship.IN_TENSION: (
-        "\n  Relação com a fonte fornecida: a fonte aponta na direção OPOSTA "
+        "Relação com a fonte fornecida: a fonte aponta na direção OPOSTA "
         "à avaliação do debate."
     ),
     # Repair #5 (revisão adversarial) -- "mixed"/SOURCE_CHANNEL_CONFLICT
@@ -346,7 +370,7 @@ _RELATIONSHIP_RENDER_TEMPLATES: dict[ChannelRelationship, str] = {
     # NEUTRO exigido: nunca "conflito interno na fonte", nunca "resultados
     # conflitantes para esta afirmação" atribuído à fonte.
     ChannelRelationship.SOURCE_CHANNEL_CONFLICT: (
-        "\n  Relação com a fonte fornecida: a análise da fonte produziu "
+        "Relação com a fonte fornecida: a análise da fonte produziu "
         "entradas que não puderam ser reduzidas a um único estado coerente "
         "para esta afirmação, e não pôde ser usada para comparação aqui."
     ),
@@ -549,7 +573,7 @@ class Editor:
                 cumulative_budget_exceeded=cumulative_budget_exceeded,
             )
 
-        answer_text = _render_final_answer_text(
+        answer_text, answer_blocks = _compose_answer(
             run_config.question,
             verdict,
             current_claims,
@@ -559,6 +583,7 @@ class Editor:
         )
         final_answer = FinalAnswer(
             answer_text=answer_text,
+            answer_blocks=answer_blocks,
             limitations=list(verdict.debate_limitations),
             status="llm_planned",
             editor_model=accepted_response.model,
@@ -626,6 +651,11 @@ class Editor:
 
         final_answer = FinalAnswer(
             answer_text=answer_text,
+            # `answer_blocks` fica no default (`None`) de propósito -- UI
+            # Slice 3 escopa deliberadamente este caminho (sem veredito)
+            # fora da representação estruturada; ver docstring de
+            # app/editor/answer_blocks.py. O frontend já trata `None`
+            # graciosamente (fallback de divisão de parágrafos).
             limitations=[f"Avaliação final não realizada: {reason_text}."],
             status="deterministic_no_verdict",
         )
@@ -654,18 +684,20 @@ class Editor:
         source_results_by_id: dict[str, SourceClaimAnalysisResult],
     ) -> FinalAnswer:
         """Fallback (transporte/parse/budget) -- usa o MESMO
-        `_render_final_answer_text` do caminho de sucesso, com
-        `_DEFAULT_PLAN`, nunca um renderizador próprio (Etapa 17B): não
-        pode haver dois textos possíveis pro mesmo veredito dependendo
-        só de qual caminho de execução foi seguido. `reconciliation`
-        segue o mesmo princípio (Cross-Channel Reconciliation V1): o
-        fallback mostra exatamente o mesmo relacionamento entre canais
-        que o caminho de sucesso mostraria pro mesmo veredito."""
-        answer_text = _render_final_answer_text(
+        `_compose_answer` do caminho de sucesso, com `_DEFAULT_PLAN`,
+        nunca um compositor próprio (Etapa 17B): não pode haver dois
+        textos/conjuntos-de-blocos possíveis pro mesmo veredito
+        dependendo só de qual caminho de execução foi seguido.
+        `reconciliation` segue o mesmo princípio (Cross-Channel
+        Reconciliation V1): o fallback mostra exatamente o mesmo
+        relacionamento entre canais que o caminho de sucesso mostraria
+        pro mesmo veredito."""
+        answer_text, answer_blocks = _compose_answer(
             question, verdict, current_claims, _DEFAULT_PLAN, reconciliation, source_results_by_id
         )
         return FinalAnswer(
             answer_text=answer_text,
+            answer_blocks=answer_blocks,
             limitations=list(verdict.debate_limitations),
             status="deterministic_from_verdict",
             based_on_verdict_id=verdict.id,
@@ -771,49 +803,111 @@ def _first_excerpt(
     return None
 
 
-def _render_reconciliation_suffix(
+class _ReconciliationNoteParts(NamedTuple):
+    """Texto app-autorado e excerto NÃO CONFIÁVEL mantidos SEPARADOS --
+    nunca uma string já concatenada. Ver `_reconciliation_note_parts`."""
+
+    relationship_text: str
+    excerpt: str | None
+
+
+def _reconciliation_note_parts(
     outcome: ClaimReconciliationOutcome,
     source_results_by_id: dict[str, SourceClaimAnalysisResult],
-) -> str | None:
-    """Linha ADICIONAL, nunca substituta, da avaliação do Judge --
-    CHANNEL RELATIONSHIP != JUDGE VERDICT != TRUTH. A classificação vem
-    inteiramente de `outcome.channel_relationship` (já resolvida pela
-    ÚNICA implementação de reconciliação, `app/reconciliation/reconcile.py`)
-    -- esta função NUNCA re-deriva o relacionamento a partir de
-    judge_verdict/source_state por conta própria, só escolhe o TEMPLATE
-    fixo correspondente. Ver comentário de `_RELATIONSHIP_RENDER_TEMPLATES`
-    acima pra quais estados são intencionalmente audit-only (`None` aqui).
+) -> _ReconciliationNoteParts | None:
+    """Repair (revisão adversarial, achado 1) -- ÚNICA fonte de verdade
+    da nota de reconciliação, devolvendo `relationship_text` (template
+    FIXO, sempre app-autorado, NUNCA contém o excerto embutido) e
+    `excerpt` (BYTE-FIEL ao valor original de `ValidSourceRelation.excerpt`,
+    ou `None`) como dois campos INDEPENDENTES -- nunca uma única string
+    já formatada. `_render_reconciliation_suffix` (forma string, pra
+    `answer_text`) e o bloco tipado
+    (`AnswerClaimItem.source_relationship_note`, pra `answer_blocks`)
+    formatam esses dois pedaços cada um à sua própria maneira, mas NENHUM
+    dos dois volta a fazer parsing/substituição sobre uma string que já
+    misturasse os dois -- eliminando por construção o risco (achado da
+    revisão) de um `"\\n  "` dentro do excerto verbatim ser confundido
+    com o prefixo de formatação e apagado por engano.
 
-    Correção arquitetural (auditoria de terminal-safety pós-CLI):
-    o excerto entra aqui BYTE-FIEL, sem nenhum escaping --
-    `FinalAnswer.answer_text` é o dado CANÔNICO (persistido/API/
-    frontend), não um artefato de terminal, e escaping terminal-
+    A classificação vem inteiramente de `outcome.channel_relationship`
+    (já resolvida pela ÚNICA implementação de reconciliação,
+    `app/reconciliation/reconcile.py`) -- esta função NUNCA re-deriva o
+    relacionamento a partir de judge_verdict/source_state por conta
+    própria, só escolhe o TEMPLATE fixo correspondente. Ver comentário de
+    `_RELATIONSHIP_RENDER_TEMPLATES` acima pra quais estados são
+    intencionalmente audit-only (`None` aqui).
+
+    Correção arquitetural (auditoria de terminal-safety pós-CLI): o
+    excerto entra aqui BYTE-FIEL, sem nenhum escaping -- ambos os
+    consumidores (string/bloco) são dados CANÔNICOS (persistidos/API/
+    frontend), nunca artefatos de terminal, e escaping terminal-
     específico NUNCA pertence a esta camada de domínio (a mesma razão
-    pela qual `Claim.text`/`ClaimAssessment.explanation`, logo abaixo,
-    também nunca passaram por `terminal_safe_text` aqui). A
-    neutralização de controle de terminal para TODO o texto composto
-    (excerpt incluído) acontece uma única vez, no limite de
-    apresentação real -- `app/cli/output.py::human_run_result`, que é
-    quem de fato escreve em um terminal -- nunca dentro do
-    renderizador de domínio. Ver docstring de `app/text_safety.py`."""
+    pela qual `Claim.text`/`ClaimAssessment.explanation` também nunca
+    passam por `terminal_safe_text` aqui). A neutralização de controle de
+    terminal acontece uma única vez, no limite de apresentação real --
+    `app/cli/output.py::human_run_result` -- nunca dentro do compositor
+    de domínio. Ver docstring de `app/text_safety.py`."""
     relationship = outcome.channel_relationship
     if relationship in (ChannelRelationship.SOURCE_UNRESOLVED, ChannelRelationship.NOT_COMPARABLE):
         return None
 
     if relationship == ChannelRelationship.SOURCE_ADDS_DIRECTION:
         label = _SOURCE_ADDS_DIRECTION_LABELS[outcome.source_state]
-        suffix = (
-            "\n  Relação com a fonte fornecida: o debate não decidiu esta "
+        relationship_text = (
+            "Relação com a fonte fornecida: o debate não decidiu esta "
             f"afirmação, mas ela é {label}."
         )
     else:
-        suffix = _RELATIONSHIP_RENDER_TEMPLATES[relationship]
+        relationship_text = _RELATIONSHIP_RENDER_TEMPLATES[relationship]
 
+    excerpt: str | None = None
     if relationship != ChannelRelationship.SOURCE_CHANNEL_CONFLICT:
         excerpt = _first_excerpt(outcome, source_results_by_id)
-        if excerpt is not None:
-            suffix += f'\n  Trecho da fonte: "{excerpt}"'
+
+    return _ReconciliationNoteParts(relationship_text=relationship_text, excerpt=excerpt)
+
+
+def _render_reconciliation_suffix(
+    outcome: ClaimReconciliationOutcome,
+    source_results_by_id: dict[str, SourceClaimAnalysisResult],
+) -> str | None:
+    """Forma STRING, pra concatenar em `answer_text` -- linha ADICIONAL,
+    nunca substituta, da avaliação do Judge (CHANNEL RELATIONSHIP !=
+    JUDGE VERDICT != TRUTH). Byte-idêntica ao comportamento desta função
+    antes do repair -- só a CONSTRUÇÃO mudou (via `_reconciliation_note_parts`
+    compartilhada, nunca uma segunda derivação), nunca a saída pra
+    `answer_text`."""
+    parts = _reconciliation_note_parts(outcome, source_results_by_id)
+    if parts is None:
+        return None
+    suffix = f"\n  {parts.relationship_text}"
+    if parts.excerpt is not None:
+        suffix += f'\n  Trecho da fonte: "{parts.excerpt}"'
     return suffix
+
+
+def _reconciliation_note_for_block(
+    outcome: ClaimReconciliationOutcome,
+    source_results_by_id: dict[str, SourceClaimAnalysisResult],
+) -> str | None:
+    """Forma BLOCO, pra `AnswerClaimItem.source_relationship_note` --
+    MESMA fonte de verdade (`_reconciliation_note_parts`) que
+    `_render_reconciliation_suffix`, nunca derivada a partir da string já
+    concatenada por aquela função (repair da revisão adversarial, achado
+    1: o código anterior fazia `suffix.replace("\\n  ", "\\n")` sobre a
+    string JÁ CONCATENADA, o que podia corromper um `"\\n  "` genuíno
+    dentro do excerto verbatim -- indentação/blank lines/qualquer
+    ocorrência coincidente da sequência de formatação dentro do trecho
+    da fonte real). Aqui o excerto nunca é tocado: ele é interpolado
+    exatamente como veio de `ValidSourceRelation.excerpt`, sem passar por
+    NENHUM parsing/substituição de string."""
+    parts = _reconciliation_note_parts(outcome, source_results_by_id)
+    if parts is None:
+        return None
+    note = parts.relationship_text
+    if parts.excerpt is not None:
+        note += f'\nTrecho da fonte: "{parts.excerpt}"'
+    return note
 
 
 # Repair pós-revisão independente (seção 15 do contrato) -- usado SÓ em
@@ -906,17 +1000,18 @@ def _bounded_question_excerpt(question: str) -> str:
     return collapsed[:cut_len].rstrip() + _CONTEXTUAL_OPENING_TRUNCATION_MARKER
 
 
-def _render_final_answer_text(
+def _compose_answer(
     question: str,
     verdict: JudgeVerdict,
     current_claims: list[Claim],
     plan: EditorPlan,
     reconciliation: SourceJudgeReconciliationResult | None,
     source_results_by_id: dict[str, SourceClaimAnalysisResult],
-) -> str:
-    """Único renderizador epistêmico do módulo (Etapa 17B) -- usado tanto
-    quando a LLM Editor produz um `EditorPlan` aceito quanto em qualquer
-    fallback (com `_DEFAULT_PLAN`, ver `Editor._deterministic_from_verdict_answer`).
+) -> tuple[str, list[AnswerBlock]]:
+    """Único compositor epistêmico do módulo (Etapa 17B; ganhou a saída
+    estruturada na UI Slice 3) -- usado tanto quando a LLM Editor produz
+    um `EditorPlan` aceito quanto em qualquer fallback (com
+    `_DEFAULT_PLAN`, ver `Editor._deterministic_from_verdict_answer`).
     Nenhuma palavra aqui se origina da LLM: `claim_text` (via
     `current_claims`) e `verdict.claim_assessments`
     (verdict/explanation)/`verdict.debate_limitations` são sempre dados
@@ -924,6 +1019,22 @@ def _render_final_answer_text(
     veredito, frases de abertura/fechamento — é template FIXO desta
     função, só selecionado (nunca escrito) pelos dois enums finitos do
     plano.
+
+    UI Slice 3 -- `answer_text` (string plana) e `answer_blocks`
+    (sequência tipada, ver app/editor/answer_blocks.py) são produzidos
+    NUM ÚNICO LOOP sobre `verdict.claim_assessments`, nunca por duas
+    passagens/derivações independentes: cada avaliação vira, na MESMA
+    iteração, tanto uma linha de `bucket_lines` (pro string) quanto um
+    `AnswerClaimItem` (pro bloco) -- garantindo por construção que as
+    duas formas nunca podem divergir sobre QUAIS claims aparecem, em que
+    ORDEM, ou com que rótulo/explicação/nota de reconciliação.
+    `answer_blocks` NUNCA inclui o fechamento de limitações (ver
+    docstring de app/editor/answer_blocks.py, regra de autoridade única)
+    -- só `answer_text` continua ecoando-as textualmente, byte-idêntico
+    ao comportamento desta função antes desta slice (a Ordem/regras de
+    bucket abaixo são inalteradas em relação à versão anterior desta
+    função, que se chamava `_render_final_answer_text` e devolvia só a
+    string; essa função agora é uma projeção fina desta).
 
     Ordem: `verdict.claim_assessments` é sempre percorrido uma única vez,
     na ordem do próprio Judge (nunca controlável pela LLM -- `EditorPlan`
@@ -937,7 +1048,8 @@ def _render_final_answer_text(
     omitir/reordenar/duplicar uma claim, porque o plano não sabe que
     claims (nem buckets) existem. Um bucket vazio nunca imprime seu
     cabeçalho (nenhuma frase "nenhuma conclusão sustentada" inventada) --
-    ver `_BUCKET_A_HEADING`/`_BUCKET_B_HEADING`.
+    ver `_BUCKET_A_HEADING`/`_BUCKET_B_HEADING`; pela mesma razão, uma
+    `AnswerClaimSectionBlock` vazia nunca é emitida.
 
     `reconciliation` (Cross-Channel Reconciliation V1): quando existe um
     `ClaimReconciliationOutcome` pra `assessment.claim_id`, uma linha
@@ -948,32 +1060,59 @@ def _render_final_answer_text(
     PRESA ao bloco da claim -- nunca ao bucket -- então nunca muda de
     claim nem desaparece por causa do particionamento (o bucket de uma
     claim é decidido SÓ por `assessment.verdict`, nunca pela
-    presença/ausência de um outcome de reconciliação). Este renderizador
+    presença/ausência de um outcome de reconciliação). Este compositor
     NUNCA re-deriva `channel_relationship` a partir de
     `assessment.verdict`/`source_state` por conta própria -- só lê o
-    campo já resolvido por `app/reconciliation/reconcile.py`."""
+    campo já resolvido por `app/reconciliation/reconcile.py`. No bloco
+    tipado, a MESMA nota vira `AnswerClaimItem.source_relationship_note`
+    -- mesma chamada de `_render_reconciliation_suffix`, só sem o
+    prefixo `"\\n  "` que fazia sentido pra concatenação em string (aqui
+    vira um campo próprio, nunca concatenado a mais nada)."""
     claims_by_id = {c.id: c for c in current_claims}
     outcomes_by_claim_id = (
         {o.claim_id: o for o in reconciliation.claim_outcomes} if reconciliation is not None else {}
     )
     bucket_lines: dict[Literal["a", "b"], list[str]] = {"a": [], "b": []}
+    bucket_items: dict[Literal["a", "b"], list[AnswerClaimItem]] = {"a": [], "b": []}
     for assessment in verdict.claim_assessments:
         claim = claims_by_id.get(assessment.claim_id)
         claim_text = claim.text if claim is not None else "(claim não encontrada)"
         label = _VERDICT_LABELS.get(assessment.verdict, assessment.verdict)
         line = f"- {claim_text}\n  Avaliação: {label}. {assessment.explanation}"
+        note: str | None = None
         outcome = outcomes_by_claim_id.get(assessment.claim_id)
         if outcome is not None:
             suffix = _render_reconciliation_suffix(outcome, source_results_by_id)
             if suffix is not None:
                 line += suffix
-        bucket_lines[_bucket_for_verdict(assessment.verdict)].append(line)
+            # Repair (revisão adversarial, achado 1) -- `note` vem da
+            # MESMA fonte de verdade que `suffix` (`_reconciliation_note_parts`,
+            # via `_reconciliation_note_for_block`), nunca por
+            # parsing/substituição sobre `suffix` já concatenada -- um
+            # excerto verbatim que contivesse a sequência `"\n  "`
+            # (indentação, blank lines, texto formatado) nunca é
+            # corrompido, porque o bloco nunca desfaz uma string, ele lê
+            # o excerto ainda separado do template.
+            note = _reconciliation_note_for_block(outcome, source_results_by_id)
+        bucket = _bucket_for_verdict(assessment.verdict)
+        bucket_lines[bucket].append(line)
+        bucket_items[bucket].append(
+            AnswerClaimItem(
+                claim_text=claim_text,
+                verdict_label=label,
+                explanation=assessment.explanation,
+                source_relationship_note=note,
+            )
+        )
 
     sections = []
+    answer_blocks: list[AnswerBlock] = []
     if bucket_lines["a"]:
         sections.append(_BUCKET_A_HEADING + "\n" + "\n".join(bucket_lines["a"]))
+        answer_blocks.append(AnswerClaimSectionBlock(heading=_BUCKET_A_HEADING, items=bucket_items["a"]))
     if bucket_lines["b"]:
         sections.append(_BUCKET_B_HEADING + "\n" + "\n".join(bucket_lines["b"]))
+        answer_blocks.append(AnswerClaimSectionBlock(heading=_BUCKET_B_HEADING, items=bucket_items["b"]))
 
     opening = (
         _OPENING_CONTEXTUAL_TEMPLATE.format(question=_bounded_question_excerpt(question))
@@ -981,6 +1120,7 @@ def _render_final_answer_text(
         else _OPENING_DIRECT
     )
     answer_text = opening + "\n\n" + "\n\n".join(sections)
+    answer_blocks.insert(0, AnswerParagraphBlock(text=opening))
 
     limitation_lines = (
         "\n".join(f"- {lim}" for lim in verdict.debate_limitations)
@@ -995,7 +1135,30 @@ def _render_final_answer_text(
     else:  # "concise"
         if limitation_lines is not None:
             answer_text += f"\n\n{_CLOSING_LIMITATIONS_CONCISE_HEADER}\n{limitation_lines}"
+    # `answer_blocks` PARA AQUI, de propósito -- nunca ganha um bloco de
+    # limitações (ver docstring de app/editor/answer_blocks.py). Só
+    # `answer_text`, acima, continua ecoando-as textualmente.
 
+    return answer_text, answer_blocks
+
+
+def _render_final_answer_text(
+    question: str,
+    verdict: JudgeVerdict,
+    current_claims: list[Claim],
+    plan: EditorPlan,
+    reconciliation: SourceJudgeReconciliationResult | None,
+    source_results_by_id: dict[str, SourceClaimAnalysisResult],
+) -> str:
+    """Projeção fina de `_compose_answer` -- mantida com esta assinatura/
+    tipo de retorno (`str`) exatamente pra preservar todo chamador
+    existente (inclusive testes que já chamavam esta função diretamente
+    antes da UI Slice 3) byte-a-byte inalterado. Nunca recomputa nada de
+    forma independente -- delega inteiramente pra `_compose_answer` e
+    descarta os blocos."""
+    answer_text, _ = _compose_answer(
+        question, verdict, current_claims, plan, reconciliation, source_results_by_id
+    )
     return answer_text
 
 
