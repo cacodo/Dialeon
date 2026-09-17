@@ -1,5 +1,13 @@
 // Veredito do juiz -- estados reais, sem cor como único indicador, sem
 // transformar confidence em probabilidade objetiva de verdade.
+//
+// Claim-centered semantic inspection (UI Slice) -- este componente
+// mantém SÓ o raciocínio/estado GLOBAL do juiz (nunca por claim -- as
+// avaliações por claim_id já aparecem dentro de cada unidade em
+// `ClaimInspectionList`, via `buildClaimInspectionModel`, nunca
+// duplicadas aqui). Identidade de modelo é PROVENIÊNCIA, não o conteúdo
+// semântico principal -- por isso aparece por último, como rodapé,
+// nunca como a primeira linha (rodeada/reasoning primeiro).
 
 import type { JudgeVerdictPublic } from '../api/types'
 import { formatModelIdentitySource } from '../api/formatting'
@@ -16,10 +24,6 @@ export function JudgmentView({ verdict }: JudgmentViewProps) {
   return (
     <section aria-labelledby="judgment-heading">
       <h3 id="judgment-heading">Avaliação</h3>
-      <p className="judgment__model">
-        Juiz: {verdict.judge_model} (
-        {formatModelIdentitySource(verdict.judge_model_identity_source)})
-      </p>
       <p className="judgment__reasoning">{verdict.reasoning}</p>
       <p className="judgment__confidence-caveat">
         Confiança declarada pelo juiz: {(verdict.confidence * 100).toFixed(0)}% — uma avaliação
@@ -35,6 +39,10 @@ export function JudgmentView({ verdict }: JudgmentViewProps) {
           </ul>
         </div>
       )}
+      <p className="judgment__model">
+        Juiz: {verdict.judge_model} (
+        {formatModelIdentitySource(verdict.judge_model_identity_source)})
+      </p>
     </section>
   )
 }

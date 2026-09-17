@@ -720,7 +720,8 @@ main {
   margin-bottom: var(--space-2);
 }
 
-.source-analysis__excerpt {
+.source-analysis__excerpt,
+.claim-inspection-list__excerpt {
   margin: var(--space-2) 0 0;
   padding-left: var(--space-3);
   border-left: 3px solid var(--color-border-strong);
@@ -777,4 +778,190 @@ main {
 [role='alert'] {
   padding-left: var(--space-3);
   border-left: 3px solid var(--color-danger);
+}
+
+/* Claim-centered semantic inspection (UI Slice -- visual polish) -- a
+   lista lê como um SUMÁRIO/outline de investigação, não uma pilha de
+   cards de dashboard: mesma disciplina de `.final-answer__claim-item`
+   (nenhuma caixa/fundo/borda ao redor do item inteiro, só espaço + um
+   traço superior bem sutil entre claims, nunca na primeira). O texto da
+   claim fica neutro (`--color-fg`, igual ao resto do corpo do texto) --
+   indigo é reservado pra hover/foco/estado expandido do próprio botão de
+   disclosure, nunca uma cor "de claim" aplicada por padrão. */
+.claim-inspection-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.claim-inspection-list__item {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.claim-inspection-list__item:first-child {
+  padding-top: 0;
+}
+
+.claim-inspection-list__item + .claim-inspection-list__item {
+  border-top: 1px solid var(--color-border);
+}
+
+.claim-inspection-list__toggle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  color: var(--color-fg);
+}
+
+.claim-inspection-list__toggle:hover:not(:disabled) {
+  background: none;
+  border: none;
+  color: var(--brand-700);
+}
+
+.claim-inspection-list__toggle[aria-expanded='true'] {
+  color: var(--brand-700);
+}
+
+.claim-inspection-list__claim-text {
+  font-weight: 600;
+  font-size: var(--font-size-md);
+}
+
+.claim-inspection-list__chevron {
+  flex: none;
+  font-size: 0.7em;
+  color: var(--color-fg-muted);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.claim-inspection-list__toggle[aria-expanded='true'] .claim-inspection-list__chevron {
+  transform: rotate(180deg);
+  color: var(--brand-500);
+}
+
+/* Canais expandidos (Debate/Juiz/Fonte/Reconciliação) precisam ler como
+   SEÇÕES SUBORDINADAS de UMA claim, não quatro cards equivalentes: um
+   único traço à esquerda (nunca 4 caixas fechadas) amarra tudo à claim
+   que os originou, com indentação reforçando a mesma hierarquia. Cada
+   canal continua inequivocamente distinto só por rótulo/espaço
+   (`__channel-label`), nunca por cor/borda própria. */
+.claim-inspection-list__details {
+  margin-top: var(--space-3);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--color-border);
+}
+
+.claim-inspection-list__lineage {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.claim-inspection-list__channel {
+  margin-bottom: var(--space-3);
+}
+
+.claim-inspection-list__channel:last-child {
+  margin-bottom: 0;
+}
+
+.claim-inspection-list__channel-label {
+  margin: 0 0 var(--space-1);
+  color: var(--color-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.claim-inspection-list__channel-label::after {
+  content: ':';
+}
+
+.claim-inspection-list__channel > p {
+  margin: 0 0 var(--space-1);
+}
+
+.claim-inspection-list__channel > p:last-child {
+  margin-bottom: 0;
+}
+
+.claim-inspection-list__participants {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.claim-inspection-list__source-entry,
+.claim-inspection-list__reconciliation-entry {
+  margin-bottom: var(--space-2);
+}
+
+.claim-inspection-list__source-entry:last-child,
+.claim-inspection-list__reconciliation-entry:last-child {
+  margin-bottom: 0;
+}
+
+.claim-inspection-list__source-rejected {
+  color: var(--color-fg-muted);
+}
+
+.inspection-panel__technical-refs-row {
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-sm);
+}
+
+.inspection-panel__technical-refs-row:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.inspection-panel__technical-refs-row dt {
+  color: var(--color-fg-muted);
+  font-weight: 600;
+}
+
+.inspection-panel__technical-refs-row dd {
+  margin: 0 0 var(--space-1);
+}
+
+.inspection-panel__integrity-issues {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+/* Quarentena técnica (repair pós-revisão adversarial) -- registros
+   originais removidos da camada semântica por ambiguidade/referência
+   inválida, preservados aqui pra auditoria. Mesma disciplina visual do
+   resto da Auditoria técnica: espaço + traço sutil, nunca cor de
+   estado/badge (isto não é um "erro" semântico, é um registro técnico
+   inspecionável). */
+.inspection-panel__quarantine-list {
+  list-style: none;
+  padding: 0;
+  font-size: var(--font-size-sm);
+}
+
+.inspection-panel__quarantine-list > li {
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.inspection-panel__quarantine-list > li:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.inspection-panel__quarantine-list ul {
+  list-style: none;
+  padding-left: var(--space-3);
 }

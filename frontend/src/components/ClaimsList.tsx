@@ -29,6 +29,20 @@
 // completa (supporting_model_response_ids) continua exibida abaixo, sem
 // nenhuma mudança -- só a CONTAGEM usada na proporção precisa ser a
 // deduplicada.
+//
+// Repair pós-revisão adversarial (nº4) -- esta é a lista TÉCNICA
+// completa (ver InspectionPanel.tsx, Auditoria técnica), montada sobre
+// `audit.claims` BRUTO, sem passar pelo boundary de integridade de
+// `buildClaimInspectionModel` -- então ela também pode conter claim_id
+// duplicado. Nunca finge que um registro é canônico quando há
+// ambiguidade: `assessmentsByClaimId` é `Map<string, ClaimAssessmentPublic[]>`
+// (nunca `Map<string, ClaimAssessmentPublic>` -- essa construção via
+// `new Map(pairs)` colapsaria silenciosamente pra "a última avaliação"),
+// a chave React de cada item nunca é só `claim.id` (índice junto, pra
+// nunca colidir e nunca sugerir que um registro "venceu" o outro), e a
+// resolução de lineage (`parent_claim_id`) só resolve quando o id é
+// ÚNICO nesta lista -- um id ambíguo aqui nunca é silenciosamente
+// escolhido como "o" pai.
 
 import { useState } from 'react'
 import type { ClaimAssessmentPublic, ClaimPublic } from '../api/types'
@@ -36,16 +50,16 @@ import { formatClaimVerdict, formatModelIdentitySource, formatSupportRatio } fro
 
 interface ClaimsListProps {
   claims: ClaimPublic[]
-  assessmentsByClaimId: Map<string, ClaimAssessmentPublic>
+  assessmentsByClaimId: Map<string, ClaimAssessmentPublic[]>
 }
 
 function ClaimCard({
   claim,
-  assessment,
+  assessments,
   claimsById,
 }: {
   claim: ClaimPublic
-  assessment: ClaimAssessmentPublic | undefined
+  assessments: ClaimAssessmentPublic[]
   claimsById: Map<string, ClaimPublic>
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -85,12 +99,12 @@ function ClaimCard({
               {claim.merged_from_claim_ids.length === 1 ? '' : 'ões'} anteriores.
             </p>
           )}
-          {assessment && (
-            <p className="claims-list__assessment">
+          {assessments.map((assessment, index) => (
+            <p key={index} className="claims-list__assessment">
               Avaliação do juiz: <strong>{formatClaimVerdict(assessment.verdict)}</strong> —{' '}
               {assessment.explanation}
             </p>
-          )}
+          ))}
         </div>
       )}
     </li>
@@ -98,7 +112,19 @@ function ClaimCard({
 }
 
 export function ClaimsList({ claims, assessmentsByClaimId }: ClaimsListProps) {
-  const claimsById = new Map(claims.map((c) => [c.id, c]))
+  // Agrupado, nunca `new Map(claims.map((c) => [c.id, c]))` -- um id
+  // duplicado nunca deve resolver silenciosamente pra "o último claim
+  // com esse id" ao montar a linha de lineage abaixo.
+  const claimGroupsById = new Map<string, ClaimPublic[]>()
+  for (const claim of claims) {
+    const group = claimGroupsById.get(claim.id)
+    if (group) group.push(claim)
+    else claimGroupsById.set(claim.id, [claim])
+  }
+  const claimsById = new Map<string, ClaimPublic>()
+  for (const [id, group] of claimGroupsById) {
+    if (group.length === 1) claimsById.set(id, group[0])
+  }
 
   if (claims.length === 0) {
     return <p>Nenhuma afirmação foi extraída nesta execução.</p>
@@ -106,11 +132,14 @@ export function ClaimsList({ claims, assessmentsByClaimId }: ClaimsListProps) {
 
   return (
     <ul className="claims-list">
-      {claims.map((claim) => (
+      {claims.map((claim, index) => (
         <ClaimCard
-          key={claim.id}
+          // claim.id sozinho colidiria (e implicaria um "vencedor") se
+          // houver claim_id duplicado nesta lista bruta -- o índice
+          // garante uma key sempre única, sem sugerir canonicidade.
+          key={`${claim.id}::${index}`}
           claim={claim}
-          assessment={assessmentsByClaimId.get(claim.id)}
+          assessments={assessmentsByClaimId.get(claim.id) ?? []}
           claimsById={claimsById}
         />
       ))}

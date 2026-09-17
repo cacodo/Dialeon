@@ -3,50 +3,45 @@
 // existia, computado e persistido, mas não chegava a nenhuma superfície
 // humana (patch de visibilidade, ver app/source_analysis/models.py).
 //
-// SOURCE RELATION != TRUTH VERDICT: os rótulos usados aqui (via
-// formatSourceRelation) descrevem a relação entre a afirmação e o texto
-// da fonte fornecida pelo usuário -- nunca uma segunda decisão de
-// verdade/falsidade. Nunca confundir uma entrada REJEITADA (a aplicação
-// não pôde confiar no que a análise devolveu) com uma relação
-// "unresolved" (a análise respondeu que a fonte não decide a claim) --
-// são conceitos diferentes, mantidos em listas visualmente distintas.
+// Claim-centered semantic inspection (UI Slice) -- a renderização
+// POR CLAIM de `claim_results` (relations + entradas rejeitadas
+// ATRIBUÍDAS a uma claim_id conhecida) migrou pra `ClaimInspectionList`
+// (via `buildClaimInspectionModel`), que já preserva a mesma disciplina
+// de join por claim_id estruturado. Este componente mantém só o que é
+// genuinamente de NÍVEL DE EXECUÇÃO, nunca duplicado numa unidade de
+// claim:
+//   - fonte não fornecida / análise pulada-ou-falhada (`skipped_reason`);
+//   - entradas rejeitadas SEM claim_id (`claim_id === null`) -- por
+//     definição nunca pertencem a nenhuma claim (ver
+//     RejectedSourceEntryPublic, app/presentation/schemas.py), então
+//     nunca aparecem em nenhuma unidade de `ClaimInspectionList`.
 //
-// Associação claim<->relação é SEMPRE por claim_id estruturado (nunca
-// por comparação de texto) -- uma claim não encontrada nos dados desta
-// execução degrada explicitamente, nunca é silenciosamente anexada a
-// outra afirmação.
+// Repair pós-revisão adversarial (nº3) -- a lista de "não atribuídas"
+// vem SEMPRE de `unattributedRejectedSourceEntries`, já produzida e
+// VALIDADA por `buildClaimInspectionModel` (api/claimInspectionModel.ts),
+// NUNCA re-derivada por conta própria filtrando `sourceAnalysis.
+// claim_results` de novo aqui. A validação do adapter já exclui
+// entradas cujo `id` é ambíguo (duplicado em `claim_results`) desta
+// lista -- refiltrar os dados brutos aqui reintroduziria exatamente
+// esses registros em quarentena de volta na superfície product-facing,
+// e com eles um `key` de React duplicado. Registros excluídos por essa
+// ambiguidade continuam inspecionáveis, só que exclusivamente na
+// Auditoria técnica (ver InspectionPanel.tsx).
+//
+// SOURCE RELATION != TRUTH VERDICT continua valendo pro texto abaixo.
 
-import type {
-  ClaimPublic,
-  RejectedSourceEntryPublic,
-  SourceAnalysisOutcome,
-  SourceClaimAnalysisResultPublic,
-  ValidSourceRelationPublic,
-} from '../api/types'
-import {
-  formatSourceAnalysisSkippedReason,
-  formatSourceRejectionReason,
-  formatSourceRelation,
-} from '../api/formatting'
+import type { RejectedSourceEntryPublic, SourceAnalysisOutcome } from '../api/types'
+import { formatSourceAnalysisSkippedReason, formatSourceRejectionReason } from '../api/formatting'
 
 interface SourceAnalysisViewProps {
   sourceAnalysis: SourceAnalysisOutcome | null
-  claims: ClaimPublic[]
+  unattributedRejectedSourceEntries: RejectedSourceEntryPublic[]
 }
 
-function isRelation(
-  entry: SourceClaimAnalysisResultPublic,
-): entry is ValidSourceRelationPublic {
-  return entry.kind === 'relation'
-}
-
-function isRejected(
-  entry: SourceClaimAnalysisResultPublic,
-): entry is RejectedSourceEntryPublic {
-  return entry.kind === 'rejected'
-}
-
-export function SourceAnalysisView({ sourceAnalysis, claims }: SourceAnalysisViewProps) {
+export function SourceAnalysisView({
+  sourceAnalysis,
+  unattributedRejectedSourceEntries,
+}: SourceAnalysisViewProps) {
   if (sourceAnalysis === null) {
     return <p>Nenhuma fonte foi fornecida nesta execução.</p>
   }
@@ -60,58 +55,25 @@ export function SourceAnalysisView({ sourceAnalysis, claims }: SourceAnalysisVie
     )
   }
 
-  const claimsById = new Map(claims.map((c) => [c.id, c]))
-  const relations = sourceAnalysis.claim_results.filter(isRelation)
-  const rejected = sourceAnalysis.claim_results.filter(isRejected)
-
-  if (relations.length === 0 && rejected.length === 0) {
-    return <p>A análise da fonte não produziu nenhuma relação nem entrada descartada.</p>
+  if (unattributedRejectedSourceEntries.length === 0) {
+    return null
   }
 
   return (
     <div className="source-analysis">
-      {relations.length > 0 && (
-        <ul className="source-analysis__relations claims-list">
-          {relations.map((relation) => {
-            const claim = claimsById.get(relation.claim_id)
-            return (
-              <li key={relation.id} className="source-analysis__relation claims-list__item">
-                <p className="source-analysis__claim-text">
-                  {claim
-                    ? claim.text
-                    : `Afirmação não encontrada nos dados desta execução (id: ${relation.claim_id}).`}
-                </p>
-                <p className="source-analysis__relation-label">
-                  {formatSourceRelation(relation.relation)}
-                </p>
-                {relation.excerpt !== null && (
-                  <blockquote className="source-analysis__excerpt">
-                    Trecho da fonte: “{relation.excerpt}”
-                  </blockquote>
-                )}
-              </li>
-            )
-          })}
-        </ul>
-      )}
-
-      {rejected.length > 0 && (
-        <>
-          <h3>Entradas descartadas pela aplicação</h3>
-          <p className="source-analysis__rejected-note">
-            Entradas descartadas não são uma relação com a fonte — a aplicação não pôde
-            confiar no que a análise devolveu para elas.
-          </p>
-          <ul className="source-analysis__rejected">
-            {rejected.map((entry) => (
-              <li key={entry.id}>
-                {entry.claim_id ? `Afirmação ${entry.claim_id}` : 'Afirmação não identificada'}:{' '}
-                {formatSourceRejectionReason(entry.reason)}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+      <h3>Entradas descartadas sem afirmação identificada</h3>
+      <p className="source-analysis__rejected-note">
+        Entradas descartadas não são uma relação com a fonte — a aplicação não pôde confiar no
+        que a análise devolveu para elas, e estas em particular não puderam ser associadas a
+        nenhuma afirmação específica desta execução.
+      </p>
+      <ul className="source-analysis__rejected">
+        {unattributedRejectedSourceEntries.map((entry) => (
+          <li key={entry.id}>
+            Afirmação não identificada: {formatSourceRejectionReason(entry.reason)}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

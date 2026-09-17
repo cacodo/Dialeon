@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ClaimsList } from '../ClaimsList'
@@ -258,5 +258,55 @@ describe('ClaimsList — provenance de identidade do modelo em ClaimSupport', ()
 
     expect(await screen.findByText(/não registrada/i)).toBeInTheDocument()
     expect(screen.queryByText(/fallback do modelo solicitado/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ClaimsList — repair pós-revisão adversarial nº4: nenhum last-write-wins na lista técnica', () => {
+  it('duas avaliações do juiz pra mesma claim_id: AMBAS renderizam, nenhuma é silenciosamente escolhida', async () => {
+    const claim = makeClaim({ id: 'c1' })
+    const assessmentsByClaimId = new Map([
+      [
+        'c1',
+        [
+          { claim_id: 'c1', verdict: 'supported' as const, explanation: 'primeira avaliação' },
+          { claim_id: 'c1', verdict: 'rejected' as const, explanation: 'segunda avaliação' },
+        ],
+      ],
+    ])
+
+    render(<ClaimsList claims={[claim]} assessmentsByClaimId={assessmentsByClaimId} />)
+    await userEvent.click(screen.getByRole('button', { name: /brasília é a capital/i }))
+
+    expect(await screen.findByText(/primeira avaliação/i)).toBeInTheDocument()
+    expect(screen.getByText(/segunda avaliação/i)).toBeInTheDocument()
+  })
+
+  it('duas claims com o MESMO id na lista bruta: ambas renderizam como itens distintos, sem key React colidindo', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const claimA = makeClaim({ id: 'c1', text: 'Primeira versão do texto.' })
+    const claimB = makeClaim({ id: 'c1', text: 'Segunda versão do texto.' })
+
+    render(<ClaimsList claims={[claimA, claimB]} assessmentsByClaimId={new Map()} />)
+
+    expect(screen.getByRole('button', { name: /primeira versão do texto/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /segunda versão do texto/i })).toBeInTheDocument()
+    const keyWarning = consoleError.mock.calls.some((call) =>
+      String(call[0]).toLowerCase().includes('key'),
+    )
+    expect(keyWarning).toBe(false)
+    consoleError.mockRestore()
+  })
+
+  it('claim referenciando parent_claim_id AMBÍGUO (duplicado na lista) nunca escolhe um dos dois como "o" pai', async () => {
+    const parentA = makeClaim({ id: 'p1', text: 'Versão A do pai.' })
+    const parentB = makeClaim({ id: 'p1', text: 'Versão B do pai.' })
+    const child = makeClaim({ id: 'c1', parent_claim_id: 'p1' })
+
+    render(
+      <ClaimsList claims={[parentA, parentB, child]} assessmentsByClaimId={new Map()} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /brasília é a capital/i }))
+
+    expect(screen.queryByText(/revisão de/i)).not.toBeInTheDocument()
   })
 })
