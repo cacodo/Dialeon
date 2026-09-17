@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { RunDetail } from '../RunDetail'
@@ -151,9 +151,24 @@ describe('RunDetail', () => {
 
     expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
     expect(screen.getByText('Qual a capital do Brasil?')).toBeInTheDocument()
-    // T02.2 -- política de execução conhecida exibida como SIBLING do
-    // resumo, nunca dentro de RunConfigPublic.
-    expect(screen.getByText('45s')).toBeInTheDocument()
+  })
+
+  it('resumo da execução é quieto: sem identificadores brutos de provider nem política de execução -- só o que ajuda a interpretar a resposta', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+    renderDetail('run-1')
+
+    await screen.findByText('Brasília é a capital do Brasil.')
+
+    const summary = screen.getByRole('heading', { name: /resumo da execução/i }).closest('section')
+    expect(summary).not.toBeNull()
+    // Contagem, não lista bruta de IDs de provider.
+    expect(within(summary as HTMLElement).getByText(/1 participante no debate/i)).toBeInTheDocument()
+    expect(within(summary as HTMLElement).queryByText('openai')).not.toBeInTheDocument()
+    // Política de execução (detalhe técnico) não aparece no resumo
+    // imediato -- só dentro da auditoria técnica, atrás de "Inspecionar
+    // execução" + "Ver auditoria técnica".
+    expect(screen.queryByText('45s')).not.toBeInTheDocument()
+    expect(screen.queryByText(/timeout por tentativa/i)).not.toBeInTheDocument()
   })
 
   it('mostra detail de uma run insufficient_quorum', async () => {
@@ -173,48 +188,50 @@ describe('RunDetail', () => {
     expect(await screen.findByText(/execução não encontrada/i)).toBeInTheDocument()
   })
 
+  const completedAudit = {
+    status: 'completed' as const,
+    id: 'run-1',
+    started_at: '2026-09-06T00:00:00Z',
+    completed_at: '2026-09-06T00:00:05Z',
+    config: completedRun.config,
+    debate_outcome: { skipped_reason: null, cumulative_budget_exceeded: false },
+    judge_outcome: { verdict_unavailable_reason: null, cumulative_budget_exceeded: false },
+    editor_outcome: { fallback_reason: null, cumulative_budget_exceeded: false },
+    source_analysis: null,
+    initial_round: {
+      responses: [],
+      successful_count: 1,
+      total_providers: 1,
+      insufficient_data_for_consensus: false,
+      budget_exceeded: false,
+      accounting: {
+        total_input_tokens: 100,
+        total_output_tokens: 20,
+        estimated_cost_usd: 0.01,
+        has_unknown_accounting_components: false,
+      },
+    },
+    critique_round: null,
+    claims: [],
+    claim_processing_attempts: [],
+    numeric_verification_attempts: [],
+    judge_verdict: null,
+    judge_attempts: [],
+    editor_attempts: [],
+    final_answer: completedRun.final_answer,
+    accounting: completedRun.accounting,
+    provider_execution_policy: completedRun.provider_execution_policy,
+    default_model_authority_snapshot: completedRun.default_model_authority_snapshot,
+    reconciliation: {
+      contract_version: 'source_judge_reconciliation_v1' as const,
+      status: 'complete' as const,
+      claim_outcomes: [],
+    },
+  }
+
   it('carrega audit somente sob ação explícita (lazy)', async () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
-    vi.mocked(apiClient.getRunAudit).mockResolvedValue({
-      status: 'completed',
-      id: 'run-1',
-      started_at: '2026-09-06T00:00:00Z',
-      completed_at: '2026-09-06T00:00:05Z',
-      config: completedRun.config,
-      debate_outcome: { skipped_reason: null, cumulative_budget_exceeded: false },
-      judge_outcome: { verdict_unavailable_reason: null, cumulative_budget_exceeded: false },
-      editor_outcome: { fallback_reason: null, cumulative_budget_exceeded: false },
-      source_analysis: null,
-      initial_round: {
-        responses: [],
-        successful_count: 1,
-        total_providers: 1,
-        insufficient_data_for_consensus: false,
-        budget_exceeded: false,
-        accounting: {
-          total_input_tokens: 100,
-          total_output_tokens: 20,
-          estimated_cost_usd: 0.01,
-          has_unknown_accounting_components: false,
-        },
-      },
-      critique_round: null,
-      claims: [],
-      claim_processing_attempts: [],
-      numeric_verification_attempts: [],
-      judge_verdict: null,
-      judge_attempts: [],
-      editor_attempts: [],
-      final_answer: completedRun.final_answer,
-      accounting: completedRun.accounting,
-      provider_execution_policy: completedRun.provider_execution_policy,
-      default_model_authority_snapshot: completedRun.default_model_authority_snapshot,
-      reconciliation: {
-        contract_version: 'source_judge_reconciliation_v1',
-        status: 'complete',
-        claim_outcomes: [],
-      },
-    })
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(completedAudit)
     renderDetail('run-1')
 
     await screen.findByText('Brasília é a capital do Brasil.')
@@ -222,6 +239,27 @@ describe('RunDetail', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
     expect(apiClient.getRunAudit).toHaveBeenCalledWith('run-1')
+  })
+
+  it('política de execução (detalhe técnico) continua alcançável via auditoria técnica, mas não domina a inspeção inicial', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(completedAudit)
+    renderDetail('run-1')
+
+    await screen.findByText('Brasília é a capital do Brasil.')
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    const technicalHeading = await screen.findByRole('heading', { name: /auditoria técnica/i })
+    // Ainda não expandida -- o detalhe técnico não aparece só por ter
+    // inspecionado a execução.
+    expect(screen.queryByText('45s')).not.toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /ver auditoria técnica/i }),
+    )
+
+    expect(technicalHeading).toBeInTheDocument()
+    expect(await screen.findByText('45s')).toBeInTheDocument()
   })
 
   it('falha no audit não apaga o detail já carregado', async () => {

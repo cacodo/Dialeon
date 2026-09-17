@@ -12,6 +12,10 @@ import { AccountingView } from '../components/AccountingView'
 import { InspectionPanel } from '../components/InspectionPanel'
 import { ProviderExecutionPolicyView } from '../components/ProviderExecutionPolicyView'
 
+function participantCountLabel(count: number): string {
+  return `${count} participante${count === 1 ? '' : 's'} no debate`
+}
+
 type DetailState =
   | { phase: 'loading' }
   | { phase: 'not_found' }
@@ -92,12 +96,20 @@ export function RunDetail() {
       {run.status === 'completed' && (
         <>
           <FinalAnswerView finalAnswer={run.final_answer} />
+          {/* Slice de hierarquia de inspeção -- este resumo é
+              deliberadamente quieto: só o que ajuda a interpretar a
+              resposta sem exigir nenhum clique (quando concluiu, quantos
+              participantes, custo aproximado). Identidade bruta de
+              provider/modelo e política de execução do provider são
+              detalhe técnico, não necessário pra entender a resposta --
+              vivem na auditoria técnica (disclosure explícito dentro de
+              `InspectionPanel`, alcançável por "Inspecionar execução"
+              logo abaixo), nunca aqui. */}
           <section aria-labelledby="execution-summary-heading">
             <h2 id="execution-summary-heading">Resumo da execução</h2>
             <p>Concluída em {formatDateTime(run.completed_at)}</p>
-            <p>Participantes: {run.config.enabled_providers.join(', ')}</p>
-            <AccountingView accounting={run.accounting} />
-            <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
+            <p>{participantCountLabel(run.config.enabled_providers.length)}.</p>
+            <AccountingView accounting={run.accounting} compact />
           </section>
         </>
       )}
@@ -110,8 +122,7 @@ export function RunDetail() {
             mínimo de {run.min_to_return} necessário.
           </p>
           <p>Falhou em {formatDateTime(run.failed_at)}</p>
-          <AccountingView accounting={run.accounting} />
-          <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
+          <AccountingView accounting={run.accounting} compact />
         </section>
       )}
 

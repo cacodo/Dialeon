@@ -730,7 +730,8 @@ main {
 
 .claims-list__toggle,
 .participant-response__toggle,
-.inspection-panel__open {
+.inspection-panel__open,
+.inspection-panel__technical-toggle {
   background: none;
   border: none;
   text-align: left;
@@ -741,10 +742,28 @@ main {
 
 .claims-list__toggle:hover:not(:disabled),
 .participant-response__toggle:hover:not(:disabled),
-.inspection-panel__open:hover:not(:disabled) {
+.inspection-panel__open:hover:not(:disabled),
+.inspection-panel__technical-toggle:hover:not(:disabled) {
   background: none;
   border: none;
   color: var(--color-link-hover);
+}
+
+/* Auditoria técnica -- deliberadamente a seção MAIS quieta/separada da
+   inspeção: um traço superior sutil (nunca uma caixa cheia) marca que o
+   que vem a seguir é uma camada mais profunda, e a dica em
+   `--color-fg-muted` explica isso em texto (nunca só posição/estilo)
+   antes do disclosure em si. O conteúdo expandido nunca aparece por
+   padrão -- é opcional DENTRO da inspeção já opcional. */
+.inspection-panel__technical {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.inspection-panel__technical-hint {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
 }
 
 /* role="alert" continua um sinal de ATENÇÃO genérico (erro de request,

@@ -157,32 +157,164 @@ describe('InspectionPanel — Answer First / inspeção progressiva (patch de vi
     expect(apiClient.getRunAudit).not.toHaveBeenCalled()
   })
 
-  it('J: ao expandir, carrega e mostra a seção de Análise da fonte junto das demais', async () => {
+  it('J: ao expandir, carrega e mostra a seção de Relação com a fonte junto das demais', async () => {
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
     await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
 
-    const sourceAnalysisHeading = await screen.findByRole('heading', { name: /análise da fonte/i })
-    expect(sourceAnalysisHeading).toBeInTheDocument()
-    const sourceAnalysisSection = sourceAnalysisHeading.closest('section')
-    expect(sourceAnalysisSection).not.toBeNull()
-    expect(within(sourceAnalysisSection as HTMLElement).getByText(/apoia esta afirmação/i)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /afirmações/i })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /^julgamento$/i })).toBeInTheDocument()
+    const sourceRelationshipHeading = await screen.findByRole('heading', {
+      name: /relação com a fonte/i,
+    })
+    expect(sourceRelationshipHeading).toBeInTheDocument()
+    const sourceRelationshipSection = sourceRelationshipHeading.closest('section')
+    expect(sourceRelationshipSection).not.toBeNull()
     expect(
-      screen.getByRole('heading', { name: /reconciliação entre julgamento e fonte/i }),
+      within(sourceRelationshipSection as HTMLElement).getByText(/segundo a análise, a fonte apoia/i),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /afirmações/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /avaliação do juiz/i })).toBeInTheDocument()
+    expect(
+      within(sourceRelationshipSection as HTMLElement).getByRole('heading', {
+        name: /relação com o julgamento/i,
+      }),
     ).toBeInTheDocument()
   })
 
-  it('G: quando nenhuma fonte foi fornecida, a seção mostra isso honestamente, sem esconder a seção', async () => {
+  it('G: quando nenhuma fonte foi fornecida, a seção inteira de relação com a fonte não é forçada (nenhum placeholder vazio)', async () => {
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit({ source_analysis: null }))
 
     render(<InspectionPanel runId="run-1" />)
     await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
 
-    expect(await screen.findByRole('heading', { name: /análise da fonte/i })).toBeInTheDocument()
-    expect(screen.getByText(/nenhuma fonte foi fornecida/i)).toBeInTheDocument()
+    // Alguma outra seção que sempre existe pra runs completed precisa
+    // ter carregado, senão o teste não prova nada sobre AUSÊNCIA
+    // seletiva (vs. audit inteiro ainda não carregado).
+    await screen.findByRole('heading', { name: /afirmações/i })
+
+    expect(screen.queryByRole('heading', { name: /relação com a fonte/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/nenhuma fonte foi fornecida/i)).not.toBeInTheDocument()
+  })
+
+  it('fonte fornecida mas análise pulada/falhada: a seção continua visível (degradação nunca é escondida)', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        source_analysis: {
+          skipped_reason: 'source_analysis_transport_failed',
+          source_analyzer_provider: 'anthropic',
+          cumulative_budget_exceeded: false,
+          attempts: [],
+          claim_results: [],
+        },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    expect(await screen.findByRole('heading', { name: /relação com a fonte/i })).toBeInTheDocument()
+    expect(screen.getByText(/falha de comunicação durante a análise da fonte/i)).toBeInTheDocument()
+  })
+})
+
+describe('InspectionPanel — disclosure reversível (colapsar/reabrir sem refetch)', () => {
+  it('expande ao clicar, trocando o rótulo e aria-expanded pra true', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
+
+    render(<InspectionPanel runId="run-1" />)
+    const toggle = screen.getByRole('button', { name: /inspecionar execução/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
+    await userEvent.click(toggle)
+    await screen.findByRole('heading', { name: /afirmações/i })
+
+    const expandedToggle = screen.getByRole('button', { name: /ocultar inspeção/i })
+    expect(expandedToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(expandedToggle).toHaveAttribute('aria-controls', 'inspection-panel-content')
+  })
+
+  it('colapsa ao clicar de novo, escondendo as seções mas mantendo o botão disponível pra reabrir', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await screen.findByRole('heading', { name: /afirmações/i })
+
+    await userEvent.click(screen.getByRole('button', { name: /ocultar inspeção/i }))
+
+    expect(screen.queryByRole('heading', { name: /afirmações/i })).not.toBeInTheDocument()
+    const toggle = screen.getByRole('button', { name: /inspecionar execução/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('reabrir depois de colapsar reusa o audit já carregado, sem request adicional', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await screen.findByRole('heading', { name: /afirmações/i })
+    expect(apiClient.getRunAudit).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(screen.getByRole('button', { name: /ocultar inspeção/i }))
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    // As seções reaparecem imediatamente -- nenhum novo "Carregando..."
+    // nem novo request, prova de que o audit reusado é o mesmo da
+    // primeira carga.
+    expect(screen.getByRole('heading', { name: /afirmações/i })).toBeInTheDocument()
+    expect(apiClient.getRunAudit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('InspectionPanel — hierarquia: notas da execução e auditoria técnica', () => {
+  it('mostra notas da execução (desvios/degradação) assim que a inspeção é aberta, sem clique adicional', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        debate_outcome: {
+          skipped_reason: 'insufficient_initial_quorum',
+          cumulative_budget_exceeded: false,
+        },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    const notesHeading = await screen.findByRole('heading', { name: /notas da execução/i })
+    expect(notesHeading).toBeInTheDocument()
+    expect(screen.getByText(/poucas respostas na rodada inicial/i)).toBeInTheDocument()
+  })
+
+  it('quando nada de material aconteceu, notas da execução diz isso explicitamente (nunca um silêncio ambíguo)', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    await screen.findByRole('heading', { name: /notas da execução/i })
+    expect(screen.getByText(/nenhum desvio material/i)).toBeInTheDocument()
+  })
+
+  it('auditoria técnica não domina a inspeção inicial: fica colapsada até um clique próprio', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        provider_execution_policy: { attempt_timeout_seconds: 45, max_transport_attempts_per_completion: 3 },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+
+    const technicalToggle = await screen.findByRole('button', { name: /ver auditoria técnica/i })
+    expect(technicalToggle).toHaveAttribute('aria-expanded', 'false')
+    // Identidade bruta/config técnica não aparece antes desse clique.
+    expect(screen.queryByText('45s')).not.toBeInTheDocument()
+    expect(screen.queryByText(/tokens de entrada/i)).not.toBeInTheDocument()
+
+    await userEvent.click(technicalToggle)
+
+    expect(technicalToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('45s')).toBeInTheDocument()
   })
 })
 
@@ -193,7 +325,7 @@ describe('InspectionPanel — H: análise da fonte nunca altera a Resposta final
     render(<InspectionPanel runId="run-1" />)
     await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
 
-    await screen.findByRole('heading', { name: /análise da fonte/i })
+    await screen.findByRole('heading', { name: /relação com a fonte/i })
 
     // InspectionPanel não renderiza FinalAnswerView (isso é responsabilidade
     // de RunDetail/FinalAnswerView, fora deste componente) -- a prova aqui é
