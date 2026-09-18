@@ -782,3 +782,160 @@ def test_openai_sdk_retries_remain_disabled_regardless_of_policy(client_attr, sd
     )
     assert provider._client.max_retries == 0
     assert provider._max_retries == 4
+
+
+# ---------------------------------------------------------------------------
+# Repair (adversarial review -- transport backoff correctness) --
+# `_backoff_delay(attempt_number)` é documentada/implementada em termos do
+# PRÓXIMO attempt_number (1-indexado; a 1ª retentativa é attempt_number=2),
+# mas o loop de retry chamava `_backoff_delay(attempts)` -- o número da
+# tentativa que ACABOU de falhar, não da próxima -- produzindo um delay
+# ~0.25s/0.5s em vez do ~0.5s/1.0s pretendido. Repair: `_backoff_delay(attempts + 1)`.
+#
+# Todos os testes abaixo usam `unittest.mock.patch` sobre `asyncio.sleep`
+# (nunca dorme de verdade) -- determinísticos, sem custo de wall-clock.
+# ---------------------------------------------------------------------------
+
+from unittest.mock import AsyncMock, patch  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_never_returning_completion_makes_exactly_three_transport_attempts():
+    """1 -- uma falha retryable persistente, com a policy REAL de
+    produção (provider_max_retries=2 -> max_transport_attempts=3), nunca
+    excede nem fica aquém de 3 chamadas reais a _call_api()."""
+    provider = _ScriptedProvider(
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500 de novo", retryable=True),
+            ProviderAPIError("erro 500 mais uma vez", retryable=True),
+        ],
+        timeout_seconds=5,
+        max_retries=2,  # provider_max_retries=2 -> 3 tentativas no total
+    )
+    with patch("app.providers.base.asyncio.sleep", new_callable=AsyncMock):
+        result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert provider.call_count == 3
+    assert result.attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_backoff_invoked_with_intended_upcoming_attempt_numbers():
+    """2 -- prova o número exato de argumento passado a `_backoff_delay`
+    em cada chamada: a 1ª tentativa falha -> delay pra tentativa 2 ->
+    `_backoff_delay(2)`; a 2ª tentativa falha -> delay pra tentativa 3 ->
+    `_backoff_delay(3)`. NUNCA `_backoff_delay(1)`/`_backoff_delay(2)`
+    (o bug antigo, que passava o número da tentativa que ACABOU de
+    falhar). Sem sleep real -- `asyncio.sleep` mockado."""
+    provider = _ScriptedProvider(
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500 de novo", retryable=True),
+            ProviderAPIError("erro 500 mais uma vez", retryable=True),
+        ],
+        timeout_seconds=5,
+        max_retries=2,
+    )
+    with (
+        patch("app.providers.base.asyncio.sleep", new_callable=AsyncMock),
+        patch("app.providers.base._backoff_delay", wraps=lambda n: 0.0) as mock_backoff,
+    ):
+        await provider.complete(_request())
+
+    # Exatamente 2 chamadas de backoff (entre as 3 tentativas -- nunca
+    # depois da última, que já esgota o retry sem mais nenhum sleep).
+    assert mock_backoff.call_args_list == [
+        ((2,),),
+        ((3,),),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_backoff_delay_produces_the_intended_schedule_for_upcoming_attempts():
+    """Contrato de schedule -- `_backoff_delay(2)` (delay antes da 1ª
+    retentativa) e `_backoff_delay(3)` (delay antes da 2ª retentativa)
+    produzem os valores BASE pretendidos (~0.5s / ~1.0s, antes do
+    jitter aleatório de até +25%) -- nunca os ~0.25s/~0.5s que o bug
+    antigo produzia ao receber o número da tentativa já falhada."""
+    from app.providers.base import _BASE_DELAY_SECONDS, _backoff_delay
+
+    with patch("app.providers.base.random.uniform", return_value=0.0):
+        delay_before_2nd_attempt = _backoff_delay(2)
+        delay_before_3rd_attempt = _backoff_delay(3)
+
+    assert delay_before_2nd_attempt == pytest.approx(_BASE_DELAY_SECONDS)  # ~0.5s
+    assert delay_before_3rd_attempt == pytest.approx(_BASE_DELAY_SECONDS * 2)  # ~1.0s
+    # Confirma que NÃO é mais o schedule do bug antigo (0.25s/0.5s).
+    assert delay_before_2nd_attempt != pytest.approx(0.25)
+    assert delay_before_3rd_attempt != pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_no_extra_outer_retry_layer_call_count_matches_attempts_exactly():
+    """3 -- estrutura agregada de timeout/retry: `attempts` (contador
+    interno) e `call_count` (chamadas REAIS a `_call_api`) permanecem
+    EXATAMENTE iguais em todo desfecho -- nunca uma camada externa
+    dobrando o número de tentativas reais além do que a policy declara
+    (aqui, max_transport_attempts=3 via provider_max_retries=2)."""
+    provider = _ScriptedProvider(
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500 de novo", retryable=True),
+            ("resposta ok", TokenUsage(input_tokens=1, output_tokens=1), "scripted-model"),
+        ],
+        timeout_seconds=5,
+        max_retries=2,
+    )
+    with patch("app.providers.base.asyncio.sleep", new_callable=AsyncMock):
+        result = await provider.complete(_request())
+
+    assert result.status == "success"
+    assert provider.call_count == 3
+    assert result.attempts == 3
+    assert provider.call_count == result.attempts  # nenhuma retentativa "extra" oculta
+
+
+@pytest.mark.asyncio
+async def test_timeout_exhaustion_retains_uncertain_prior_attempts_and_unknown_accounting():
+    """4 -- uma falha por TIMEOUT (não erro de API genérico) que esgota
+    todas as tentativas continua preservando exatamente o contrato já
+    existente: usage/cost_usd desconhecidos (nunca conhecido-zero, a
+    chamada pode ter sido processada remotamente) e
+    had_uncertain_prior_attempts=True (mais de uma tentativa real
+    discou). Sem sleep real."""
+    import asyncio as _asyncio
+
+    class _AlwaysTimesOutProvider(_ScriptedProvider):
+        async def _call_api(self, request):
+            self.call_count += 1
+            await _asyncio.sleep(10)  # nunca retorna -- sempre estoura o timeout curto
+            raise AssertionError("nunca deveria chegar aqui")
+
+    provider = _AlwaysTimesOutProvider(
+        script=[], timeout_seconds=0.01, max_retries=2
+    )
+    # Repair da própria correção deste patch: NÃO mockar `asyncio.sleep`
+    # globalmente aqui -- `asyncio` é um módulo singleton, então mockar
+    # `app.providers.base.asyncio.sleep` neutralizaria TAMBÉM o
+    # `asyncio.sleep(10)` real usado acima pra simular a tentativa que
+    # nunca retorna, quebrando a própria premissa do teste (o timeout
+    # nunca dispararia). Mocka só `_backoff_delay` (retorna 0.0) --
+    # `asyncio.sleep(0.0)` real ainda roda, mas resolve quase
+    # instantaneamente, sem afetar o `wait_for` interno de cada
+    # tentativa.
+    with patch("app.providers.base._backoff_delay", return_value=0.0) as mock_backoff:
+        result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert result.error.type.value == "timeout"
+    assert provider.call_count == 3
+    assert result.attempts == 3
+    assert result.usage is None
+    assert result.cost_usd is None
+    assert result.pricing_provenance is None
+    assert result.had_uncertain_prior_attempts is True
+    # Backoff é chamado só ENTRE tentativas -- 2 chamadas (antes da 2ª e
+    # da 3ª tentativa), nunca dentro do wait_for de cada tentativa.
+    assert mock_backoff.call_count == 2

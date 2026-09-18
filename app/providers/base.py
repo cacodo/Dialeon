@@ -406,7 +406,17 @@ class LLMProvider(ABC):
                     ),
                 )
 
-            await asyncio.sleep(_backoff_delay(attempts))
+            # Repair (adversarial review -- transport backoff correctness)
+            # -- `_backoff_delay` é documentada/implementada em termos do
+            # PRÓXIMO attempt_number (1-indexado; a 1ª retentativa É
+            # attempt_number=2, ver docstring dela) -- `attempts` aqui é
+            # o número da tentativa que ACABOU de falhar (incrementado no
+            # topo do loop, ANTES da chamada), nunca o número da próxima.
+            # Passar `attempts` sozinho subtraía 1 implicitamente do
+            # expoente (0.25s/0.5s em vez de 0.5s/1.0s pro schedule
+            # pretendido) -- `attempts + 1` é a tentativa que está prestes
+            # a começar, o valor que a função sempre esperou receber.
+            await asyncio.sleep(_backoff_delay(attempts + 1))
 
     @staticmethod
     def _elapsed_ms(start: float) -> int:
