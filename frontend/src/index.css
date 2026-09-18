@@ -676,29 +676,94 @@ main {
   content: ':';
 }
 
+/* Histórico como documento/outline de investigações (Decision Delta
+   secao 12) -- mesma disciplina de `.claim-inspection-list`: nenhuma
+   caixa/card/fundo ao redor do item inteiro, só espaço + um traço
+   superior sutil entre itens (nunca no primeiro). A pergunta é a
+   identidade PRIMÁRIA (peso/tamanho de texto normal, nunca cor de
+   "link" chamativa) -- data + status são metadado secundário, sempre
+   mais claros/menores, nunca a mesma hierarquia visual da pergunta. */
 .history__list {
   list-style: none;
   padding: 0;
+  margin: 0;
 }
 
-.history__item a {
-  display: flex;
-  justify-content: space-between;
-  padding: var(--space-3);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  margin-bottom: var(--space-2);
-  text-decoration: none;
+.history__item {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.history__item:first-child {
+  padding-top: 0;
+}
+
+.history__item + .history__item {
+  border-top: 1px solid var(--color-border);
+}
+
+.history__link {
+  display: block;
   color: inherit;
-  transition:
-    border-color var(--duration-fast) var(--ease-standard),
-    box-shadow var(--duration-fast) var(--ease-standard);
+  text-decoration: none;
 }
 
-.history__item a:hover {
-  border-color: var(--color-border-strong);
-  box-shadow: var(--shadow-sm);
+.history__link:hover .history__question {
+  color: var(--brand-700);
+}
+
+.history__question {
+  color: var(--color-fg);
+  font-size: var(--font-size-md);
+  /* Line-clamp é só apresentação -- o texto completo permanece intacto
+     no DOM (nunca truncado/reescrito), só visualmente contido em telas
+     estreitas. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.history__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.history__meta time::after {
+  content: '·';
+  margin-left: var(--space-2);
+}
+
+.history__error {
+  margin: var(--space-3) 0;
+}
+
+.history__out-of-range {
+  margin: var(--space-3) 0;
+  color: var(--color-fg-muted);
+}
+
+.history__pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.history__pagination-disabled {
+  color: var(--color-fg-muted);
+  opacity: 0.5;
+}
+
+.history__pagination-current {
+  font-weight: 600;
+  color: var(--color-fg);
 }
 
 .claims-list,

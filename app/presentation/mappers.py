@@ -646,4 +646,5 @@ def run_summary_response(summary: RunSummary) -> RunSummaryResponse:
         status=summary.status,
         started_at=summary.started_at,
         ended_at=summary.ended_at,
+        question=summary.question,
     )

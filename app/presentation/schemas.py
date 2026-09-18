@@ -589,7 +589,14 @@ class RunSummaryResponse(BaseModel):
     -- a execução ainda não terminou (ou o processo morreu antes de
     terminar; as duas situações são indistinguíveis por design, ver
     `app.storage.models.AcceptedRunRow`), então não existe timestamp de
-    fim nenhum pra reportar."""
+    fim nenhum pra reportar.
+
+    History Investigation-Identity V1 -- `question` é a identidade
+    PRIMÁRIA, reconhecível por humanos, de uma investigação em History
+    (ver frontend/src/pages/History.tsx): a pergunta canônica EXATA como
+    persistida, nunca truncada/reescrita/resumida aqui. Aditivo puro
+    sobre `RunSummary.question` (ver storage/records.py) -- nenhuma
+    reconstrução de auditoria, nenhum título gerado."""
 
     model_config = _CONFIG
 
@@ -597,6 +604,7 @@ class RunSummaryResponse(BaseModel):
     status: Literal["completed", "insufficient_quorum", "running", "failed"]
     started_at: datetime
     ended_at: datetime | None
+    question: str
 
 
 class ProvidersResponse(BaseModel):

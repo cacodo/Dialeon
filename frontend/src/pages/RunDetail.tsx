@@ -3,7 +3,7 @@
 // audit nunca apaga o detail já carregado -- são estados independentes.
 
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
 import type { RunResponse } from '../api/types'
 import { formatDateTime, formatErrorCode } from '../api/formatting'
@@ -11,9 +11,29 @@ import { FinalAnswerView } from '../components/FinalAnswerView'
 import { AccountingView } from '../components/AccountingView'
 import { InspectionPanel } from '../components/InspectionPanel'
 import { ProviderExecutionPolicyView } from '../components/ProviderExecutionPolicyView'
+import { isValidPage } from '../lib/safePage'
 
 function participantCountLabel(count: number): string {
   return `${count} participante${count === 1 ? '' : 's'} no debate`
+}
+
+// Origem de navegação (History → RunDetail) -- narrow, sem framework de
+// navegação novo: só lê `location.state.fromHistoryPage`, um número que
+// `History.tsx` anexa ao `<Link>` de cada linha. Ausente/malformado/
+// inseguro (acesso direto a /runs/:id, refresh, deep link, ou um
+// `location.state` manufaturado por fora do fluxo normal de navegação)
+// cai honestamente pro /runs simples (primeira página) -- MESMA
+// validação de segurança de página que History.tsx aplica à URL (ver
+// `lib/safePage.ts`), nunca uma semântica de fallback diferente entre
+// os dois pontos de entrada.
+function historyBackHref(state: unknown): string {
+  if (typeof state === 'object' && state !== null && 'fromHistoryPage' in state) {
+    const page = (state as { fromHistoryPage: unknown }).fromHistoryPage
+    if (isValidPage(page)) {
+      return page > 1 ? `/runs?page=${page}` : '/runs'
+    }
+  }
+  return '/runs'
 }
 
 type DetailState =
@@ -24,6 +44,8 @@ type DetailState =
 
 export function RunDetail() {
   const { runId } = useParams<{ runId: string }>()
+  const location = useLocation()
+  const backHref = historyBackHref(location.state)
   const [state, setState] = useState<DetailState>({ phase: 'loading' })
 
   useEffect(() => {
@@ -63,7 +85,7 @@ export function RunDetail() {
     return (
       <main>
         <h1>Execução não encontrada</h1>
-        <Link to="/runs">Voltar ao histórico</Link>
+        <Link to={backHref}>Voltar ao histórico</Link>
       </main>
     )
   }
@@ -72,7 +94,7 @@ export function RunDetail() {
     return (
       <main>
         <p role="alert">{state.message}</p>
-        <Link to="/runs">Voltar ao histórico</Link>
+        <Link to={backHref}>Voltar ao histórico</Link>
       </main>
     )
   }
@@ -82,7 +104,7 @@ export function RunDetail() {
   return (
     <main className="run-detail">
       <p>
-        <Link to="/runs">← Histórico</Link>
+        <Link to={backHref}>← Histórico</Link>
       </p>
       {/* Polimento visual UI Slice 2 -- a pergunta é contexto pra
           resposta, nunca o protagonista visual desta tela (o resultado

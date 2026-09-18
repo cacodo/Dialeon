@@ -34,6 +34,37 @@ function renderDetail(runId = 'run-1') {
   )
 }
 
+// Simula chegar em RunDetail vindo de uma linha do Histórico -- History.tsx
+// anexa `state={{ fromHistoryPage: N }}` ao `<Link>` de cada linha (ver
+// History.tsx). Sem este state (acesso direto/refresh/deep link), o
+// comportamento precisa continuar honesto e válido -- nunca depender dele.
+function renderDetailFromHistoryPage(runId: string, fromHistoryPage: number) {
+  return render(
+    <MemoryRouter
+      initialEntries={[{ pathname: `/runs/${runId}`, state: { fromHistoryPage } }]}
+    >
+      <Routes>
+        <Route path="/runs/:runId" element={<RunDetail />} />
+      </Routes>
+    </MemoryRouter>,
+  )
+}
+
+// Mesmo que `renderDetailFromHistoryPage`, mas aceita QUALQUER valor de
+// `location.state` -- pra exercitar `fromHistoryPage` malformado/inseguro
+// (nunca só o `number` válido que a própria navegação de History.tsx
+// produz), já que `location.state` não é confiável por construção
+// (pode ser manufaturado por fora do fluxo normal).
+function renderDetailWithRawState(runId: string, state: unknown) {
+  return render(
+    <MemoryRouter initialEntries={[{ pathname: `/runs/${runId}`, state }]}>
+      <Routes>
+        <Route path="/runs/:runId" element={<RunDetail />} />
+      </Routes>
+    </MemoryRouter>,
+  )
+}
+
 const completedRun = {
   status: 'completed' as const,
   id: 'run-1',
@@ -307,5 +338,104 @@ describe('RunDetail', () => {
     expect(
       screen.queryByRole('button', { name: /inspecionar execução/i }),
     ).not.toBeInTheDocument()
+  })
+
+  describe('retorno ao Histórico preserva a página de origem', () => {
+    it('acesso direto a /runs/:runId (sem state de origem) volta pra primeira página do histórico', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+      renderDetail('run-1')
+
+      await screen.findByText('Brasília é a capital do Brasil.')
+      expect(screen.getByRole('link', { name: /histórico/i })).toHaveAttribute('href', '/runs')
+    })
+
+    it('navegação vinda da página 1 do Histórico volta pra /runs (sem ?page)', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+      renderDetailFromHistoryPage('run-1', 1)
+
+      await screen.findByText('Brasília é a capital do Brasil.')
+      expect(screen.getByRole('link', { name: /histórico/i })).toHaveAttribute('href', '/runs')
+    })
+
+    it('navegação vinda da página 3 do Histórico preserva a página exata no link de volta', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+      renderDetailFromHistoryPage('run-1', 3)
+
+      await screen.findByText('Brasília é a capital do Brasil.')
+      expect(screen.getByRole('link', { name: /histórico/i })).toHaveAttribute(
+        'href',
+        '/runs?page=3',
+      )
+    })
+
+    it('estado not_found também preserva a página de origem do Histórico no link de volta', async () => {
+      vi.mocked(apiClient.getRun).mockRejectedValue(
+        new ApiError(404, 'run_not_found', 'não encontrada', null),
+      )
+      renderDetailFromHistoryPage('id-inexistente', 2)
+
+      await screen.findByText(/execução não encontrada/i)
+      expect(screen.getByRole('link', { name: /voltar ao histórico/i })).toHaveAttribute(
+        'href',
+        '/runs?page=2',
+      )
+    })
+
+    it('estado de erro também preserva a página de origem do Histórico no link de volta', async () => {
+      vi.mocked(apiClient.getRun).mockRejectedValue(
+        new ApiError(500, 'internal_error', 'falhou', null),
+      )
+      renderDetailFromHistoryPage('run-1', 4)
+
+      await screen.findByRole('alert')
+      expect(screen.getByRole('link', { name: /voltar ao histórico/i })).toHaveAttribute(
+        'href',
+        '/runs?page=4',
+      )
+    })
+
+    it.each([
+      ['0', 0],
+      ['negativo', -1],
+      ['fracionário', 2.5],
+      ['Infinity', Infinity],
+      ['-Infinity', -Infinity],
+      ['NaN', NaN],
+      ['inteiro inseguro (> MAX_SAFE_INTEGER)', Number.MAX_SAFE_INTEGER + 2],
+      ['1e308', 1e308],
+    ])(
+      '%s como fromHistoryPage cai pro /runs simples, nunca propaga um valor inseguro na URL',
+      async (_label, unsafePage) => {
+        vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+        renderDetailWithRawState('run-1', { fromHistoryPage: unsafePage })
+
+        await screen.findByText('Brasília é a capital do Brasil.')
+        expect(screen.getByRole('link', { name: /histórico/i })).toHaveAttribute('href', '/runs')
+      },
+    )
+
+    it.each([
+      ['string', '3'],
+      ['objeto', { page: 3 }],
+      ['null', null],
+      ['array', [3]],
+    ])(
+      'fromHistoryPage do tipo %s (não-number) cai pro /runs simples',
+      async (_label, malformedValue) => {
+        vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+        renderDetailWithRawState('run-1', { fromHistoryPage: malformedValue })
+
+        await screen.findByText('Brasília é a capital do Brasil.')
+        expect(screen.getByRole('link', { name: /histórico/i })).toHaveAttribute('href', '/runs')
+      },
+    )
+
+    it('location.state completamente malformado (não é um objeto com fromHistoryPage) cai pro /runs simples', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+      renderDetailWithRawState('run-1', 'estado-nao-objeto')
+
+      await screen.findByText('Brasília é a capital do Brasil.')
+      expect(screen.getByRole('link', { name: /histórico/i })).toHaveAttribute('href', '/runs')
+    })
   })
 })

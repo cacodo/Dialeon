@@ -371,6 +371,9 @@ async def test_cmd_list_json_has_stable_shape(capsys):
     assert body["limit"] == 50
     assert body["offset"] == 0
     assert body["runs"][0]["id"] == result.id
+    # History Investigation-Identity V1 -- aditivo ao contrato JSON do
+    # CLI (mesmo RunSummaryResponse do HTTP), pergunta canônica exata.
+    assert body["runs"][0]["question"] == result.run_config.question
 
 
 @pytest.mark.asyncio

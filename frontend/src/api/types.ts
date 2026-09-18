@@ -388,6 +388,12 @@ export interface RunSummaryResponse {
   // T02.4 -- null é o único valor honesto pra status="running" (a
   // execução ainda não terminou).
   ended_at: string | null
+  // History Investigation-Identity V1 -- a pergunta CANÔNICA exata como
+  // persistida (nunca truncada/reescrita/resumida) -- identidade
+  // primária, reconhecível por humanos, de uma investigação em History
+  // (ver frontend/src/pages/History.tsx). Aditivo sobre o contrato já
+  // existente.
+  question: string
 }
 
 export interface RunListResponse {

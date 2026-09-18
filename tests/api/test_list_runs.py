@@ -132,6 +132,11 @@ def test_list_runs_limit_validation_rejects_out_of_range():
 
 
 def test_list_runs_does_not_load_full_audit_tree():
+    """History Investigation-Identity V1 -- `question` é ADITIVO ao
+    contrato leve de listagem, nunca uma porta de entrada pra reconstruir
+    a árvore de audit inteira: o valor já está no MESMO blob JSON que
+    `list_runs` já carregava (`run_config_json`), então adicionar o campo
+    nunca introduz N+1 nem qualquer nova consulta."""
     result = full_council_run_result()
     factory = make_components_factory(
         debate_result=result.debate_result,
@@ -147,4 +152,58 @@ def test_list_runs_does_not_load_full_audit_tree():
         resp = client.get("/runs")
 
     run = resp.json()["runs"][0]
-    assert set(run.keys()) == {"id", "status", "started_at", "ended_at"}
+    assert set(run.keys()) == {"id", "status", "started_at", "ended_at", "question"}
+    assert run["question"] == "pergunta"
+
+
+def test_list_runs_exposes_exact_canonical_question_for_every_lifecycle_status():
+    """History Investigation-Identity V1 -- os 4 lifecycle roots
+    (completed/insufficient_quorum/running/failed) expõem a pergunta
+    canônica EXATA persistida em `run_config_json["question"]`, nunca
+    truncada/reescrita/normalizada -- cada uma com um texto DISTINTO pra
+    provar que não há vazamento entre registros."""
+
+    async def seed(components) -> None:
+        await components.repository.save_success(
+            full_council_run_result(run_config=run_config(question="Pergunta da run completada?"))
+        )
+        exc = quorum_failure_exception()
+        await components.repository.save_quorum_failure(
+            exc,
+            run_config=run_config(question="Pergunta da run de quórum insuficiente?"),
+            started_at=now(),
+            failed_at=now(),
+        )
+        await components.repository.save_accepted(
+            "run-question-running",
+            run_config=run_config(question="Pergunta da run em andamento?"),
+            started_at=now(),
+            provider_execution_policy=components.provider_execution_policy,
+        )
+        await components.repository.save_accepted(
+            "run-question-failed",
+            run_config=run_config(question="Pergunta da run que falhou?"),
+            started_at=now(),
+            provider_execution_policy=components.provider_execution_policy,
+        )
+        await components.repository.save_unexpected_failure(
+            "run-question-failed",
+            failed_at=now(),
+            failure_classification="WeirdBug",
+            failure_message="Erro interno inesperado durante a execução.",
+        )
+
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    with TestClient(app) as client:
+        client.portal.call(seed, app.state.components)
+        resp = client.get("/runs")
+
+    body = resp.json()
+    questions_by_status = {r["status"]: r["question"] for r in body["runs"]}
+    assert questions_by_status == {
+        "completed": "Pergunta da run completada?",
+        "insufficient_quorum": "Pergunta da run de quórum insuficiente?",
+        "running": "Pergunta da run em andamento?",
+        "failed": "Pergunta da run que falhou?",
+    }

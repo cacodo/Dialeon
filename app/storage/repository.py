@@ -605,6 +605,7 @@ class CouncilRepository:
                     status="completed",
                     started_at=dt_from_naive_utc(row.started_at),
                     ended_at=dt_from_naive_utc(row.completed_at),
+                    question=row.run_config_json["question"],
                 )
                 for row in completed
             ]
@@ -614,6 +615,7 @@ class CouncilRepository:
                     status="insufficient_quorum",
                     started_at=dt_from_naive_utc(row.started_at),
                     ended_at=dt_from_naive_utc(row.failed_at),
+                    question=row.run_config_json["question"],
                 )
                 for row in failures
             ]
@@ -625,6 +627,7 @@ class CouncilRepository:
                     ended_at=(
                         dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None
                     ),
+                    question=row.run_config_json["question"],
                 )
                 for row in accepted
             ]

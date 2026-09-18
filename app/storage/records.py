@@ -119,7 +119,16 @@ class RunSummary(BaseModel):
     -- a execução não terminou, então não existe timestamp de fim
     nenhum pra reportar (nunca aproximado por `started_at` nem por
     "agora"). Pra `status="failed"`, `ended_at` é `failed_at`, o mesmo
-    padrão já usado por `insufficient_quorum`."""
+    padrão já usado por `insufficient_quorum`.
+
+    History Investigation-Identity V1 -- `question` é a pergunta
+    CANÔNICA exatamente como persistida em `run_config_json["question"]`
+    pra este lifecycle root (nenhuma reconstrução de `RunConfig`
+    inteiro nem N+1: `list_runs` já tem o blob JSON de cada linha em
+    mãos). Aditivo puro sobre um campo que sempre existiu, obrigatório e
+    sem rename, desde o commit inicial deste repositório (ver
+    `RunConfig.question`, app/orchestrator/config.py) -- nunca uma
+    reconstrução de auditoria, nunca um título gerado."""
 
     model_config = _CONFIG
 
@@ -127,3 +136,4 @@ class RunSummary(BaseModel):
     status: Literal["completed", "insufficient_quorum", "running", "failed"]
     started_at: datetime
     ended_at: datetime | None  # completed_at/failed_at, ou None se "running"
+    question: str
