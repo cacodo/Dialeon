@@ -399,19 +399,24 @@ main {
 }
 
 /* Painel expandido compartilhado por Fonte e Participantes -- mesma
-   moldura (borda/raio/fundo/respiro) nos dois, e `flex-basis: 100%`
-   dentro do `.run-composer__toolbar` (que já é `flex-wrap`) garante que
-   QUALQUER um dos dois sempre quebre pra própria linha cheia, na ordem
-   em que aparece no documento (Fonte antes de Participantes) -- nunca
-   competindo por coluna com o botão do controle vizinho, mesmo quando os
-   dois estão abertos ao mesmo tempo. */
+   moldura em ambos, e `flex-basis: 100%` dentro do `.run-composer__toolbar`
+   (que já é `flex-wrap`) garante que QUALQUER um dos dois sempre quebre
+   pra própria linha cheia, na ordem em que aparece no documento (Fonte
+   antes de Participantes) -- nunca competindo por coluna com o botão do
+   controle vizinho, mesmo quando os dois estão abertos ao mesmo tempo.
+   Moldura é a mesma linguagem de disclosure já usada em
+   `.claim-inspection-list__details`/`.participant-perspective__panel`
+   (traço esquerdo + indentação, nunca card fechado com fundo/borda
+   nos 4 lados) -- painel aberto lê como conteúdo SUBORDINADO ao
+   controle que o abriu, nunca como um card de configuração equivalente
+   à pergunta/CTA. Controles internos (textarea, checkboxes) mantêm sua
+   própria moldura própria de input -- só o CONTAINER externo fica quieto. */
 .run-composer__control-panel {
   flex-basis: 100%;
   width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
+  margin-top: var(--space-1);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--color-border);
   animation: fade-in-up var(--duration-base) var(--ease-out);
 }
 
