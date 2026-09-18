@@ -578,6 +578,35 @@ async def test_final_answer_and_limitations_preserved(repo):
 
 
 @pytest.mark.asyncio
+async def test_final_answer_limitations_with_extraction_coverage_note_roundtrips_in_order(repo):
+    """Repair (adversarial review, Finding B) -- `FinalAnswer.limitations`
+    deixou de ser exclusivamente cópia verbatim do Judge -- pode conter
+    uma entrada FINAL app-autorada (disclosure de cobertura de extração
+    incompleta). Persistência é genérica (`list[str]`), mas este teste
+    prova DIRETAMENTE que a ordem/conteúdo exatos sobrevivem save/load,
+    nunca deduplica/reordena/trunca."""
+    result = full_council_run_result()
+    judge_limitation = "o debate teve cobertura parcial de crítica"
+    coverage_note = (
+        "Cobertura de extração de afirmações incompleta: 1 de 2 respostas "
+        "bem-sucedidas dos participantes não puderam ter suas afirmações "
+        "extraídas para avaliação -- o resultado acima considera só as "
+        "afirmações que puderam ser extraídas."
+    )
+    final_answer = result.editor_result.final_answer.model_copy(
+        update={"limitations": [judge_limitation, coverage_note]}
+    )
+    editor = result.editor_result.model_copy(update={"final_answer": final_answer})
+    result = result.model_copy(update={"editor_result": editor})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.editor_result.final_answer.limitations == [judge_limitation, coverage_note]
+    assert loaded.editor_result.final_answer.limitations[-1] == coverage_note
+
+
+@pytest.mark.asyncio
 async def test_final_answer_answer_blocks_none_roundtrips_as_none(repo):
     """`full_council_run_result()` nunca popula `answer_blocks` (fixture
     histórica, `status="llm_composed"`) -- confirma que a coluna NULLABLE
@@ -1637,7 +1666,79 @@ async def test_editor_attempt_requested_model_roundtrip(repo):
     reloaded = loaded.editor_result.attempts[0]
     assert reloaded.requested_model == "claude-sonnet-5-latest"
     assert reloaded.model == "claude-sonnet-5-20250601"
-    assert reloaded.requested_model != reloaded.model
+
+
+@pytest.mark.asyncio
+async def test_all_initial_extractions_failed_reason_survives_persistence_and_reload(repo):
+    """Repair (Run02 claim-extraction exhaustion) -- `debate_skipped_reason`/
+    `verdict_unavailable_reason` são colunas `str | None` genéricas (ver
+    app/storage/models.py) -- nenhuma migração/enum novo foi introduzida
+    por este repair, então os NOVOS valores precisam sobreviver a
+    save+load byte-a-byte como qualquer outro, prova DIRETA (nunca só
+    inferida da ausência de migração)."""
+    from app.editor.result import FinalAnswer
+    from app.reconciliation.reconcile import reconcile_source_and_judge
+
+    result = full_council_run_result()
+
+    debate = result.debate_result.model_copy(
+        update={
+            "critique_round": None,
+            "claims": [],
+            "claim_processing_attempts": [],
+            "numeric_verification_attempts": [],
+            "debate_skipped_reason": "all_initial_extractions_failed",
+            "cumulative_budget_exceeded": False,
+        }
+    )
+    judge = result.judge_result.model_copy(
+        update={
+            "verdict": None,
+            "attempts": [],
+            "verdict_unavailable_reason": "claim_extraction_failed",
+        }
+    )
+    editor = result.editor_result.model_copy(
+        update={
+            "final_answer": FinalAnswer(
+                answer_text="resposta determinística de teste",
+                status="deterministic_no_verdict",
+            ),
+            "attempts": [],
+            "fallback_reason": "judge_verdict_unavailable",
+        }
+    )
+    # Reconciliação coerente com claims=[]/verdict=None -- mesma função
+    # real que app/council/runner.py chama, nunca reconstruída à mão.
+    reconciliation = reconcile_source_and_judge([], judge, None)
+    result = result.model_copy(
+        update={
+            "debate_result": debate,
+            "judge_result": judge,
+            "editor_result": editor,
+            "source_analysis_result": None,
+            "reconciliation": reconciliation,
+        }
+    )
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.debate_result.debate_skipped_reason == "all_initial_extractions_failed"
+    assert loaded.judge_result.verdict_unavailable_reason == "claim_extraction_failed"
+    assert loaded.debate_result.critique_round is None
+    assert loaded.judge_result.verdict is None
+    assert loaded.editor_result.fallback_reason == "judge_verdict_unavailable"
+    # Os dois computed_field novos de cobertura de extração continuam
+    # deriváveis normalmente após reload (nunca colunas próprias --
+    # derivados de initial_result/critique_round/claim_processing_attempts,
+    # todos reconstruídos a partir dos registros-fato).
+    assert loaded.debate_result.claim_extraction_eligible_response_count == (
+        result.debate_result.claim_extraction_eligible_response_count
+    )
+    assert loaded.debate_result.claim_extraction_missing_response_count == (
+        result.debate_result.claim_extraction_missing_response_count
+    )
 
 
 # ---------------------------------------------------------------------------

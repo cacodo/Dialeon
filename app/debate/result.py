@@ -10,6 +10,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from app.debate.claim_extraction_coverage import (
+    CRITIQUE_ROUND_NUMBER,
+    INITIAL_ROUND_NUMBER,
+    ClaimExtractionCoverage,
+    compute_claim_extraction_targets,
+    summarize_claim_extraction_coverage,
+)
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.numeric_verification import DeterministicVerificationAttempt
 from app.models.domain import Claim
@@ -87,7 +94,22 @@ class DebateResult(BaseModel):
     )
     claim_processor_provider: str = Field(min_length=1)
     debate_skipped_reason: (
-        Literal["insufficient_initial_quorum", "budget_exhausted_before_critique"] | None
+        Literal[
+            "insufficient_initial_quorum",
+            "budget_exhausted_before_critique",
+            # Repair (Run02 claim-extraction exhaustion) -- respostas
+            # substantivas da rodada inicial existem (quórum/budget já
+            # passaram nos dois gates acima), mas NENHUMA extração de
+            # claim da rodada inicial produziu uma tentativa aceita --
+            # falha ESTRUTURAL de processamento, nunca falha das
+            # respostas dos participantes em si. Ver
+            # `app/debate/debate_engine.py::DebateEngine.run` pra onde
+            # isto é decidido, e `app/judge/single_judge.py` pro
+            # short-circuit correspondente que impede Judge/Editor de
+            # sequer serem chamados nesse caso.
+            "all_initial_extractions_failed",
+        ]
+        | None
     ) = None
     # Campo armazenado comum (não computed_field): precisa do limiar
     # externo (RunConfig.max_total_tokens/max_cost_usd), que este objeto
@@ -147,6 +169,75 @@ class DebateResult(BaseModel):
             )
             or sum_usage_and_cost(self.claim_processing_attempts)[3]
         )
+
+    def _claim_extraction_coverage(self) -> ClaimExtractionCoverage:
+        """Repair (adversarial review, Finding A) -- ÚNICO ponto deste
+        objeto que deriva cobertura de extração, delegando inteiramente
+        pra `app/debate/claim_extraction_coverage.py` (a derivação
+        centralizada, também usada por `DebateEngine`/`SingleJudge`) --
+        nunca uma segunda implementação de set-difference local. Escopo:
+        as DUAS rodadas (inicial + crítica, quando ela ocorreu) -- o
+        mesmo escopo que `claim_extraction_eligible_response_count`/
+        `claim_extraction_missing_response_count` (abaixo) sempre
+        tiveram."""
+        responses_by_round: list[tuple[int, list]] = [
+            (INITIAL_ROUND_NUMBER, self.initial_result.responses)
+        ]
+        if self.critique_round is not None:
+            responses_by_round.append(
+                (CRITIQUE_ROUND_NUMBER, self.critique_round.round_result.responses)
+            )
+        targets = compute_claim_extraction_targets(
+            responses_by_round, self.claim_processing_attempts
+        )
+        return summarize_claim_extraction_coverage(targets)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def claim_extraction_eligible_response_count(self) -> int:
+        """Repair (Run02 claim-extraction exhaustion) -- "Y" de "X de Y
+        respostas não puderam ter claims extraídas": contagem de
+        `ModelResponse` bem-sucedidas (status="success") através das DUAS
+        rodadas (inicial + crítica, quando ela ocorreu) -- cada uma dessas
+        respostas é, por construção, um alvo elegível pra extração (ver
+        `DebateEngine._process_round`), independente de a extração ter de
+        fato sido tentada/aceita. Delegado à derivação centralizada (ver
+        `_claim_extraction_coverage`)."""
+        return self._claim_extraction_coverage().eligible_count
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def claim_extraction_missing_response_count(self) -> int:
+        """Repair (Run02 claim-extraction exhaustion) -- "X" de "X de Y":
+        quantas das respostas elegíveis (ver
+        `claim_extraction_eligible_response_count`) NUNCA tiveram uma
+        tentativa de extração ACEITA -- cobre tanto "todas as tentativas
+        de extração desta resposta falharam" quanto "o budget se esgotou
+        antes desta resposta ser tentada" (as duas resultam, de forma
+        igualmente verdadeira, em "esta resposta não teve suas claims
+        extraídas"). Delegado à derivação centralizada (ver
+        `_claim_extraction_coverage`) -- nunca recalculado aqui.
+
+        Deliberadamente NÃO confundido com "extração aceita mas retornou
+        0 claims" (extração VÁLIDA vazia, ver `no_claims_to_judge` em
+        `app/judge/single_judge.py`) -- uma tentativa aceita com
+        `claims: []` conta como "não-faltante" aqui, porque o processo
+        estrutural funcionou; só ausência de QUALQUER tentativa aceita
+        conta como "faltante"."""
+        return self._claim_extraction_coverage().missing_count
+
+    @property
+    def claim_extraction_coverage_is_complete(self) -> bool:
+        """Repair (adversarial review, Finding A) -- `@property` comum
+        (NUNCA `computed_field`: não amplia o DTO serializado além dos 2
+        campos já expostos acima, que já bastam pro público) -- conveniência
+        Python pra `SingleJudge.judge()` decidir entre
+        "no_claims_to_judge" (cobertura completa) e
+        "claim_extraction_incomplete" (cobertura incompleta) sem
+        recomputar a derivação centralizada por conta própria.
+        Equivalente a `claim_extraction_missing_response_count == 0`,
+        nunca uma segunda fonte de verdade."""
+        return self._claim_extraction_coverage().is_complete
 
     @model_validator(mode="after")
     def _skip_reason_matches_critique_presence(self) -> DebateResult:

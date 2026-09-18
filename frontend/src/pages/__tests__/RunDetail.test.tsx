@@ -225,7 +225,12 @@ describe('RunDetail', () => {
     started_at: '2026-09-06T00:00:00Z',
     completed_at: '2026-09-06T00:00:05Z',
     config: completedRun.config,
-    debate_outcome: { skipped_reason: null, cumulative_budget_exceeded: false },
+    debate_outcome: {
+      skipped_reason: null,
+      cumulative_budget_exceeded: false,
+      claim_extraction_eligible_response_count: 0,
+      claim_extraction_missing_response_count: 0,
+    },
     judge_outcome: { verdict_unavailable_reason: null, cumulative_budget_exceeded: false },
     editor_outcome: { fallback_reason: null, cumulative_budget_exceeded: false },
     source_analysis: null,

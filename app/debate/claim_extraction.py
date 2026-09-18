@@ -40,7 +40,12 @@ from app.debate.numeric_verification import (
     build_verification_attempt,
 )
 from app.debate.processing_record import ClaimProcessingAttempt
-from app.debate.schemas import ClaimExtractionOutput, ClaimGroupingOutput, ClaimGroupProposal
+from app.debate.schemas import (
+    MAX_EXTRACTED_CLAIMS,
+    ClaimExtractionOutput,
+    ClaimGroupingOutput,
+    ClaimGroupProposal,
+)
 from app.models.domain import Claim, ClaimSupport, ModelResponse
 from app.models.provider_models import CompletionRequest, Message, ProviderResponse
 from app.models.request_provenance import RequestProvenance, build_request_provenance
@@ -64,7 +69,15 @@ _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 # mesmo compartilhando mecanismo de retry/schema (reconciliação reusa o
 # mecanismo de agrupamento, mas nunca sua versão de contrato -- ver
 # docstring de `reconcile_claims`).
-CLAIM_EXTRACTION_CONTRACT_VERSION = "claim_extraction_v1"
+#
+# v1 -> v2 (Run02 claim-extraction exhaustion repair): cardinalidade de
+# claims deixou de ser semanticamente ilimitada (teto rígido de
+# MAX_EXTRACTED_CLAIMS, imposto no prompt E no schema) e a chamada passou
+# a pedir raciocínio mínimo/desabilitado (`CompletionRequest.minimal_reasoning`,
+# ver `_build_extraction_request`) -- as duas mudanças alteram o contrato
+# efetivo da OPERAÇÃO (o que pode legitimamente ser pedido/aceito), nunca
+# só um ajuste de redação cosmético, por isso a versão avança.
+CLAIM_EXTRACTION_CONTRACT_VERSION = "claim_extraction_v2"
 CLAIM_GROUPING_CONTRACT_VERSION = "claim_grouping_v1"
 CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION = "cross_round_claim_reconciliation_v1"
 
@@ -263,14 +276,64 @@ def _build_extraction_request(
         "Você é um extrator de afirmações (claims) factuais e verificáveis "
         "de um texto. Leia a RESPOSTA fornecida pelo usuário e produza uma "
         "lista de afirmações distintas que ela faz. "
-        "CRITÉRIO DE GRANULARIDADE: extraia uma claim por PROPOSIÇÃO que "
-        "pode ser avaliada de forma significativa de modo independente, "
-        "sem perder seu sentido essencial. Isso NÃO significa criar uma "
-        "claim pra cada oração/cláusula gramatical automaticamente, nem "
-        "significa minimizar a quantidade de claims -- não existe meta "
-        "numérica de quantas claims extrair; uma resposta com várias "
-        "proposições genuinamente independentes deve gerar várias claims, "
-        "sem hesitação. Regras: "
+        "CRITÉRIO DE GRANULARIDADE: extraia uma claim por PROPOSIÇÃO "
+        "MATERIAL que pode ser avaliada de forma significativa de modo "
+        "independente, sem perder seu sentido essencial. Isso NÃO "
+        "significa criar uma claim pra cada oração/cláusula gramatical "
+        "automaticamente, nem significa minimizar a quantidade de "
+        "claims -- uma resposta com várias proposições materiais "
+        "genuinamente independentes deve gerar várias claims, sem "
+        "hesitação, até o teto abaixo. "
+        f"TETO RÍGIDO: no máximo {MAX_EXTRACTED_CLAIMS} claims MATERIAIS "
+        "e NÃO REDUNDANTES por resposta -- isto é um limite estrutural "
+        "do contrato de saída (uma 13ª claim faz a chamada inteira ser "
+        "rejeitada), nunca uma meta a perseguir por si só. A extração "
+        "produz um CONJUNTO MATERIAL LIMITADO das proposições mais "
+        "importantes da resposta, NUNCA uma atomização exaustiva de toda "
+        "proposição tecnicamente separável -- isto continua verdade "
+        "mesmo quando a resposta genuinamente contém mais de "
+        f"{MAX_EXTRACTED_CLAIMS} proposições materiais independentes. "
+        "Dois passos, NESTA ordem, nunca um só: "
+        "PASSO 1 (compactação -- sempre tentado primeiro): se a resposta "
+        f"genuinamente sugerir mais candidatas do que o teto permite, "
+        f"COMPACTE antes de se aproximar de {MAX_EXTRACTED_CLAIMS} (NUNCA "
+        "invente uma claim truncada/cortada pra caber): (i) funda um "
+        "fragmento explicativo DEPENDENTE na proposição da qual ele "
+        "depende, em vez de dar a ele uma claim própria; (ii) reduza uma "
+        "restatement aritmética (uma consequência numérica que decorre "
+        "mecanicamente de uma afirmação já extraída, sem acrescentar "
+        "proposição independente) à claim que a origina; (iii) funda "
+        "traduções/reformulações puramente redundantes da MESMA "
+        "proposição numa só claim. Compactar NUNCA apaga qualificador, "
+        "incerteza, relação causal ou distinção entre revisão/reafirmação "
+        "-- essas continuam OBRIGATÓRIAS em toda claim que sobreviver a "
+        "este passo; compactar remove só REDUNDÂNCIA e fragmentos "
+        "dependentes, NUNCA proposições genuinamente independentes entre "
+        "si (a regra de nunca fundir independentes só por estarem na "
+        "mesma frase, mais abaixo, continua valendo integralmente aqui). "
+        "PASSO 2 (seleção limitada -- só entra em jogo se, DEPOIS de "
+        f"compactar, ainda restarem mais de {MAX_EXTRACTED_CLAIMS} "
+        "proposições materiais GENUINAMENTE independentes -- nunca antes "
+        f"de tentar compactar primeiro): escolha as {MAX_EXTRACTED_CLAIMS} "
+        "MAIS MATERIAIS, por esta ordem de prioridade -- PRIORIDADE 1: "
+        "conclusões centrais da resposta; PRIORIDADE 2: proposições "
+        "relevantes pra uma decisão que o leitor precise tomar; "
+        "PRIORIDADE 3: afirmações NUMÉRICAS materiais; PRIORIDADE 4: "
+        "afirmações CAUSAIS materiais; PRIORIDADE 5: proposições que "
+        "tratem de discordância/incerteza/revisão explícita. As "
+        "proposições independentes que não entrarem no corte "
+        "simplesmente NÃO viram claim nenhuma nesta chamada -- SÃO "
+        "OMITIDAS, NUNCA fundidas/corrompidas/forçadas dentro de outra "
+        "claim só pra caber no teto (fundir proposições genuinamente "
+        "independentes continua proibido, mesmo sob o teto, mesmo no "
+        "passo 2 -- ver regra abaixo). Isto é SELEÇÃO limitada de um "
+        "conjunto material, nunca compressão de claims compostas -- cada "
+        "claim selecionada continua sendo exatamente UMA proposição, "
+        "nunca duas ou mais espremidas numa só. "
+        "NUNCA extraia comentário de prompt/meta (instruções, observações "
+        "sobre o próprio processo de responder) nem uma mera reformulação da "
+        "PERGUNTA do usuário -- nenhum dos dois é uma claim, teto ou não. "
+        "Regras: "
         "(1) separe proposições genuinamente independentes -- alguém "
         "poderia aceitar uma e rejeitar a outra; "
         "(2) mantenha qualificadores essenciais (ex.: 'provavelmente', "
@@ -398,6 +461,16 @@ def _build_extraction_request(
         messages=[Message(role="user", content="\n\n".join(body_parts))],
         system_prompt=system_prompt,
         max_tokens=max_output_tokens_per_call,
+        # Repair (Run02 claim-extraction exhaustion) -- extração é uma
+        # transformação DETERMINÍSTICA de texto->JSON estruturado, nunca
+        # uma tarefa que se beneficia de raciocínio estendido; pedir
+        # raciocínio mínimo/desabilitado (ver
+        # `CompletionRequest.minimal_reasoning`, mapeado explicitamente
+        # pelo AnthropicProvider) reduz a chance de output "invisível" pro
+        # adapter consumir o teto de `max_tokens` sem produzir JSON visível.
+        # Só extração usa isto nesta etapa -- agrupamento/reconciliação
+        # (abaixo) não são tocados.
+        minimal_reasoning=True,
     )
 
 

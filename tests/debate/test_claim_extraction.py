@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from app.debate.claim_extraction import CLAIM_EXTRACTION_CONTRACT_VERSION, extract_claims
+from app.debate.claim_extraction import CLAIM_EXTRACTION_CONTRACT_VERSION, extract_claims, group_claims
+from app.debate.schemas import MAX_EXTRACTED_CLAIMS
 from app.models.domain import Claim, ClaimSupport, ModelResponse
 from app.models.provider_models import ModelIdentitySource, TokenUsage
 from app.models.request_provenance import REQUEST_DIGEST_PREFIX
@@ -58,6 +59,110 @@ async def test_extraction_with_zero_claims_is_valid():
     assert claims == []
     assert len(attempts) == 1
     assert attempts[0].parse_status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_extraction_accepts_exactly_the_maximum_claim_count():
+    """Repair (Run02 claim-extraction exhaustion) -- MAX_EXTRACTED_CLAIMS
+    (12) é aceito integralmente: o teto é uma fronteira INCLUSIVA."""
+    claims_payload = [
+        {"text": f"Fato número {i}.", "revises_claim_id": None}
+        for i in range(MAX_EXTRACTED_CLAIMS)
+    ]
+    provider = ScriptedProvider(
+        "anthropic", [text_response("anthropic", json.dumps({"claims": claims_payload}))]
+    )
+    claims, attempts, _verifications = await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert len(claims) == MAX_EXTRACTED_CLAIMS
+    assert attempts[0].parse_status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_extraction_rejects_output_one_over_the_maximum_never_silently_truncates():
+    """Repair (Run02 claim-extraction exhaustion) -- MAX_EXTRACTED_CLAIMS+1
+    (13) é uma VIOLAÇÃO DE CONTRATO -- a tentativa inteira é rejeitada
+    (malformed pelo schema, `ValidationError` -> `MalformedClaimOutputError`),
+    NUNCA aceita e depois cortada pra 12 em silêncio. Roteiriza a MESMA
+    resposta inválida nas 2 tentativas (retry esgota, nunca aceita)."""
+    claims_payload = [
+        {"text": f"Fato número {i}.", "revises_claim_id": None}
+        for i in range(MAX_EXTRACTED_CLAIMS + 1)
+    ]
+    oversized = json.dumps({"claims": claims_payload})
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response("anthropic", oversized),
+            text_response("anthropic", oversized),
+        ],
+    )
+    claims, attempts, _verifications = await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert claims == []
+    assert len(attempts) == 2
+    assert all(a.parse_status == "malformed" for a in attempts)
+
+
+@pytest.mark.asyncio
+async def test_extraction_accepts_omitted_optional_null_fields():
+    """Repair (Run02 claim-extraction exhaustion) -- campos opcionais
+    com valor null (`revises_claim_id`/`proposed_numeric_assertion`)
+    podem ser OMITIDOS do JSON inteiramente -- Pydantic aplica o default
+    `None`, nunca exige a chave presente."""
+    payload = json.dumps({"claims": [{"text": "Fato sem campos opcionais."}]})
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    claims, attempts, _verifications = await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert len(claims) == 1
+    assert claims[0].text == "Fato sem campos opcionais."
+    assert claims[0].parent_claim_id is None
+    assert attempts[0].parse_status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_extraction_request_asks_for_minimal_reasoning():
+    """Repair (Run02 claim-extraction exhaustion) -- extração é uma
+    transformação determinística; o request precisa carregar
+    `minimal_reasoning=True` (ver app/models/provider_models.py,
+    mapeado pelo AnthropicProvider)."""
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", '{"claims": []}')])
+    await extract_claims(
+        _response(), round_number=1, total_models_in_round=3,
+        extractor=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(),
+        prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert provider.received_requests[0].minimal_reasoning is True
+
+
+@pytest.mark.asyncio
+async def test_grouping_request_never_asks_for_minimal_reasoning():
+    """Repair (Run02 claim-extraction exhaustion) -- escopo estrito: só
+    EXTRAÇÃO usa `minimal_reasoning`. Agrupamento continua com o default
+    (`False`) -- nunca tocado por este repair."""
+    c1 = _old_claim("c1", "X.")
+    provider = ScriptedProvider(
+        "anthropic",
+        [text_response("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": [c1.id]}))],
+    )
+    await group_claims(
+        [c1], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
+        run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+    assert provider.received_requests[0].minimal_reasoning is False
 
 
 @pytest.mark.asyncio
@@ -979,20 +1084,111 @@ async def test_granularity_contract_keeps_independent_propositions_separate_in_o
 
 
 @pytest.mark.asyncio
-async def test_granularity_contract_has_no_numerical_claim_count_target():
-    """4/9 -- o prompt precisa dizer explicitamente que NÃO existe meta
-    numérica de claims, e que uma resposta com várias proposições
-    independentes deve gerar várias claims -- nunca uma instrução
-    POSITIVA pra minimizar/preferir poucas claims (a palavra "minimizar"
-    pode aparecer dentro da própria NEGAÇÃO -- "nem significa minimizar"
-    -- por isso a checagem é pela frase negada completa, não pela
-    ausência bruta da palavra)."""
+async def test_granularity_contract_has_explicit_maximum_claim_count():
+    """Repair (Run02 claim-extraction exhaustion) -- substitui o teste
+    anterior (`test_granularity_contract_has_no_numerical_claim_count_target`,
+    que protegia a AUSÊNCIA deliberada de um teto numérico). A razão
+    SEMÂNTICA daquele teste -- nunca instruir a LLM a MINIMIZAR/preferir
+    poucas claims por si só -- continua protegida aqui (`"nem significa
+    minimizar"` continua presente); o que mudou foi a decisão
+    operacional: cardinalidade deixou de ser ilimitada, e agora existe
+    um teto RÍGIDO explícito (`MAX_EXTRACTED_CLAIMS`), comunicado no
+    prompt como limite ESTRUTURAL do contrato de saída, nunca como meta
+    a perseguir."""
     prompt = (await _sent_system_prompt(1, None)).lower()
-    assert "meta numérica" in prompt or "meta numerica" in prompt
+    assert f"no máximo {MAX_EXTRACTED_CLAIMS}" in prompt or f"no maximo {MAX_EXTRACTED_CLAIMS}" in prompt
+    assert "materiais" in prompt
+    assert "não redundantes" in prompt or "nao redundantes" in prompt
+    # A razão de ser do teste antigo continua protegida: teto != instrução
+    # de minimizar.
     assert "nem significa minimizar" in prompt
-    assert "prefira poucas" not in prompt
-    assert "no máximo" not in prompt
-    assert "no maximo" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_maximum_governs_compaction_not_content_deletion():
+    """Repair (Run02 claim-extraction exhaustion) -- o prompt precisa
+    deixar explícito que COMPACTAR (fundir fragmento dependente,
+    restatement aritmética, reformulação redundante) nunca é a mesma
+    coisa que apagar qualificador/incerteza/causalidade/revisão -- essas
+    continuam obrigatórias mesmo sob o teto."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "compacte" in prompt
+    assert "fragmento explicativo dependente" in prompt
+    assert "restatement aritmética" in prompt or "restatement aritmetica" in prompt
+    assert "nunca apaga qualificador" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_excludes_meta_commentary_and_question_restatement():
+    """Repair (Run02 claim-extraction exhaustion) -- exclusões explícitas:
+    comentário de prompt/meta e mera reformulação da pergunta do usuário
+    nunca são claims."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "comentário de prompt/meta" in prompt or "comentario de prompt/meta" in prompt
+    assert "reformulação da" in prompt or "reformulacao da" in prompt
+    assert "pergunta do usuário" in prompt or "pergunta do usuario" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_defines_bounded_selection_priority_for_over_cap_responses():
+    """Repair (adversarial review, Finding D) -- resolve a contradição
+    apontada: "no máximo 12" + "nunca omita conteúdo material distinto"
+    + "nunca funda proposições independentes" são conjuntamente
+    insatisfazíveis quando a resposta genuinamente contém mais de 12
+    proposições materiais independentes. O prompt precisa definir
+    explicitamente uma política de PRIORIDADE determinística pra esse
+    caso: SELEÇÃO das mais materiais, nunca fusão artificial. Extração é
+    um CONJUNTO MATERIAL LIMITADO, nunca atomização exaustiva."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "conjunto material limitado" in prompt
+    assert "atomização exaustiva" in prompt or "atomizacao exaustiva" in prompt
+    assert "seleção limitada" in prompt or "selecao limitada" in prompt
+    assert "prioridade 1" in prompt
+    assert "prioridade 2" in prompt
+    assert "prioridade 3" in prompt
+    assert "prioridade 4" in prompt
+    assert "prioridade 5" in prompt
+    assert "conclusões centrais" in prompt or "conclusoes centrais" in prompt
+    assert (
+        "afirmações numéricas materiais" in prompt
+        or "afirmacoes numericas materiais" in prompt
+    )
+    assert (
+        "afirmações causais materiais" in prompt or "afirmacoes causais materiais" in prompt
+    )
+    assert "discordância" in prompt or "discordancia" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_forbids_merging_unrelated_independent_propositions_to_fit_cap():
+    """Repair (Finding D) -- proposições independentes que não entram no
+    corte de seleção limitada são OMITIDAS, NUNCA fundidas/corrompidas
+    -- o prompt precisa proibir explicitamente fundir proposições
+    genuinamente independentes só pra caber no teto, e deixar claro que
+    isto é seleção, nunca compressão de claims compostas (cada claim
+    selecionada continua sendo UMA proposição só)."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    assert "omitidas" in prompt
+    assert "nunca fundidas" in prompt
+    assert (
+        "compressão de claims compostas" in prompt
+        or "compressao de claims compostas" in prompt
+    )
+    # Passo 2 nunca dispara antes do passo 1 (compactação) ser tentado.
+    assert "passo 1" in prompt
+    assert "passo 2" in prompt
+
+
+@pytest.mark.asyncio
+async def test_granularity_contract_selection_step_never_applies_before_compaction_step():
+    """Repair (Finding D) -- ordem EXPLÍCITA e não-ambígua: seleção
+    limitada (passo 2) só entra em jogo DEPOIS de compactar (passo 1) --
+    nunca a primeira reação a uma resposta com muitas proposições."""
+    prompt = (await _sent_system_prompt(1, None)).lower()
+    passo1_idx = prompt.index("passo 1")
+    passo2_idx = prompt.index("passo 2")
+    assert passo1_idx < passo2_idx
+    assert "depois de compactar" in prompt
 
 
 @pytest.mark.asyncio
@@ -1177,8 +1373,14 @@ async def test_scripted_output_with_many_independent_claims_is_processed_without
     """Complemento -- prova que a APLICAÇÃO (nunca o julgamento de
     granularidade em si, ver docstring da seção) processa corretamente
     uma extração com VÁRIAS claims independentes já roteirizadas, sem
-    fundir/descartar nenhuma -- confirma que nada na aplicação impõe uma
-    contagem máxima ou mínima por resposta."""
+    fundir/descartar nenhuma. Repair (Run02 claim-extraction exhaustion)
+    -- docstring corrigida: DESDE este repair existe sim um teto MÁXIMO
+    rígido (`MAX_EXTRACTED_CLAIMS`, imposto no schema -- ver
+    `test_extraction_accepts_exactly_the_maximum_claim_count`/
+    `test_extraction_rejects_output_one_over_the_maximum_never_silently_truncates`
+    acima); este teste, com 4 claims (abaixo do teto), só confirma que a
+    aplicação nunca funde/descarta claims por conta própria dentro do
+    espaço permitido -- nenhuma contagem MÍNIMA é imposta."""
     payload = json.dumps(
         {
             "claims": [

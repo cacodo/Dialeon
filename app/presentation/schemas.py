@@ -735,12 +735,23 @@ RunResponse = Annotated[
 class DebateOutcome(BaseModel):
     """Espelha os campos ARMAZENADOS (não computed_field) de DebateResult
     que explicam por que a crítica ocorreu ou não (Etapa 11 patch final,
-    Parte A)."""
+    Parte A).
+
+    Repair (Run02 claim-extraction exhaustion) -- os dois campos de
+    cobertura abaixo SÃO `computed_field` do lado de `DebateResult` (ver
+    `claim_extraction_eligible_response_count`/
+    `claim_extraction_missing_response_count`, app/debate/result.py), mas
+    são espelhados aqui como campos armazenados comuns -- o objetivo
+    explícito é dar ao frontend/CLI/API um sinal JÁ DERIVADO de cobertura
+    de extração, pra nunca precisar reconstruir isso a partir de
+    `claim_processing_attempts` brutos."""
 
     model_config = _CONFIG
 
     skipped_reason: str | None
     cumulative_budget_exceeded: bool
+    claim_extraction_eligible_response_count: int
+    claim_extraction_missing_response_count: int
 
 
 class JudgeOutcome(BaseModel):

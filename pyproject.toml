@@ -22,7 +22,19 @@ dependencies = [
     "python-dotenv>=1.0",
     # SDKs oficiais dos 3 providers do MVP (Etapa 2 — Provider Layer)
     "openai>=1.55",
-    "anthropic>=0.40",
+    # Repair (Run02 claim-extraction exhaustion) -- piso levantado de
+    # >=0.40 pra >=1.5.0: o adapter (app/providers/anthropic_provider.py)
+    # agora depende de `thinking={"type": "disabled"}`, uma forma de API
+    # cuja compatibilidade NUNCA foi estabelecida pra versões abaixo de
+    # 1.5.0 -- nenhuma evidência local (changelog/lockfile/wheel em
+    # cache) determina a primeira versão histórica que introduziu
+    # `thinking`/disabled-thinking; 1.5.0 é só a versão mais antiga pra
+    # qual este repair tem evidência CONCRETA de compatibilidade
+    # (instalada e validada deterministicamente neste repositório) --
+    # nunca uma alegação de que 1.5.0 foi historicamente a primeira
+    # versão a introduzir isso. Sem teto superior -- nenhuma versão
+    # futura foi testada como incompatível.
+    "anthropic>=1.5.0",
     "google-genai>=1.0",
 ]
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult, DebateResult
 from app.models.domain import Claim, ClaimSupport, ModelResponse
 from app.models.provider_models import TokenUsage
@@ -92,6 +93,45 @@ def round_result(responses: list[ModelResponse], round_number: int = 2, **overri
     return RoundResult(**fields)
 
 
+def _accepted_extraction_attempt(
+    response_id: str, provider: str, round_number: int
+) -> ClaimProcessingAttempt:
+    """Repair (Run02 claim-extraction exhaustion) -- `DebateResult` agora
+    deriva `claim_extraction_missing_response_count` a partir de
+    `claim_processing_attempts` (ver app/debate/result.py). Testes de
+    Judge/Editor construídos com este módulo focam em OUTRA coisa
+    (veredito/composição), não em cobertura de extração -- por isso o
+    default de `debate_result()` abaixo sintetiza uma tentativa de
+    extração ACEITA (mínima, mas estruturalmente válida) pra cada
+    `ModelResponse` bem-sucedida, garantindo que a cobertura seja
+    "completa" por padrão (byte-idêntico ao comportamento de antes deste
+    campo existir: nenhuma nota de cobertura incompleta aparece). Testes
+    que precisam exercitar cobertura PARCIAL/FALHA TOTAL passam
+    `claim_processing_attempts=[...]` explicitamente via `**overrides`,
+    substituindo este default por completo."""
+    return ClaimProcessingAttempt(
+        operation="extraction",
+        round_number=round_number,
+        attempt_number=1,
+        provider=provider,
+        requested_model="fake-model",
+        model="fake-model",
+        target_model_response_id=response_id,
+        transport_status="success",
+        transport_attempts=1,
+        raw_output_text='{"claims": []}',
+        parse_status="accepted",
+        # ZERO tokens/custo de propósito -- este default sintético nunca
+        # deve perturbar nenhum teste de budget existente (que já fixa
+        # totais exatos a partir de `initial_result`/`critique_round`
+        # sozinhos). `usage` CONHECIDO-zero (não `None`/desconhecido)
+        # preserva `has_unknown_accounting_components=False` também.
+        usage=TokenUsage(input_tokens=0, output_tokens=0),
+        cost_usd=0.0,
+        latency_ms=1,
+    )
+
+
 def debate_result(
     claims: list[Claim],
     initial_responses: list[ModelResponse],
@@ -108,11 +148,25 @@ def debate_result(
     if critique is None and debate_skipped_reason is None:
         debate_skipped_reason = "insufficient_initial_quorum"
 
+    # Ver docstring de `_accepted_extraction_attempt` -- cobertura
+    # "completa" por padrão, nunca o foco deste helper genérico.
+    default_attempts = [
+        _accepted_extraction_attempt(r.id, claim_processor_provider, round_number=1)
+        for r in initial_responses
+        if r.status == "success"
+    ]
+    if critique_responses is not None:
+        default_attempts += [
+            _accepted_extraction_attempt(r.id, claim_processor_provider, round_number=2)
+            for r in critique_responses
+            if r.status == "success"
+        ]
+
     fields = dict(
         initial_result=initial,
         critique_round=critique,
         claims=claims,
-        claim_processing_attempts=[],
+        claim_processing_attempts=default_attempts,
         claim_processor_provider=claim_processor_provider,
         debate_skipped_reason=debate_skipped_reason if critique is None else None,
         cumulative_budget_exceeded=False,

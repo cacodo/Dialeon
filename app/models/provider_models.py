@@ -56,6 +56,22 @@ class CompletionRequest(BaseModel):
     model: str | None = None
     max_tokens: int = 1024
     temperature: float | None = None
+    # Repair (Run02 claim-extraction exhaustion) -- capacidade
+    # PROVIDER-AGNÓSTICA mínima pro chamador pedir raciocínio
+    # mínimo/desabilitado nesta chamada específica (transformações
+    # determinísticas texto->estruturado, como extração de claims, nunca
+    # se beneficiam de "extended thinking"/raciocínio interno -- e um
+    # provider que consome parte do teto de `max_tokens` com esse
+    # raciocínio, sem produzir texto visível equivalente, é exatamente o
+    # tipo de esgotamento silencioso de budget que este campo existe pra
+    # mitigar). Cada adapter concreto (app/providers/*_provider.py) decide
+    # como interpretar isto pro SEU provider -- inclusive ignorá-lo, se o
+    # provider não tiver noção equivalente -- nunca um branch por
+    # identidade de provider fora da camada de adapters (ver
+    # AnthropicProvider._call_api, único mapeamento concreto desta etapa).
+    # `False` (default) preserva o comportamento de toda chamada
+    # existente antes deste campo existir, byte-a-byte.
+    minimal_reasoning: bool = False
 
 
 class TokenUsage(BaseModel):

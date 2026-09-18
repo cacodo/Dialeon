@@ -48,7 +48,12 @@ function makeAudit(overrides: Partial<CompletedRunAudit> = {}): CompletedRunAudi
       round_dispatch_timeout_seconds: 60,
       quorum: { min_for_debate: 1, min_to_return: 1 },
     },
-    debate_outcome: { skipped_reason: null, cumulative_budget_exceeded: false },
+    debate_outcome: {
+      skipped_reason: null,
+      cumulative_budget_exceeded: false,
+      claim_extraction_eligible_response_count: 0,
+      claim_extraction_missing_response_count: 0,
+    },
     judge_outcome: { verdict_unavailable_reason: null, cumulative_budget_exceeded: false },
     editor_outcome: { fallback_reason: null, cumulative_budget_exceeded: false },
     source_analysis: {
@@ -327,6 +332,8 @@ describe('InspectionPanel — hierarquia: notas da execução e auditoria técni
         debate_outcome: {
           skipped_reason: 'insufficient_initial_quorum',
           cumulative_budget_exceeded: false,
+          claim_extraction_eligible_response_count: 0,
+          claim_extraction_missing_response_count: 0,
         },
       }),
     )

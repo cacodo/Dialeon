@@ -161,8 +161,17 @@ class RunConfig(BaseModel):
       `CompletionRequest.max_tokens` ao montar cada requisição — é o que
       de fato limita quanto texto uma resposta pode ter. Usado por
       dispatch de participante, extração de claims e crítica — todas
-      chamadas cujo output esperado é O(1) (uma resposta por vez, nunca
-      cresce com a contagem de claims do debate).
+      chamadas SEM cobertura obrigatória de N claims (uma resposta por
+      vez), mas isso NUNCA significou "tamanho de output trivialmente
+      pequeno/constante" (Repair, Run02 claim-extraction exhaustion): a
+      extração especificamente tem, desde este repair, um teto EXPLÍCITO
+      e finito de cardinalidade de claims por resposta
+      (`MAX_EXTRACTED_CLAIMS`, ver app/debate/schemas.py) -- antes disso,
+      uma única resposta "rica" podia sozinha gerar uma lista de claims
+      semanticamente ilimitada, consumindo o mesmo teto compartilhado com
+      participante/crítica. `max_output_tokens_per_call` continua 4096
+      (inalterado por este repair) -- a correção foi limitar
+      CARDINALIDADE + raciocínio da chamada, nunca aumentar o teto.
     - `max_output_tokens_grouping`/`max_output_tokens_judge` (Etapa
       17A.2): tetos PRÓPRIOS, separados de `max_output_tokens_per_call`,
       usados respectivamente pela chamada de agrupamento
@@ -171,11 +180,11 @@ class RunConfig(BaseModel):
       essas duas operações têm schema de output com cobertura
       OBRIGATÓRIA (uma entrada por claim bruta/atual) — o tamanho mínimo
       exigido do output cresce com a contagem de claims, então
-      compartilhar o mesmo teto fixo de uma chamada O(1) as deixava
-      estruturalmente mais propensas a truncamento. Continuam valores
-      FIXOS e config-driven (nenhum cálculo dinâmico por contagem de
-      claims, nenhuma alocação adaptativa) — só reconhecem que são
-      operações de natureza diferente.
+      compartilhar o mesmo teto fixo de uma chamada sem essa cobertura as
+      deixava estruturalmente mais propensas a truncamento. Continuam
+      valores FIXOS e config-driven (nenhum cálculo dinâmico por
+      contagem de claims, nenhuma alocação adaptativa) — só reconhecem
+      que são operações de natureza diferente.
     - `max_total_tokens`: orçamento AGREGADO da execução inteira (soma
       de input+output de TODOS os providers), comparado com o total
       DEPOIS que todas as respostas da Fase 1 chegam. Não limita

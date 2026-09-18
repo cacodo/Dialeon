@@ -676,6 +676,351 @@ async def test_no_verdict_never_asserts_claim_truth():
 
 
 # ---------------------------------------------------------------------------
+# Repair (Run02 claim-extraction exhaustion) -- distinção entre extração
+# genuinamente vazia ("no_claims_to_judge") e falha ESTRUTURAL total de
+# extração ("claim_extraction_failed"): a segunda NUNCA pode alegar que
+# nenhuma informação avaliável existia.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_claim_extraction_failed_never_claims_no_evaluable_information():
+    dr = debate_result(
+        [], [model_response("openai")],
+        debate_skipped_reason="all_initial_extractions_failed",
+        claim_processing_attempts=[],
+    )
+    jr = judge_result(None, verdict_unavailable_reason="claim_extraction_failed")
+    editor = Editor({})  # nem precisa de provider -- nunca será consultado
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    text_lower = result.final_answer.answer_text.lower()
+    assert "nenhuma informação avaliável" not in text_lower
+    assert "participantes responderam" in text_lower
+    assert "extração estruturada" in text_lower
+    assert "falhou" in text_lower
+    assert result.attempts == []
+    assert result.final_answer.status == "deterministic_no_verdict"
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_claim_extraction_incomplete_never_claims_no_evaluable_information():
+    """Repair (adversarial review, Finding A/B) -- "claim_extraction_incomplete"
+    (cobertura parcial, sem claims sobreviventes) também nunca pode
+    alegar ausência total de informação avaliável -- distinta tanto de
+    "no_claims_to_judge" quanto de "claim_extraction_failed" (falha
+    TOTAL). O contrato de `_no_verdict_result` (existing FinalAnswer
+    contract) já embute a razão em `limitations`/`answer_text` -- nenhum
+    canal estruturado adicional é necessário aqui (não há claims
+    sobreviventes pra listar)."""
+    dr = debate_result(
+        [], [model_response("openai")],
+        claim_processing_attempts=[],
+        debate_skipped_reason="insufficient_initial_quorum",
+    )
+    jr = judge_result(None, verdict_unavailable_reason="claim_extraction_incomplete")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    text_lower = result.final_answer.answer_text.lower()
+    assert "nenhuma informação avaliável" not in text_lower
+    assert "não puderam ter suas afirmações extraídas" in text_lower
+    assert result.final_answer.status == "deterministic_no_verdict"
+    assert any("não puderam ter suas afirmações extraídas" in lim.lower() for lim in result.final_answer.limitations)
+
+
+# ---------------------------------------------------------------------------
+# Repair (adversarial review, recheck Finding A) -- `_no_verdict_result`
+# (budget/transporte esgotado ANTES do Judge, NUNCA a falha total de
+# extração da rodada 1) também precisa disclosurar cobertura de extração
+# incompleta quando ela coexiste com o motivo de "sem veredito" -- os dois
+# fatos são INDEPENDENTES. Reusa a MESMA `_extraction_coverage_note`
+# (nunca uma segunda derivação/redação).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_budget_exhausted_with_surviving_claims_discloses_partial_coverage():
+    """Cenário concreto do achado: algumas respostas foram extraídas com
+    sucesso (claims sobreviventes existem e são listadas), outras
+    falharam extração, E o Judge não avaliou por budget -- os dois
+    motivos (cobertura incompleta + sem veredito por budget) precisam
+    aparecer JUNTOS, nenhum suprimindo o outro."""
+    c1 = raw_claim("claim extraída com sucesso", "resp-1", provider="openai")
+    dr = _partially_covered_debate_result(c1)
+    jr = judge_result(None, verdict_unavailable_reason="budget_exhausted_before_judge")
+    editor = Editor({})  # nem precisa de provider -- nunca será consultado
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    text = result.final_answer.answer_text
+    text_lower = text.lower()
+    # Motivo original (budget) preservado -- nunca substituído.
+    assert "orçamento se esgotou antes da avaliação final" in text_lower
+    assert "claim extraída com sucesso" in text
+    # Disclosure de cobertura incompleta, exatamente uma vez.
+    assert text_lower.count("cobertura de extração de afirmações incompleta") == 1
+    assert "1 de 2" in text
+    # Mesma disclosure no canal estruturado, como última entrada, sem
+    # apagar a limitação original.
+    limitations = result.final_answer.limitations
+    assert len(limitations) == 2
+    assert "avaliação final não realizada" in limitations[0].lower()
+    assert "cobertura de extração de afirmações incompleta" in limitations[1].lower()
+    assert result.final_answer.answer_blocks is None
+    assert result.final_answer.status == "deterministic_no_verdict"
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_budget_exhausted_discloses_coverage_note_with_accepted_empty_and_not_attempted():
+    """accepted-empty (extração aceita, mas 0 claims) + NOT_ATTEMPTED
+    (nenhuma tentativa, budget parou o processamento antes) -- cobertura
+    incompleta mesmo sem nenhuma tentativa REJEITADA, `current_claims`
+    vazio (a única extração aceita não produziu claim nenhuma) -- nota
+    de cobertura ainda precisa aparecer, combinada com o motivo de
+    budget."""
+    from app.debate.processing_record import ClaimProcessingAttempt
+
+    accepted_empty_response = model_response("openai")
+    never_attempted_response = model_response("anthropic")
+    accepted_attempt = ClaimProcessingAttempt(
+        operation="extraction", round_number=1, attempt_number=1,
+        provider="anthropic", requested_model="claude-sonnet-5", model="claude-sonnet-5",
+        target_model_response_id=accepted_empty_response.id,
+        transport_status="success", transport_attempts=1,
+        raw_output_text='{"claims": []}', parse_status="accepted",
+        usage=TokenUsage(input_tokens=0, output_tokens=0), cost_usd=0.0, latency_ms=1,
+    )
+    dr = debate_result(
+        [],
+        [accepted_empty_response, never_attempted_response],
+        claim_processing_attempts=[accepted_attempt],
+        debate_skipped_reason="budget_exhausted_before_critique",
+    )
+    jr = judge_result(None, verdict_unavailable_reason="budget_exhausted_before_judge")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    text_lower = result.final_answer.answer_text.lower()
+    assert text_lower.count("cobertura de extração de afirmações incompleta") == 1
+    assert "1 de 2" in result.final_answer.answer_text
+    assert any(
+        "cobertura de extração de afirmações incompleta" in lim.lower()
+        for lim in result.final_answer.limitations
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_budget_exhausted_with_complete_coverage_never_adds_note():
+    """Cobertura COMPLETA (nenhuma resposta faltando) + budget esgotado
+    antes do Judge -- nenhuma disclosure de cobertura é adicionada, nem
+    em answer_text nem em limitations (byte-idêntico ao comportamento
+    anterior a este repair)."""
+    c1 = raw_claim("claim extraída com sucesso", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(None, verdict_unavailable_reason="budget_exhausted_before_judge")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert "cobertura de extração" not in result.final_answer.answer_text.lower()
+    assert not any(
+        "cobertura de extração" in lim.lower() for lim in result.final_answer.limitations
+    )
+    # Motivo/limitação originais continuam presentes, sozinhos.
+    assert len(result.final_answer.limitations) == 1
+    assert "avaliação final não realizada" in result.final_answer.limitations[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# Repair (Run02 claim-extraction exhaustion) -- disclosure de cobertura de
+# extração incompleta anexada a answer_text (nunca a answer_blocks) quando
+# ao menos uma resposta bem-sucedida não teve suas claims extraídas.
+# ---------------------------------------------------------------------------
+
+
+def _partially_covered_debate_result(c1) -> DebateResult:
+    """1 resposta bem-sucedida com extração ACEITA (produziu c1) + 1
+    resposta bem-sucedida cuja extração NUNCA foi aceita -- cobertura
+    parcial (1 de 2), sem usar o helper `debate_result()` (que sintetiza
+    cobertura completa por padrão) -- este teste precisa de cobertura
+    genuinamente incompleta."""
+    from app.debate.processing_record import ClaimProcessingAttempt
+
+    accepted_response = model_response("openai")
+    missing_response = model_response("anthropic")
+    accepted_attempt = ClaimProcessingAttempt(
+        operation="extraction",
+        round_number=1,
+        attempt_number=1,
+        provider="anthropic",
+        requested_model="fake-model",
+        model="fake-model",
+        target_model_response_id=accepted_response.id,
+        transport_status="success",
+        transport_attempts=1,
+        raw_output_text='{"claims": []}',
+        parse_status="accepted",
+        usage=TokenUsage(input_tokens=0, output_tokens=0),
+        cost_usd=0.0,
+        latency_ms=1,
+    )
+    rejected_attempt = ClaimProcessingAttempt(
+        operation="extraction",
+        round_number=1,
+        attempt_number=1,
+        provider="anthropic",
+        requested_model="fake-model",
+        model="fake-model",
+        target_model_response_id=missing_response.id,
+        transport_status="success",
+        transport_attempts=1,
+        raw_output_text="isto não é JSON",
+        parse_status="malformed",
+        parse_error_message="JSON inválido",
+        usage=TokenUsage(input_tokens=0, output_tokens=0),
+        cost_usd=0.0,
+        latency_ms=1,
+    )
+    return debate_result(
+        [c1],
+        [accepted_response, missing_response],
+        claim_processing_attempts=[accepted_attempt, rejected_attempt],
+        debate_skipped_reason="insufficient_initial_quorum",
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_extraction_coverage_note_appears_in_successful_final_answer():
+    c1 = raw_claim("claim extraída com sucesso", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    dr = _partially_covered_debate_result(c1)
+    jr = judge_result(v)
+
+    payload = _plan_payload("direct", "concise")
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    text = result.final_answer.answer_text
+    assert "cobertura de extração de afirmações incompleta" in text.lower()
+    assert "1 de 2" in text
+    # answer_blocks segue a forma FECHADA (abertura + seções de claims
+    # apenas) -- a nota nunca vira um bloco próprio, só texto.
+    assert result.final_answer.answer_blocks is not None
+    from app.editor.answer_blocks import AnswerClaimSectionBlock, AnswerParagraphBlock
+
+    assert isinstance(result.final_answer.answer_blocks[0], AnswerParagraphBlock)
+    assert all(
+        isinstance(b, AnswerClaimSectionBlock) for b in result.final_answer.answer_blocks[1:]
+    )
+    # Repair (Finding B, revisão adversarial) -- a MESMA disclosure
+    # também precisa estar no canal ESTRUTURADO (`limitations`), nunca
+    # só em `answer_text`: é o que `FinalAnswerView` realmente renderiza
+    # quando `answer_blocks` está presente (ver
+    # frontend/src/components/FinalAnswerView.tsx) -- um aviso presente
+    # só em `answer_text` fica invisível na UI real nesse caso.
+    assert any(
+        "cobertura de extração de afirmações incompleta" in lim.lower()
+        for lim in result.final_answer.limitations
+    )
+    # É a ÚLTIMA entrada -- limitações do Judge vêm antes, nunca
+    # misturadas/reordenadas.
+    assert "cobertura de extração" in result.final_answer.limitations[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_complete_extraction_coverage_never_adds_a_note():
+    c1 = raw_claim("claim extraída com sucesso", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(v)
+
+    payload = _plan_payload("direct", "concise")
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert "cobertura de extração" not in result.final_answer.answer_text.lower()
+    # Cobertura completa nunca adiciona entrada nenhuma em limitations --
+    # nem vazia, nem duplicada.
+    assert not any(
+        "cobertura de extração" in lim.lower() for lim in result.final_answer.limitations
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_extraction_coverage_note_also_appears_in_deterministic_fallback():
+    c1 = raw_claim("claim extraída com sucesso", "resp-1", provider="openai")
+    v = verdict([ClaimAssessment(claim_id=c1.id, verdict="supported", explanation="ok")])
+    dr = _partially_covered_debate_result(c1)
+    jr = judge_result(v)
+
+    provider = ScriptedProvider(
+        "anthropic",
+        [
+            text_response("anthropic", "não é JSON"),
+            text_response("anthropic", "ainda não é JSON"),
+        ],
+    )
+    editor = Editor({"anthropic": provider})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert result.final_answer.status == "deterministic_from_verdict"
+    assert "cobertura de extração de afirmações incompleta" in result.final_answer.answer_text.lower()
+    assert any(
+        "cobertura de extração de afirmações incompleta" in lim.lower()
+        for lim in result.final_answer.limitations
+    )
+
+
+# ---------------------------------------------------------------------------
 # Budget
 # ---------------------------------------------------------------------------
 

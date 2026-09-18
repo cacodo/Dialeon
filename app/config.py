@@ -114,12 +114,27 @@ class Settings(BaseSettings):
     # OBRIGATÓRIA (uma entrada por claim bruta/atual), então o tamanho
     # mínimo exigido de output cresce com a contagem de claims, nunca
     # limitado por nada além do teto de tokens -- ao contrário de
-    # extração/crítica, cujo output é por natureza O(1) por chamada
-    # (uma resposta de cada vez). Tetos PRÓPRIOS, mais generosos,
+    # extração/crítica (uma resposta de cada vez, sem cobertura
+    # obrigatória de N claims). Tetos PRÓPRIOS, mais generosos,
     # continuam um único valor fixo cada (nenhum cálculo dinâmico por
     # contagem de claims, nenhuma alocação adaptativa) -- só reconhece
     # que agrupamento/Judge não deveriam compartilhar o mesmo teto de
     # extração/crítica/participante.
+    #
+    # Repair (Run02 claim-extraction exhaustion) -- correção de
+    # caracterização: extração NUNCA foi genuinamente O(1)/"tamanho
+    # constante" -- esse rótulo descrevia só a AUSÊNCIA de cobertura
+    # obrigatória de N claims (verdade, e ainda verdade), mas escondia
+    # que a cardinalidade de claims por resposta era semanticamente
+    # ILIMITADA (nenhum teto no contrato/schema) -- uma única resposta
+    # "rica" podia sozinha gerar uma lista de claims arbitrariamente
+    # grande, consumindo o mesmo `default_max_output_tokens_per_call`
+    # compartilhado com participante/crítica. A extração agora tem um
+    # teto EXPLÍCITO e finito (`MAX_EXTRACTED_CLAIMS`, ver
+    # app/debate/schemas.py/claim_extraction.py) -- BOUNDED, nunca mais
+    # tratada como se fosse trivialmente pequena por natureza. Este
+    # patch não muda `default_max_output_tokens_per_call` (permanece
+    # 4096, ver Field abaixo) -- só corrige a premissa que o justificava.
     default_max_output_tokens_grouping: int = Field(default=8192, gt=0)
     default_max_output_tokens_judge: int = Field(default=8192, gt=0)
 

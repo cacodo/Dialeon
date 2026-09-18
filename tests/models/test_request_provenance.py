@@ -14,6 +14,8 @@ from pydantic import ValidationError
 from app.models.provider_models import CompletionRequest, Message
 from app.models.request_provenance import (
     REQUEST_DIGEST_PREFIX,
+    REQUEST_DIGEST_PREFIX_V1,
+    REQUEST_DIGEST_PREFIX_V2,
     RequestProvenance,
     build_request_provenance,
     compute_request_digest,
@@ -246,6 +248,96 @@ def test_request_provenance_rejects_blank_contract_version():
         RequestProvenance(contract_version="", request_digest=REQUEST_DIGEST_PREFIX + "a" * 64)
 
 
+# ---------------------------------------------------------------------------
+# Repair (adversarial review, Finding C) -- versionamento correto da
+# canonicalização: v1 (formato histórico, 5 campos, sem `minimal_reasoning`)
+# continua RECONHECIDO na validação/leitura; v2 (6 campos, com
+# `minimal_reasoning`) é o formato de TODA computação NOVA.
+# ---------------------------------------------------------------------------
+
+
+def test_v1_and_v2_prefixes_are_distinct_constants():
+    assert REQUEST_DIGEST_PREFIX_V1 == "completion-request-sha256-v1:"
+    assert REQUEST_DIGEST_PREFIX_V2 == "completion-request-sha256-v2:"
+    assert REQUEST_DIGEST_PREFIX_V1 != REQUEST_DIGEST_PREFIX_V2
+
+
+def test_new_requests_always_produce_v2_digest():
+    """`compute_request_digest` -- a única função de escrita -- SEMPRE
+    produz o prefixo v2, nunca v1, independente do conteúdo do request."""
+    digest = compute_request_digest(_request())
+    assert digest.startswith(REQUEST_DIGEST_PREFIX_V2)
+    assert not digest.startswith(REQUEST_DIGEST_PREFIX_V1)
+    assert REQUEST_DIGEST_PREFIX == REQUEST_DIGEST_PREFIX_V2
+
+
+def test_known_historical_v1_provenance_still_validates_and_reloads():
+    """Uma linha PERSISTIDA antes deste repair (formato v1, nenhuma
+    migração aplicada -- ver docstring do módulo) continua validando e
+    recarregando exatamente como antes -- `RequestProvenance` nunca
+    rejeita um `request_digest` v1 histórico só porque a escrita nova é
+    v2."""
+    historical = RequestProvenance(
+        contract_version="judge_v1",
+        request_digest=REQUEST_DIGEST_PREFIX_V1 + "f" * 64,
+    )
+    assert historical.request_digest.startswith(REQUEST_DIGEST_PREFIX_V1)
+    # Round-trip via model_dump/model_validate -- mesma disciplina de
+    # qualquer reconstrução de storage (app/storage/repository.py).
+    reloaded = RequestProvenance.model_validate(historical.model_dump())
+    assert reloaded == historical
+
+
+def test_v2_provenance_also_validates_normally():
+    fresh = RequestProvenance(
+        contract_version="judge_v1",
+        request_digest=REQUEST_DIGEST_PREFIX_V2 + "a" * 64,
+    )
+    assert fresh.request_digest.startswith(REQUEST_DIGEST_PREFIX_V2)
+
+
+def test_v1_and_v2_digests_with_the_same_hex_are_both_valid_but_distinct_strings():
+    """v1 e v2 são formatos DIFERENTES -- o mesmo sufixo hex sob os dois
+    prefixos produz dois `request_digest` válidos, porém não-iguais
+    (nunca colapsados/normalizados um no outro)."""
+    hex_suffix = "b" * 64
+    v1 = RequestProvenance(contract_version="judge_v1", request_digest=REQUEST_DIGEST_PREFIX_V1 + hex_suffix)
+    v2 = RequestProvenance(contract_version="judge_v1", request_digest=REQUEST_DIGEST_PREFIX_V2 + hex_suffix)
+    assert v1.request_digest != v2.request_digest
+
+
+def test_completely_unknown_prefix_is_still_rejected():
+    """v3 (ou qualquer prefixo não reconhecido) continua rejeitado --
+    aceitar v1/v2 não abre a porta pra QUALQUER prefixo."""
+    with pytest.raises(ValidationError):
+        RequestProvenance(
+            contract_version="judge_v1",
+            request_digest="completion-request-sha256-v3:" + "a" * 64,
+        )
+
+
+def test_minimal_reasoning_false_vs_true_differ_under_v2():
+    """`minimal_reasoning` participa do payload v2 -- `False` vs `True`
+    pro MESMO request (idêntico em todo o resto) produz digests v2
+    diferentes."""
+    base = _request()
+    with_minimal_reasoning = base.model_copy(update={"minimal_reasoning": True})
+    assert base.minimal_reasoning is False
+
+    digest_false = compute_request_digest(base)
+    digest_true = compute_request_digest(with_minimal_reasoning)
+
+    assert digest_false != digest_true
+    assert digest_false.startswith(REQUEST_DIGEST_PREFIX_V2)
+    assert digest_true.startswith(REQUEST_DIGEST_PREFIX_V2)
+
+
+def test_minimal_reasoning_default_false_matches_explicit_false():
+    base = _request()
+    explicit_false = base.model_copy(update={"minimal_reasoning": False})
+    assert compute_request_digest(base) == compute_request_digest(explicit_false)
+
+
 def test_request_provenance_is_frozen():
     provenance = RequestProvenance(
         contract_version="judge_v1", request_digest=REQUEST_DIGEST_PREFIX + "a" * 64
@@ -305,5 +397,12 @@ def test_completion_request_field_set_is_pinned():
     forma INDEPENDENTE (nunca lido de dentro de
     `_canonical_completion_request_payload`) -- comparar contra a
     própria função canonicalizadora seria tautológico."""
-    expected_fields = {"messages", "system_prompt", "model", "max_tokens", "temperature"}
+    expected_fields = {
+        "messages",
+        "system_prompt",
+        "model",
+        "max_tokens",
+        "temperature",
+        "minimal_reasoning",
+    }
     assert set(CompletionRequest.model_fields) == expected_fields

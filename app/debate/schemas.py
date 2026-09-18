@@ -19,6 +19,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 _IO_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+# Repair (Run02 claim-extraction exhaustion) -- teto RÍGIDO de claims por
+# chamada de extração (uma ModelResponse por vez, ver
+# `claim_extraction.py:extract_claims`). Única fonte de verdade deste
+# número -- o prompt de extração (`_build_extraction_request`) referencia
+# esta MESMA constante, nunca um "12" literal duplicado que poderia
+# divergir do schema. Nunca aplicado a `ClaimGroupingOutput` (agrupamento/
+# reconciliação): aquele schema exige cobertura de TODAS as claims brutas
+# dadas como entrada, um contrato estruturalmente diferente que não tem
+# teto de cardinalidade -- ver docstring de `ClaimGroupingOutput`.
+MAX_EXTRACTED_CLAIMS = 12
+
 
 class ExtractedClaimDraft(BaseModel):
     """Uma claim que a LLM identificou na resposta que está sendo
@@ -50,11 +61,20 @@ class ExtractedClaimDraft(BaseModel):
 
 class ClaimExtractionOutput(BaseModel):
     """Resultado de uma chamada de extração — pode legitimamente conter 0
-    claims (a resposta processada não afirmou nada extraível)."""
+    claims (a resposta processada não afirmou nada extraível).
+
+    Repair (Run02 claim-extraction exhaustion) -- `max_length=12`:
+    cardinalidade de extração deixou de ser semanticamente ilimitada (ver
+    `MAX_EXTRACTED_CLAIMS`/prompt em `claim_extraction.py`). Um output com
+    13+ claims é um output REJEITADO pelo schema (`ValidationError` ->
+    `MalformedClaimOutputError`, mesmo tratamento de qualquer outro JSON
+    que não bata com o contrato) -- nunca aceito e depois cortado pra 12
+    em silêncio: 13 claims é uma VIOLAÇÃO de contrato, não um excesso
+    tolerado."""
 
     model_config = _IO_CONFIG
 
-    claims: list[ExtractedClaimDraft] = Field(default_factory=list)
+    claims: list[ExtractedClaimDraft] = Field(default_factory=list, max_length=MAX_EXTRACTED_CLAIMS)
 
 
 class ClaimGroupProposal(BaseModel):

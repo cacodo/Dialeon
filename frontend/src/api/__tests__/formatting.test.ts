@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { DebateOutcome, JudgeOutcome } from '../types'
 import {
   formatEstimatedCost,
   formatExactCost,
@@ -6,6 +7,7 @@ import {
   formatDebateOutcome,
   formatFailureCategory,
   formatFinalAnswerStatus,
+  formatJudgeOutcome,
   formatModelIdentitySource,
   formatPricingCanonicalModelId,
   formatProviderName,
@@ -81,25 +83,103 @@ describe('formatModelIdentitySource', () => {
   })
 })
 
+function _debateOutcome(overrides: Partial<DebateOutcome> = {}): DebateOutcome {
+  return {
+    skipped_reason: null,
+    cumulative_budget_exceeded: false,
+    claim_extraction_eligible_response_count: 0,
+    claim_extraction_missing_response_count: 0,
+    ...overrides,
+  }
+}
+
 describe('formatDebateOutcome', () => {
   it('retorna null quando não houve skip (nada a explicar)', () => {
-    expect(formatDebateOutcome({ skipped_reason: null, cumulative_budget_exceeded: false })).toBeNull()
+    expect(formatDebateOutcome(_debateOutcome())).toBeNull()
   })
 
   it('formata motivo conhecido de forma legível', () => {
-    const result = formatDebateOutcome({
-      skipped_reason: 'insufficient_initial_quorum',
-      cumulative_budget_exceeded: false,
-    })
+    const result = formatDebateOutcome(
+      _debateOutcome({ skipped_reason: 'insufficient_initial_quorum' }),
+    )
     expect(result).not.toBe('insufficient_initial_quorum')
     expect(result).toBeTruthy()
   })
 
+  it('formata o novo motivo de falha estrutural de extração (Run02 repair) de forma legível, nunca implicando ausência de informação', () => {
+    const result = formatDebateOutcome(
+      _debateOutcome({ skipped_reason: 'all_initial_extractions_failed' }),
+    )
+    expect(result).not.toBe('all_initial_extractions_failed')
+    expect(result?.toLowerCase()).not.toContain('nenhuma informação')
+  })
+
   it('cai de volta pro valor cru se o motivo não tiver label conhecido (nunca inventa explicação)', () => {
-    const result = formatDebateOutcome({
-      skipped_reason: 'motivo_novo_desconhecido',
-      cumulative_budget_exceeded: false,
-    })
+    const result = formatDebateOutcome(
+      _debateOutcome({ skipped_reason: 'motivo_novo_desconhecido' }),
+    )
+    expect(result).toBe('motivo_novo_desconhecido')
+  })
+})
+
+function _judgeOutcome(overrides: Partial<JudgeOutcome> = {}): JudgeOutcome {
+  return {
+    verdict_unavailable_reason: null,
+    cumulative_budget_exceeded: false,
+    ...overrides,
+  }
+}
+
+describe('formatJudgeOutcome', () => {
+  it('retorna null quando há veredito (nada a explicar)', () => {
+    expect(formatJudgeOutcome(_judgeOutcome())).toBeNull()
+  })
+
+  // Repair (adversarial review, recheck Finding B) -- o motivo
+  // "claim_extraction_incomplete" precisa de um rótulo PT-BR legível
+  // (regressão: antes deste repair, caía no fallback cru via
+  // `?? outcome.verdict_unavailable_reason` -- ver formatJudgeOutcome).
+  it('formata claim_extraction_incomplete de forma legível, nunca o valor interno cru', () => {
+    const result = formatJudgeOutcome(
+      _judgeOutcome({ verdict_unavailable_reason: 'claim_extraction_incomplete' }),
+    )
+    expect(result).not.toBe('claim_extraction_incomplete')
+    expect(result).toBeTruthy()
+  })
+
+  it('claim_extraction_incomplete nunca implica que os participantes falharam, que não havia informação avaliável, discordância do juiz, ou falha genérica de provider', () => {
+    const result = formatJudgeOutcome(
+      _judgeOutcome({ verdict_unavailable_reason: 'claim_extraction_incomplete' }),
+    )
+    const lower = result?.toLowerCase() ?? ''
+    expect(lower).not.toContain('participantes falharam')
+    expect(lower).not.toContain('nenhuma informação')
+    expect(lower).not.toContain('discord')
+    expect(lower).not.toContain('provider')
+    // Semântica precisa: extração ESTRUTURADA incompleta, algumas
+    // respostas não puderam ser extraídas.
+    expect(lower).toContain('extração')
+    expect(lower).toContain('incompleta')
+  })
+
+  it('claim_extraction_incomplete tem rótulo distinto de claim_extraction_failed e no_claims_to_judge', () => {
+    const incomplete = formatJudgeOutcome(
+      _judgeOutcome({ verdict_unavailable_reason: 'claim_extraction_incomplete' }),
+    )
+    const failed = formatJudgeOutcome(
+      _judgeOutcome({ verdict_unavailable_reason: 'claim_extraction_failed' }),
+    )
+    const noClaims = formatJudgeOutcome(
+      _judgeOutcome({ verdict_unavailable_reason: 'no_claims_to_judge' }),
+    )
+    expect(incomplete).not.toBe(failed)
+    expect(incomplete).not.toBe(noClaims)
+  })
+
+  it('cai de volta pro valor cru se o motivo não tiver label conhecido (nunca inventa explicação)', () => {
+    const result = formatJudgeOutcome(
+      _judgeOutcome({ verdict_unavailable_reason: 'motivo_novo_desconhecido' }),
+    )
     expect(result).toBe('motivo_novo_desconhecido')
   })
 })

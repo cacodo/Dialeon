@@ -122,7 +122,12 @@ def _completed_run_audit(**overrides) -> CompletedRunAudit:
         started_at=_NOW,
         completed_at=_NOW,
         config=_run_config(),
-        debate_outcome=DebateOutcome(skipped_reason=None, cumulative_budget_exceeded=False),
+        debate_outcome=DebateOutcome(
+            skipped_reason=None,
+            cumulative_budget_exceeded=False,
+            claim_extraction_eligible_response_count=0,
+            claim_extraction_missing_response_count=0,
+        ),
         judge_outcome=JudgeOutcome(verdict_unavailable_reason=None, cumulative_budget_exceeded=False),
         editor_outcome=EditorOutcome(fallback_reason=None, cumulative_budget_exceeded=False),
         source_analysis=None,

@@ -89,12 +89,63 @@ class SingleJudge(JudgeStrategy):
             run_config,
         )
 
-        current_claims = get_current_claims(debate_result.claims)
-        if not current_claims:
+        # Repair (Run02 claim-extraction exhaustion) -- checado ANTES de
+        # `current_claims`/"no_claims_to_judge" de propósito: os dois
+        # ramos veem exatamente a mesma superfície (claims=[]), mas só
+        # este é verdadeiro sobre POR QUE não há claims -- respostas
+        # substantivas de participantes existiram, a extração estruturada
+        # delas que falhou (ver `DebateResult.debate_skipped_reason`,
+        # app/debate/debate_engine.py). Nenhuma chamada ao provider de
+        # Judge acontece aqui, mesma disciplina do ramo
+        # "no_claims_to_judge" logo abaixo (`attempts=[]`).
+        if debate_result.debate_skipped_reason == "all_initial_extractions_failed":
             return JudgeResult(
                 verdict=None,
                 attempts=[],
-                verdict_unavailable_reason="no_claims_to_judge",
+                verdict_unavailable_reason="claim_extraction_failed",
+                judge_provider=run_config.judge_provider,
+                cumulative_budget_exceeded=budget_exceeded_before_judge,
+            )
+
+        current_claims = get_current_claims(debate_result.claims)
+        if not current_claims:
+            # Repair (adversarial review, Finding A) -- `current_claims`
+            # vazio tem 3 causas POSSÍVEIS, e confundi-las é exatamente o
+            # bug que este repair fecha:
+            #
+            #   1. cobertura COMPLETA (todo alvo elegível teve extração
+            #      aceita) + toda extração aceita veio vazia -> extração
+            #      genuinamente não encontrou nada -- "no_claims_to_judge",
+            #      SEMPRE, independente do estado de budget (mesmo
+            #      precedente já testado/aprovado antes deste repair --
+            #      ver test_no_claims_with_budget_already_exceeded_reports_true,
+            #      tests/judge/test_single_judge.py: budget excedido
+            #      simultaneamente NUNCA muda esta razão).
+            #   2. cobertura INCOMPLETA (algum alvo falhou/nunca foi
+            #      tentado) + budget JÁ excedido -- o motivo raiz da
+            #      incompletude é budget; preserva "budget_exhausted_before_judge"
+            #      (nunca "no_claims_to_judge", que apagaria essa causa).
+            #   3. cobertura INCOMPLETA + budget NÃO excedido -- a
+            #      incompletude vem de falha ESTRUTURAL (malformado/
+            #      inconsistente), nunca de budget -- "claim_extraction_incomplete",
+            #      nunca "no_claims_to_judge".
+            #
+            # A derivação de cobertura é a MESMA centralizada usada por
+            # `DebateEngine`/`DebateResult` (ver
+            # app/debate/claim_extraction_coverage.py) -- nunca uma
+            # segunda implementação aqui.
+            if debate_result.claim_extraction_coverage_is_complete:
+                reason: Literal[
+                    "no_claims_to_judge", "budget_exhausted_before_judge", "claim_extraction_incomplete"
+                ] = "no_claims_to_judge"
+            elif budget_exceeded_before_judge:
+                reason = "budget_exhausted_before_judge"
+            else:
+                reason = "claim_extraction_incomplete"
+            return JudgeResult(
+                verdict=None,
+                attempts=[],
+                verdict_unavailable_reason=reason,
                 judge_provider=run_config.judge_provider,
                 cumulative_budget_exceeded=budget_exceeded_before_judge,
             )

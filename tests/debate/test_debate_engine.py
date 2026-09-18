@@ -573,3 +573,240 @@ async def test_grouping_call_uses_max_output_tokens_grouping_not_the_general_cei
     ]
     assert extraction_requests
     assert all(req.max_tokens == 1024 for req in extraction_requests)
+
+
+# ---------------------------------------------------------------------------
+# Repair (Run02 claim-extraction exhaustion) -- D: falha ESTRUTURAL total
+# de extração na rodada 1 (quórum/budget suficientes) short-circuita antes
+# da crítica; C.3: cobertura de extração PARCIAL é registrada, nunca
+# confundida com falha total; budget/accounting: tentativas rejeitadas são
+# cobradas exatamente uma vez.
+# ---------------------------------------------------------------------------
+
+
+def _always_malformed_extraction_handler(provider_name: str, **usage_overrides):
+    async def handler(call_index: int, request) -> ProviderResponse:
+        content = request.messages[0].content
+        if "RESPOSTA_A_ANALISAR" not in content:
+            raise AssertionError(
+                f"chamada inesperada pro processor malformado ({provider_name}): "
+                f"{content[:80]!r}"
+            )
+        return _ok(provider_name, "isto não é JSON válido", **usage_overrides)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_all_initial_extractions_failed_short_circuits_before_critique():
+    """Quórum (2/2) e budget suficientes, mas TODAS as extrações da
+    rodada 1 falham estruturalmente (JSON sempre malformado, retry
+    esgotado pras duas respostas) -- crítica NUNCA é disparada (nenhuma
+    chamada de dispatch adicional aos participantes), e o skip é
+    rotulado corretamente, nunca confundido com quórum/budget
+    insuficientes."""
+    openai = _make_provider("openai", "resposta de OPENAI")
+    gemini = _make_provider("gemini", "resposta de GEMINI")
+    processor = CallableProvider("anthropic", _always_malformed_extraction_handler("anthropic"))
+    providers = {"openai": openai, "gemini": gemini, "anthropic": processor}
+    engine = DebateEngine(providers)
+    run_config = _run_config(
+        ["openai", "gemini"], "anthropic",
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
+    )
+
+    result = await engine.run(run_config)
+
+    assert result.initial_result.successful_count == 2
+    assert result.initial_result.insufficient_data_for_consensus is False
+    assert result.critique_round is None
+    assert result.debate_skipped_reason == "all_initial_extractions_failed"
+    assert result.cumulative_budget_exceeded is False
+    assert result.claims == []
+    # 2 respostas x 2 tentativas cada (retry esgotado, nunca aceito) = 4.
+    assert len(result.claim_processing_attempts) == 4
+    assert all(a.parse_status == "malformed" for a in result.claim_processing_attempts)
+    # Nenhuma chamada de rodada de crítica aconteceu -- só a rodada inicial.
+    assert openai.call_count == 1
+    assert gemini.call_count == 1
+    assert result.claim_extraction_eligible_response_count == 2
+    assert result.claim_extraction_missing_response_count == 2
+
+
+@pytest.mark.asyncio
+async def test_all_initial_extractions_failed_charges_attempts_exactly_once():
+    """Budget/accounting -- cada tentativa de extração rejeitada (mesmo
+    malformada) consumiu tokens reais e precisa aparecer exatamente uma
+    vez em cumulative_input_tokens/cumulative_output_tokens -- nunca
+    duas vezes, nunca omitida."""
+    openai = _make_provider("openai", "resposta de OPENAI")
+    gemini = _make_provider("gemini", "resposta de GEMINI")
+    processor = CallableProvider(
+        "anthropic",
+        _always_malformed_extraction_handler("anthropic", input_tokens=100, output_tokens=50),
+    )
+    providers = {"openai": openai, "gemini": gemini, "anthropic": processor}
+    engine = DebateEngine(providers)
+    run_config = _run_config(
+        ["openai", "gemini"], "anthropic",
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
+    )
+
+    result = await engine.run(run_config)
+
+    assert result.debate_skipped_reason == "all_initial_extractions_failed"
+    assert len(result.claim_processing_attempts) == 4
+    extraction_input = sum(a.usage.input_tokens for a in result.claim_processing_attempts)
+    extraction_output = sum(a.usage.output_tokens for a in result.claim_processing_attempts)
+    assert extraction_input == 400
+    assert extraction_output == 200
+    assert (
+        result.cumulative_input_tokens
+        == result.initial_result.total_input_tokens + extraction_input
+    )
+    assert (
+        result.cumulative_output_tokens
+        == result.initial_result.total_output_tokens + extraction_output
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_extraction_coverage_is_disclosed_while_debate_proceeds_normally():
+    """Uma resposta bem-sucedida (gemini) falha estruturalmente na
+    extração em AMBAS as rodadas, enquanto openai segue normalmente -- o
+    debate PROSSEGUE normalmente (openai teve extração aceita no round1,
+    então nunca é "all_initial_extractions_failed"), e a cobertura
+    incompleta fica corretamente registrada nos dois computed_field
+    novos, nunca confundida com falha total nem com extração vazia
+    válida."""
+
+    async def processor_handler(call_index: int, request) -> ProviderResponse:
+        content = request.messages[0].content
+        if "CLAIMS_BRUTAS" in content:
+            payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
+            ids = [c["id"] for c in payload]
+            return _ok("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+        if "CLAIMS_ATUAIS" in content:
+            payload = json.loads(content.split("rodada de crítica combinadas):\n", 1)[1])
+            ids = [c["id"] for c in payload]
+            return _ok("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+        if "RESPOSTA_A_ANALISAR" in content:
+            if "resposta de GEMINI" in content:
+                return _ok("anthropic", "isto não é JSON válido")
+            text = json.dumps({"claims": [{"text": "claim de openai", "revises_claim_id": None}]})
+            return _ok("anthropic", text)
+        raise AssertionError(f"chamada inesperada: {content[:80]!r}")
+
+    providers = {
+        "openai": _make_provider("openai", "resposta de OPENAI"),
+        "gemini": _make_provider("gemini", "resposta de GEMINI"),
+        "anthropic": CallableProvider("anthropic", processor_handler),
+    }
+    engine = DebateEngine(providers)
+    run_config = _run_config(
+        ["openai", "gemini"], "anthropic",
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
+    )
+
+    result = await engine.run(run_config)
+
+    assert result.debate_skipped_reason is None
+    assert result.critique_round is not None
+    # claim de openai no round1 + claim de openai no round2 (reconciliação
+    # sem merge, mesmo padrão dos handlers padrão deste arquivo).
+    assert len(result.claims) == 2
+    assert {c.text for c in result.claims} == {"claim de openai"}
+    # 4 ModelResponse bem-sucedidas no total (openai+gemini x 2 rounds).
+    assert result.claim_extraction_eligible_response_count == 4
+    # gemini falhou extração nas DUAS rodadas -- nunca omitido, nunca
+    # confundido com "all_initial_extractions_failed" (openai teve
+    # extração aceita).
+    assert result.claim_extraction_missing_response_count == 2
+
+
+@pytest.mark.asyncio
+async def test_all_rejected_where_final_attempt_crosses_budget_is_budget_reason_not_total_failure():
+    """Repair (adversarial review, Finding A) -- TODAS as tentativas de
+    extração da rodada 1 são rejeitadas (malformadas), e a ÚLTIMA delas
+    é o que faz o budget cumulativo cruzar o teto -- o gate de budget
+    (que roda ANTES do short-circuit de falha total) precisa continuar
+    tendo prioridade: o resultado é "budget_exhausted_before_critique",
+    NUNCA "all_initial_extractions_failed" -- mesmo `accepted_count==0`
+    sendo tecnicamente verdadeiro nos dois casos, a causa raiz aqui É
+    budget, não falha estrutural."""
+    openai = _make_provider("openai", "resposta de OPENAI")
+    gemini = _make_provider("gemini", "resposta de GEMINI")
+    processor = CallableProvider("anthropic", _always_malformed_extraction_handler("anthropic"))
+    providers = {"openai": openai, "gemini": gemini, "anthropic": processor}
+    engine = DebateEngine(providers)
+    # 2 respostas x (10+5) tokens de dispatch = 30, + 4 tentativas de
+    # extração rejeitadas x (10+5) tokens cada = 60 -- total 90,
+    # cruzando exatamente max_total_tokens=90 (>= é "excedido", ver
+    # app/orchestrator/budget.py) na ÚLTIMA tentativa rejeitada.
+    run_config = _run_config(
+        ["openai", "gemini"], "anthropic",
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
+        max_total_tokens=90,
+    )
+
+    result = await engine.run(run_config)
+
+    assert result.debate_skipped_reason == "budget_exhausted_before_critique"
+    assert result.cumulative_budget_exceeded is True
+    assert result.critique_round is None
+    assert all(a.parse_status == "malformed" for a in result.claim_processing_attempts)
+
+
+@pytest.mark.asyncio
+async def test_round_one_success_is_never_masked_by_total_critique_extraction_failure():
+    """Repair (adversarial review, Finding A) -- round-safety end-to-end:
+    a rodada 1 TEM extração aceita pras 2 respostas (nunca falha total),
+    enquanto a rodada de crítica (round 2) falha extração pras MESMAS 2
+    respostas inteiramente -- o short-circuit de falha total é
+    ESCOPADO À RODADA 1 (compute_claim_extraction_targets recebe só
+    round 1 nesse ponto), então nunca deveria confundir a falha da
+    crítica com falha da rodada inicial."""
+
+    async def processor_handler(call_index: int, request) -> ProviderResponse:
+        content = request.messages[0].content
+        if "CLAIMS_BRUTAS" in content:
+            payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
+            ids = [c["id"] for c in payload]
+            return _ok("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+        if "RESPOSTA_A_ANALISAR" in content:
+            # Diferencia rodada 1 de rodada de crítica por `call_index`,
+            # nunca por conteúdo do texto -- as 2 primeiras chamadas de
+            # extração deste processor são SEMPRE as da rodada 1 (mesma
+            # ordem determinística já usada por `_budget_example_handler`
+            # acima: dispatch da rodada 1 termina, DEPOIS extração roda
+            # sequencialmente por resposta, DEPOIS agrupamento -- tudo
+            # `await`ado em sequência, nunca concorrente). As chamadas de
+            # extração seguintes (rodada de crítica) sempre falham,
+            # exercitando falha TOTAL da crítica sem afetar a rodada 1.
+            if call_index <= 2:
+                text = json.dumps(
+                    {"claims": [{"text": "claim inicial", "revises_claim_id": None}]}
+                )
+                return _ok("anthropic", text)
+            return _ok("anthropic", "isto não é JSON válido")
+        raise AssertionError(f"chamada inesperada: {content[:80]!r}")
+
+    providers = {
+        "openai": _make_provider("openai", "resposta de OPENAI"),
+        "gemini": _make_provider("gemini", "resposta de GEMINI"),
+        "anthropic": CallableProvider("anthropic", processor_handler),
+    }
+    engine = DebateEngine(providers)
+    run_config = _run_config(
+        ["openai", "gemini"], "anthropic",
+        quorum=QuorumPolicy(min_for_debate=2, min_to_return=1),
+    )
+
+    result = await engine.run(run_config)
+
+    assert result.debate_skipped_reason is None
+    assert result.critique_round is not None
+    assert len(result.claims) == 2  # só as 2 claims da rodada 1 (crítica falhou inteira)
+    assert {c.text for c in result.claims} == {"claim inicial"}
+    assert result.claim_extraction_eligible_response_count == 4
+    assert result.claim_extraction_missing_response_count == 2  # só as 2 respostas de crítica

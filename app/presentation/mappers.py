@@ -566,6 +566,8 @@ def completed_run_audit(
         debate_outcome=DebateOutcome(
             skipped_reason=debate.debate_skipped_reason,
             cumulative_budget_exceeded=debate.cumulative_budget_exceeded,
+            claim_extraction_eligible_response_count=debate.claim_extraction_eligible_response_count,
+            claim_extraction_missing_response_count=debate.claim_extraction_missing_response_count,
         ),
         judge_outcome=JudgeOutcome(
             verdict_unavailable_reason=judge.verdict_unavailable_reason,

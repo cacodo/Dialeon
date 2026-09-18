@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.debate.processing_record import ClaimProcessingAttempt
 from app.judge.context import JUDGE_CONTRACT_VERSION
 from app.judge.single_judge import SingleJudge
 from app.models.provider_models import ModelIdentitySource, TokenUsage
@@ -445,6 +446,204 @@ async def test_no_claims_with_budget_already_exceeded_reports_true():
 
     assert result.verdict_unavailable_reason == "no_claims_to_judge"
     assert result.cumulative_budget_exceeded is True
+    assert len(provider.received_requests) == 0
+
+
+# ---------------------------------------------------------------------------
+# Repair (Run02 claim-extraction exhaustion) -- D: falha ESTRUTURAL total
+# de extração NUNCA chama o provider de Judge, e é rotulada DISTINTA de
+# "no_claims_to_judge" (que continua reservado pra extração genuinamente
+# vazia).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claim_extraction_failed_never_calls_judge_provider():
+    dr = debate_result(
+        [],
+        [model_response("openai")],
+        debate_skipped_reason="all_initial_extractions_failed",
+        claim_processing_attempts=[],
+    )
+    provider = ScriptedProvider("anthropic", [])
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(max_total_tokens=1_000_000),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert result.verdict is None
+    assert result.verdict_unavailable_reason == "claim_extraction_failed"
+    assert result.attempts == []
+    assert len(provider.received_requests) == 0
+    assert result.cumulative_budget_exceeded is False
+
+
+@pytest.mark.asyncio
+async def test_claim_extraction_failed_takes_priority_over_budget_state():
+    """O motivo reportado é sempre "claim_extraction_failed" nesse
+    cenário -- `cumulative_budget_exceeded` continua um fato
+    INDEPENDENTE (mesma disciplina de "no_claims_to_judge"), nunca muda
+    qual razão é reportada."""
+    big_response = model_response("openai", usage=TokenUsage(input_tokens=8000, output_tokens=0))
+    dr = debate_result(
+        [],
+        [big_response],
+        debate_skipped_reason="all_initial_extractions_failed",
+        claim_processing_attempts=[],
+    )
+    provider = ScriptedProvider("anthropic", [])
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(max_total_tokens=7000),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert result.verdict_unavailable_reason == "claim_extraction_failed"
+    assert result.cumulative_budget_exceeded is True
+    assert len(provider.received_requests) == 0
+
+
+def _accepted_empty_extraction_attempt(response_id: str) -> ClaimProcessingAttempt:
+    return ClaimProcessingAttempt(
+        operation="extraction", round_number=1, attempt_number=1,
+        provider="anthropic", requested_model="claude-sonnet-5", model="claude-sonnet-5",
+        target_model_response_id=response_id,
+        transport_status="success", transport_attempts=1,
+        raw_output_text='{"claims": []}', parse_status="accepted",
+        usage=TokenUsage(input_tokens=0, output_tokens=0), cost_usd=0.0, latency_ms=1,
+    )
+
+
+def _failed_extraction_attempt(response_id: str) -> ClaimProcessingAttempt:
+    return ClaimProcessingAttempt(
+        operation="extraction", round_number=1, attempt_number=1,
+        provider="anthropic", requested_model="claude-sonnet-5", model="claude-sonnet-5",
+        target_model_response_id=response_id,
+        transport_status="success", transport_attempts=1,
+        raw_output_text="isto não é JSON", parse_status="malformed",
+        parse_error_message="JSON inválido",
+        usage=TokenUsage(input_tokens=0, output_tokens=0), cost_usd=0.0, latency_ms=1,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Repair (adversarial review, Finding A) -- distinção entre cobertura
+# COMPLETA (no_claims_to_judge genuíno), cobertura INCOMPLETA por falha
+# estrutural (claim_extraction_incomplete), e cobertura incompleta por
+# budget (budget_exhausted_before_judge preservado) -- as 3 nunca devem
+# se confundir.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claim_extraction_incomplete_when_one_accepted_empty_and_one_failed():
+    """Cobertura incompleta (1 aceita-vazia + 1 falhada), budget NÃO
+    excedido -- "claim_extraction_incomplete", NUNCA "no_claims_to_judge"
+    (que mentiria dizendo que a extração rodou completa)."""
+    accepted_empty_response = model_response("openai")
+    failed_response = model_response("anthropic")
+    dr = debate_result(
+        [],
+        [accepted_empty_response, failed_response],
+        claim_processing_attempts=[
+            _accepted_empty_extraction_attempt(accepted_empty_response.id),
+            _failed_extraction_attempt(failed_response.id),
+        ],
+        debate_skipped_reason="insufficient_initial_quorum",
+    )
+    provider = ScriptedProvider("anthropic", [])
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(max_total_tokens=1_000_000),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert result.verdict_unavailable_reason == "claim_extraction_incomplete"
+    assert result.cumulative_budget_exceeded is False
+    assert len(provider.received_requests) == 0
+
+
+@pytest.mark.asyncio
+async def test_incomplete_coverage_from_not_attempted_target_preserves_budget_reason():
+    """Cobertura incompleta por alvo NUNCA tentado (budget) -- quando o
+    Judge também vê budget excedido, o motivo preservado é
+    "budget_exhausted_before_judge", NUNCA "no_claims_to_judge" nem um
+    "claim_extraction_incomplete" genérico que esconderia a causa real
+    (Finding A, requisito 4)."""
+    accepted_empty_response = model_response("openai")
+    never_attempted_response = model_response(
+        "anthropic", usage=TokenUsage(input_tokens=8000, output_tokens=0)
+    )
+    dr = debate_result(
+        [],
+        [accepted_empty_response, never_attempted_response],
+        claim_processing_attempts=[
+            _accepted_empty_extraction_attempt(accepted_empty_response.id),
+            # never_attempted_response: NENHUMA tentativa -- budget parou
+            # o processamento antes de alcançá-la.
+        ],
+        debate_skipped_reason="budget_exhausted_before_critique",
+    )
+    provider = ScriptedProvider("anthropic", [])
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(max_total_tokens=7000),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert result.verdict_unavailable_reason == "budget_exhausted_before_judge"
+    assert result.cumulative_budget_exceeded is True
+    assert len(provider.received_requests) == 0
+
+
+@pytest.mark.asyncio
+async def test_complete_coverage_all_accepted_empty_across_retry_still_reports_no_claims_to_judge():
+    """Retry-safe: um alvo malformado-então-aceito (retry bem-sucedido)
+    conta como coberto -- cobertura permanece COMPLETA, "no_claims_to_judge"
+    continua correto mesmo com uma tentativa rejeitada no meio do
+    caminho."""
+    response = model_response("openai")
+    malformed_then_accepted = [
+        _failed_extraction_attempt(response.id),
+        ClaimProcessingAttempt(
+            operation="extraction", round_number=1, attempt_number=2,
+            provider="anthropic", requested_model="claude-sonnet-5", model="claude-sonnet-5",
+            target_model_response_id=response.id,
+            transport_status="success", transport_attempts=1,
+            raw_output_text='{"claims": []}', parse_status="accepted",
+            usage=TokenUsage(input_tokens=0, output_tokens=0), cost_usd=0.0, latency_ms=1,
+        ),
+    ]
+    dr = debate_result(
+        [],
+        [response],
+        claim_processing_attempts=malformed_then_accepted,
+        debate_skipped_reason="insufficient_initial_quorum",
+    )
+    provider = ScriptedProvider("anthropic", [])
+    judge = SingleJudge({"anthropic": provider})
+
+    result = await judge.judge(
+        dr, _run_config(max_total_tokens=1_000_000),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+    assert result.verdict_unavailable_reason == "no_claims_to_judge"
     assert len(provider.received_requests) == 0
 
 

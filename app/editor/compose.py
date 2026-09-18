@@ -319,6 +319,26 @@ _JUDGE_REASON_LABELS: dict[str, str] = {
     "no_claims_to_judge": "nenhuma informação avaliável foi produzida no debate",
     "judge_transport_failed": "houve uma falha de comunicação durante a avaliação final",
     "judge_output_invalid": "a avaliação final não pôde ser interpretada corretamente",
+    # Repair (Run02 claim-extraction exhaustion) -- deliberadamente
+    # DIFERENTE de "no_claims_to_judge": afirma que os participantes
+    # responderam (nunca que nenhuma informação avaliável existia), e
+    # atribui a ausência de claims à extração ESTRUTURADA ter falhado,
+    # nunca ao conteúdo do debate em si.
+    "claim_extraction_failed": (
+        "os participantes responderam, mas a extração estruturada das "
+        "afirmações feitas por eles falhou"
+    ),
+    # Repair (adversarial review, Finding A) -- distinto de
+    # "claim_extraction_failed" (falha TOTAL da rodada 1): aqui a
+    # extração ocorreu parcialmente (alguma resposta teve extração
+    # aceita em algum ponto do debate), mas cobertura ficou incompleta e
+    # nenhuma claim sobreviveu pra avaliação -- nunca afirma que nenhuma
+    # informação avaliável existia, nunca afirma falha total.
+    "claim_extraction_incomplete": (
+        "algumas respostas dos participantes não puderam ter suas "
+        "afirmações extraídas, e nenhuma afirmação sobrevivente ficou "
+        "disponível para avaliação"
+    ),
 }
 
 # Cross-Channel Reconciliation V1 -- rótulos de RELACIONAMENTO ENTRE
@@ -425,6 +445,67 @@ _CLOSING_LIMITATIONS_CONCISE_HEADER = "Limitações do debate:"
 _DEFAULT_PLAN = EditorPlan(opening_style="direct", closing_style="concise")
 
 
+def _extraction_coverage_note(debate_result: DebateResult) -> str | None:
+    """Repair (Run02 claim-extraction exhaustion) -- disclosure
+    DETERMINÍSTICA de cobertura de extração incompleta: quando ao menos
+    uma resposta bem-sucedida de participante não teve suas claims
+    extraídas (ver `DebateResult.claim_extraction_missing_response_count`),
+    a resposta final NUNCA deve dar a entender cobertura completa. `None`
+    quando a cobertura é completa (`missing_response_count == 0`) -- nenhuma
+    nota é anexada nesse caso, byte-idêntico ao comportamento de antes
+    desta repair.
+
+    Usada pelos 3 caminhos que produzem uma `FinalAnswer` com veredito
+    presente (sucesso da LLM Editor, fallback por budget, fallback por
+    transporte/parse do Editor) E, desde o repair da revisão adversarial
+    (recheck Finding A), TAMBÉM por `Editor._no_verdict_result` -- os
+    dois fatos (Judge sem veredito / cobertura de extração incompleta)
+    são INDEPENDENTES e podem coexistir (ex.: algumas respostas
+    elegíveis falharam extração, outras produziram claims sobreviventes,
+    e o Judge não chegou a avaliá-las por budget/transporte -- motivo
+    TOTALMENTE alheio à extração). A ÚNICA exceção continua sendo o caso
+    de falha TOTAL de extração da rodada 1
+    (`verdict_unavailable_reason=="claim_extraction_failed"`), onde
+    `missing_response_count == eligible_response_count` e
+    `current_claims` é sempre vazio -- `_no_verdict_result` chama esta
+    função ali também, mas ela naturalmente devolve a MESMA disclosure
+    (nunca `None`), consistente com o resto do texto daquele branch."""
+    missing = debate_result.claim_extraction_missing_response_count
+    if missing <= 0:
+        return None
+    eligible = debate_result.claim_extraction_eligible_response_count
+    response_phrase = "resposta bem-sucedida" if eligible == 1 else "respostas bem-sucedidas"
+    verb = "não pôde" if missing == 1 else "não puderam"
+    return (
+        f"Cobertura de extração de afirmações incompleta: {missing} de {eligible} "
+        f"{response_phrase} dos participantes {verb} ter suas afirmações extraídas "
+        "para avaliação -- o resultado acima considera só as afirmações que puderam "
+        "ser extraídas."
+    )
+
+
+def _limitations_with_coverage_note(
+    base_limitations: list[str], coverage_note: str | None
+) -> list[str]:
+    """Repair (adversarial review, Finding B) -- ÚNICO ponto que combina
+    as limitações VERBATIM do Judge (`base_limitations`) com a
+    disclosure DETERMINÍSTICA e APP-AUTORADA de cobertura de extração
+    (`coverage_note`, ver `_extraction_coverage_note`) -- usado pelos 2
+    caminhos que produzem `FinalAnswer` com veredito presente (sucesso
+    da LLM Editor e fallback determinístico a partir do veredito).
+
+    `coverage_note is None` (cobertura completa) devolve
+    `base_limitations` inalterada -- NUNCA adiciona uma entrada vazia/
+    duplicada quando não há nada a dizer sobre cobertura. Quando
+    presente, é SEMPRE a ÚLTIMA entrada da lista -- as limitações do
+    Judge (sobre o CONTEÚDO do debate) vêm primeiro, a limitação
+    OPERACIONAL (sobre o PROCESSAMENTO de extração, nunca escrita/
+    escolhida pela LLM) vem depois, nunca misturada/intercalada."""
+    if coverage_note is None:
+        return base_limitations
+    return base_limitations + [coverage_note]
+
+
 class Editor:
     def __init__(self, providers: dict[str, LLMProvider]):
         self._providers = providers
@@ -482,6 +563,7 @@ class Editor:
                     current_claims,
                     reconciliation,
                     source_results_by_id,
+                    debate_result,
                 ),
                 attempts=[],
                 fallback_reason="budget_exhausted_before_editor",
@@ -566,6 +648,7 @@ class Editor:
                     current_claims,
                     reconciliation,
                     source_results_by_id,
+                    debate_result,
                 ),
                 attempts=attempts,
                 fallback_reason=reason,
@@ -581,10 +664,29 @@ class Editor:
             reconciliation,
             source_results_by_id,
         )
+        # Repair (Run02 claim-extraction exhaustion; Finding B da revisão
+        # adversarial) -- disclosure de cobertura de extração incompleta,
+        # anexada AQUI (fora de `_compose_answer`, que preserva sua
+        # assinatura/comportamento existente byte-a-byte pros
+        # chamadores/testes que já a invocam diretamente) -- ver
+        # `_extraction_coverage_note`. Em DOIS lugares, nunca só um:
+        # `answer_text` (compatibilidade texto-puro/histórico) E
+        # `FinalAnswer.limitations` (canal ESTRUTURADO -- ver docstring
+        # de `FinalAnswer.limitations`, app/editor/result.py -- é o que
+        # `FinalAnswerView` no frontend realmente renderiza quando
+        # `answer_blocks` está presente, já que `answer_blocks` em si
+        # segue uma forma FECHADA que nunca aceita um parágrafo de
+        # fechamento solto, ver
+        # `FinalAnswer._answer_blocks_follow_the_fixed_document_shape`).
+        coverage_note = _extraction_coverage_note(debate_result)
+        if coverage_note is not None:
+            answer_text += f"\n\n{coverage_note}"
         final_answer = FinalAnswer(
             answer_text=answer_text,
             answer_blocks=answer_blocks,
-            limitations=list(verdict.debate_limitations),
+            limitations=_limitations_with_coverage_note(
+                list(verdict.debate_limitations), coverage_note
+            ),
             status="llm_planned",
             editor_model=accepted_response.model,
             editor_model_identity_source=accepted_response.model_identity_source,
@@ -649,14 +751,37 @@ class Editor:
                 f"{reason_text}."
             )
 
+        # Repair (adversarial review, recheck Finding A) -- este caminho
+        # (sem veredito -- budget/transporte/falha do Judge, NUNCA a
+        # falha TOTAL de extração da rodada 1, que já tem sua própria
+        # razão dedicada e nunca chega a ter claims sobreviventes) pode
+        # genuinamente coexistir com cobertura de extração INCOMPLETA:
+        # ex. algumas respostas elegíveis falharam/nunca foram tentadas
+        # na extração, MAS outras produziram claims sobreviventes, e o
+        # Judge não chegou a avaliá-las por um motivo TOTALMENTE
+        # independente (budget esgotado antes do Judge, falha de
+        # transporte do Judge, etc.). Reusa a MESMA derivação/helper
+        # determinística já usada nos caminhos COM veredito
+        # (`_extraction_coverage_note`) -- nunca uma segunda fonte de
+        # verdade nem uma segunda redação. `None` (cobertura completa)
+        # nunca adiciona nada, byte-idêntico ao comportamento anterior.
+        coverage_note = _extraction_coverage_note(debate_result)
+        if coverage_note is not None:
+            answer_text += f"\n\n{coverage_note}"
+
         final_answer = FinalAnswer(
             answer_text=answer_text,
             # `answer_blocks` fica no default (`None`) de propósito -- UI
             # Slice 3 escopa deliberadamente este caminho (sem veredito)
             # fora da representação estruturada; ver docstring de
             # app/editor/answer_blocks.py. O frontend já trata `None`
-            # graciosamente (fallback de divisão de parágrafos).
-            limitations=[f"Avaliação final não realizada: {reason_text}."],
+            # graciosamente (fallback de divisão de parágrafos). A
+            # disclosure de cobertura, mesmo aqui, vai SÓ pra
+            # `answer_text`/`limitations`, nunca pra um bloco -- não há
+            # `answer_blocks` nenhum pra ela entrar.
+            limitations=_limitations_with_coverage_note(
+                [f"Avaliação final não realizada: {reason_text}."], coverage_note
+            ),
             status="deterministic_no_verdict",
         )
 
@@ -682,6 +807,7 @@ class Editor:
         current_claims: list[Claim],
         reconciliation: SourceJudgeReconciliationResult | None,
         source_results_by_id: dict[str, SourceClaimAnalysisResult],
+        debate_result: DebateResult,
     ) -> FinalAnswer:
         """Fallback (transporte/parse/budget) -- usa o MESMO
         `_compose_answer` do caminho de sucesso, com `_DEFAULT_PLAN`,
@@ -691,14 +817,25 @@ class Editor:
         `reconciliation` segue o mesmo princípio (Cross-Channel
         Reconciliation V1): o fallback mostra exatamente o mesmo
         relacionamento entre canais que o caminho de sucesso mostraria
-        pro mesmo veredito."""
+        pro mesmo veredito. `debate_result` (Run02 claim-extraction
+        exhaustion repair; Finding B): mesma disciplina -- a disclosure
+        de cobertura de extração (`_extraction_coverage_note`) nunca
+        pode depender de qual caminho de execução produziu o veredito,
+        e vai tanto em `answer_text` quanto em `limitations` -- ver
+        comentário equivalente no caminho de sucesso, dentro de
+        `Editor.compose()`."""
         answer_text, answer_blocks = _compose_answer(
             question, verdict, current_claims, _DEFAULT_PLAN, reconciliation, source_results_by_id
         )
+        coverage_note = _extraction_coverage_note(debate_result)
+        if coverage_note is not None:
+            answer_text += f"\n\n{coverage_note}"
         return FinalAnswer(
             answer_text=answer_text,
             answer_blocks=answer_blocks,
-            limitations=list(verdict.debate_limitations),
+            limitations=_limitations_with_coverage_note(
+                list(verdict.debate_limitations), coverage_note
+            ),
             status="deterministic_from_verdict",
             based_on_verdict_id=verdict.id,
             judge_confidence=verdict.confidence,

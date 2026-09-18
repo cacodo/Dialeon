@@ -123,6 +123,12 @@ export function formatExactCost(cost: number | null): string {
 const DEBATE_SKIPPED_REASON_LABELS: Record<string, string> = {
   insufficient_initial_quorum: 'Poucas respostas na rodada inicial para justificar uma crítica.',
   budget_exhausted_before_critique: 'Orçamento esgotado antes da rodada de crítica.',
+  // Repair (Run02 claim-extraction exhaustion) -- distinto dos dois
+  // acima: havia respostas substantivas suficientes e orçamento
+  // suficiente, mas a extração estruturada das afirmações falhou pra
+  // TODAS elas.
+  all_initial_extractions_failed:
+    'Os participantes responderam, mas a extração estruturada das afirmações falhou.',
 }
 
 export function formatDebateOutcome(outcome: DebateOutcome): string | null {
@@ -135,6 +141,24 @@ const JUDGE_UNAVAILABLE_REASON_LABELS: Record<string, string> = {
   no_claims_to_judge: 'Não havia afirmações para avaliar.',
   judge_transport_failed: 'Falha de comunicação com o modelo juiz.',
   judge_output_invalid: 'A resposta do juiz não pôde ser interpretada.',
+  // Repair (Run02 claim-extraction exhaustion) -- distinto de
+  // "no_claims_to_judge": nunca implica que nenhuma informação
+  // avaliável existia -- os participantes responderam, só a extração
+  // estruturada falhou.
+  claim_extraction_failed:
+    'Os participantes responderam, mas a extração estruturada das afirmações falhou.',
+  // Repair (adversarial review, recheck Finding B) -- distinto TANTO de
+  // "claim_extraction_failed" (falha TOTAL) QUANTO de "no_claims_to_judge"
+  // (extração completa e genuinamente vazia): aqui a extração
+  // ESTRUTURADA ficou incompleta -- algumas respostas de participantes
+  // não puderam ser extraídas -- sem nenhuma claim sobrevivente pra
+  // avaliação. Redação deliberadamente PRECISA: nunca afirma que os
+  // participantes falharam (eles responderam normalmente), nunca afirma
+  // ausência de informação avaliável, nunca sugere discordância do
+  // Judge, nunca generaliza pra "falha do provider".
+  claim_extraction_incomplete:
+    'A extração estruturada das afirmações ficou incompleta -- algumas respostas dos ' +
+    'participantes não puderam ser extraídas.',
 }
 
 export function formatJudgeOutcome(outcome: JudgeOutcome): string | null {

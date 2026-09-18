@@ -58,6 +58,19 @@ class AnthropicProvider(LLMProvider):
             kwargs["system"] = request.system_prompt
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
+        if request.minimal_reasoning:
+            # Repair (Run02 claim-extraction exhaustion) -- único
+            # mapeamento concreto de `CompletionRequest.minimal_reasoning`
+            # neste repositório. O SDK instalado (anthropic>=1.5) expõe
+            # `thinking={"type": "disabled"}` como um valor de request
+            # genuinamente suportado (distinto de simplesmente omitir
+            # `thinking`, que alguns modelos desta geração podem tratar
+            # como "adaptive" por padrão em vez de "sem raciocínio
+            # nenhum" -- ver `ThinkingConfigAdaptiveParam` no SDK) --
+            # "disabled" é literalmente possível aqui, então usamos o
+            # valor exato, nunca uma aproximação "minimal" quando
+            # "disabled" já é suportado.
+            kwargs["thinking"] = {"type": "disabled"}
 
         try:
             response = await self._client.messages.create(**kwargs)

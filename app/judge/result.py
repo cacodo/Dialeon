@@ -53,6 +53,33 @@ class JudgeResult(BaseModel):
             # "judge_transport_failed" porque nem toda falha de
             # transporte é truncamento.
             "judge_output_truncated",
+            # Repair (Run02 claim-extraction exhaustion) -- distinto de
+            # "no_claims_to_judge": aqui existiam respostas substantivas
+            # de participantes, mas a extração ESTRUTURADA de claims
+            # falhou pra TODAS elas (ver
+            # `DebateResult.debate_skipped_reason=="all_initial_extractions_failed"`,
+            # app/debate/debate_engine.py) -- "no_claims_to_judge" continua
+            # reservado exclusivamente pro caso em que a extração
+            # funcionou e genuinamente não havia nada extraível.
+            # `SingleJudge.judge()` NUNCA chama o provider de Judge nesse
+            # caso -- ver short-circuit lá.
+            "claim_extraction_failed",
+            # Repair (adversarial review, Finding A) -- distinto TANTO de
+            # "no_claims_to_judge" QUANTO de "claim_extraction_failed":
+            # aqui a cobertura de extração é INCOMPLETA (ver
+            # `DebateResult.claim_extraction_coverage_is_complete`,
+            # app/debate/claim_extraction_coverage.py -- ao menos um alvo
+            # elegível falhou ou nunca foi tentado), mas NÃO é o caso de
+            # falha TOTAL da rodada 1 que já teria sido short-circuitado
+            # em `DebateEngine.run()` (esse continua
+            # "claim_extraction_failed", sem nem chegar até aqui como um
+            # `current_claims` vazio comum). Cobre, por exemplo: extração
+            # parcialmente aceita na rodada 1 seguida de extração da
+            # crítica incompleta, deixando `current_claims` vazio sem que
+            # a rodada 1 tenha falhado totalmente. `SingleJudge.judge()`
+            # NUNCA chama o provider de Judge nesse caso -- mesma
+            # disciplina de "no_claims_to_judge"/"claim_extraction_failed".
+            "claim_extraction_incomplete",
         ]
         | None
     ) = None

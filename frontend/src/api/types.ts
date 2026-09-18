@@ -465,6 +465,14 @@ export type RunResponse =
 export interface DebateOutcome {
   skipped_reason: string | null
   cumulative_budget_exceeded: boolean
+  // Repair (Run02 claim-extraction exhaustion) -- espelham os
+  // computed_field homônimos de DebateResult (backend): quantas
+  // respostas bem-sucedidas de participante eram elegíveis pra extração
+  // de claims, e quantas delas nunca tiveram uma tentativa de extração
+  // ACEITA -- já derivados no backend, nunca reconstruídos aqui a
+  // partir de claim_processing_attempts brutos.
+  claim_extraction_eligible_response_count: number
+  claim_extraction_missing_response_count: number
 }
 
 export interface JudgeOutcome {

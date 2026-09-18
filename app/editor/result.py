@@ -77,10 +77,27 @@ class FinalAnswer(BaseModel):
     # passado (lista mutável do chamador, ou lista reconstruída de JSON
     # persistido), fecham essa lacuna sem cópia defensiva manual.
     answer_blocks: tuple[AnswerBlock, ...] | None = None
-    # Sempre cópia VERBATIM de JudgeVerdict.debate_limitations quando há
-    # veredito — o Editor nunca reescreve/resume/escolhe limitações
-    # (ver app/editor/compose.py). Sem veredito, é texto app-autorado
-    # explicando por que a avaliação não pôde ser concluída.
+    # Quando há veredito: SEMPRE começa com cópia VERBATIM de
+    # JudgeVerdict.debate_limitations, na mesma ordem -- o Editor nunca
+    # reescreve/resume/escolhe o CONTEÚDO dessas entradas (ver
+    # app/editor/compose.py). Repair (Run02 claim-extraction exhaustion;
+    # Finding B da revisão adversarial) -- deixou de ser EXCLUSIVAMENTE
+    # essa cópia verbatim: quando a cobertura de extração de claims é
+    # INCOMPLETA (`DebateResult.claim_extraction_missing_response_count
+    # > 0`, ver app/debate/claim_extraction_coverage.py), UMA entrada
+    # adicional, determinística e APP-AUTORADA (nunca escrita/escolhida
+    # pela LLM Editor -- `_extraction_coverage_note`, app/editor/compose.py)
+    # é anexada ao FINAL da lista, depois de toda limitação do Judge.
+    # Esta é uma limitação OPERACIONAL (sobre o PROCESSAMENTO de
+    # extração ter sido incompleto), nunca uma limitação EPISTÊMICA
+    # sobre o conteúdo do debate -- as duas coexistem aqui porque ambas
+    # são limitações genuínas da resposta final, mas têm proveniências
+    # (Judge vs. aplicação) e razões completamente distintas. Omitida
+    # (nenhuma entrada extra) quando a cobertura é completa -- nunca
+    # duplicada/vazia. Sem veredito, a lista inteira é texto app-autorado
+    # explicando por que a avaliação não pôde ser concluída (ver
+    # `Editor._no_verdict_result`) -- nunca uma cópia do Judge, que
+    # nesse caminho nunca chegou a produzir veredito nenhum.
     limitations: list[str] = Field(default_factory=list)
     # Etapa 17B -- "llm_planned" é o status produzido por runs NOVOS
     # quando uma LLM escolhe com sucesso um EditorPlan (opening_style/

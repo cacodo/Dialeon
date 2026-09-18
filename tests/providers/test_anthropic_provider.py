@@ -40,6 +40,19 @@ class _FakeTextBlock:
         self.text = text
 
 
+class _FakeThinkingBlock:
+    """Repair (Run02 claim-extraction exhaustion) -- bloco de tipo
+    diferente de "text" (ex.: extended thinking), SEM atributo `.text`
+    -- prova que `_parse_response` ignora blocos não-text ao montar
+    `text`, mesmo quando eles aparecem MISTURADOS com blocos de texto
+    reais na mesma resposta."""
+
+    type = "thinking"
+
+    def __init__(self, thinking):
+        self.thinking = thinking
+
+
 class _FakeUsage:
     def __init__(self, input_tokens, output_tokens):
         self.input_tokens = input_tokens
@@ -116,6 +129,104 @@ async def test_multiple_text_blocks_are_concatenated():
     result = await provider.complete(_request())
 
     assert result.text == "Parte 1. Parte 2."
+
+
+@pytest.mark.asyncio
+async def test_mixed_non_text_and_text_blocks_extracts_only_text_and_preserves_usage():
+    """Repair (Run02 claim-extraction exhaustion) -- G/"Anthropic mixed
+    non-text + text behavior": um bloco não-text (ex.: thinking)
+    misturado com um bloco de texto real precisa ser ignorado na
+    extração de `text` (só o bloco de texto entra), mas usage/model/
+    finish_reason continuam corretamente contabilizados a partir do
+    objeto de resposta real -- nada é perdido/subestimado por causa do
+    bloco extra."""
+    provider = _provider()
+    provider._client.messages.create = AsyncMock(
+        return_value=_FakeResponse(
+            [_FakeThinkingBlock("raciocínio interno, nunca visível"), _FakeTextBlock("Resposta final.")],
+            input_tokens=50,
+            output_tokens=200,
+            stop_reason="end_turn",
+        )
+    )
+
+    result = await provider.complete(_request())
+
+    assert result.status == "success"
+    assert result.text == "Resposta final."
+    assert result.usage.input_tokens == 50
+    assert result.usage.output_tokens == 200
+    assert result.provider_finish_reason == "end_turn"
+
+
+@pytest.mark.asyncio
+async def test_non_text_only_blocks_with_max_tokens_is_malformed_but_preserves_usage():
+    """Repair (Run02 claim-extraction exhaustion) -- G/"não-text-only +
+    max_tokens preserva usage/cost/finish_reason": um output composto
+    INTEIRAMENTE de blocos não-text (ex.: só thinking, sem nenhum texto
+    visível ainda) cortado por `max_tokens` precisa virar
+    `status="error"`/`malformed_response`, mas SEM descartar
+    usage/model/finish_reason já observados -- é exatamente a SHAPE real
+    reportada em Run02 (chamadas atingindo o teto de output sem JSON
+    visível)."""
+    provider = _provider(max_retries=0)
+    provider._client.messages.create = AsyncMock(
+        return_value=_FakeResponse(
+            [_FakeThinkingBlock("raciocínio que consumiu o teto inteiro")],
+            model="claude-sonnet-5-20260115",
+            input_tokens=80,
+            output_tokens=4096,
+            stop_reason="max_tokens",
+        )
+    )
+
+    result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert result.error.type.value == "malformed_response"
+    assert result.model == "claude-sonnet-5-20260115"
+    assert result.usage.input_tokens == 80
+    assert result.usage.output_tokens == 4096
+    assert result.provider_finish_reason == "max_tokens"
+
+
+@pytest.mark.asyncio
+async def test_minimal_reasoning_maps_to_thinking_disabled():
+    """Repair (Run02 claim-extraction exhaustion) -- único mapeamento
+    concreto de `CompletionRequest.minimal_reasoning` neste
+    repositório: `thinking={"type": "disabled"}`, o valor exato suportado
+    pelo SDK instalado (nunca uma aproximação "minimal" quando
+    "disabled" já é suportado)."""
+    provider = _provider()
+    provider._client.messages.create = AsyncMock(
+        return_value=_FakeResponse([_FakeTextBlock("ok")])
+    )
+
+    request = CompletionRequest(
+        messages=[Message(role="user", content="pergunta")], minimal_reasoning=True
+    )
+    await provider.complete(request)
+
+    call_kwargs = provider._client.messages.create.call_args.kwargs
+    assert call_kwargs["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_default_request_never_sends_thinking_parameter():
+    """Repair (Run02 claim-extraction exhaustion) -- `minimal_reasoning`
+    default (`False`, toda chamada existente antes deste campo existir)
+    NUNCA envia `thinking` ao SDK -- comportamento byte-idêntico ao de
+    antes deste repair pra participante/crítica/agrupamento/
+    reconciliação/Judge/Editor/SourceAnalyzer."""
+    provider = _provider()
+    provider._client.messages.create = AsyncMock(
+        return_value=_FakeResponse([_FakeTextBlock("ok")])
+    )
+
+    await provider.complete(_request())
+
+    call_kwargs = provider._client.messages.create.call_args.kwargs
+    assert "thinking" not in call_kwargs
 
 
 @pytest.mark.asyncio

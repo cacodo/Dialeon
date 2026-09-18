@@ -39,6 +39,16 @@ como já seguia antes desta etapa)."""
 from __future__ import annotations
 
 from app.debate.claim_extraction import extract_claims, group_claims, reconcile_claims
+from app.debate.claim_extraction_coverage import (
+    CRITIQUE_ROUND_NUMBER as _CRITIQUE_ROUND_NUMBER,
+)
+from app.debate.claim_extraction_coverage import (
+    INITIAL_ROUND_NUMBER as _INITIAL_ROUND_NUMBER,
+)
+from app.debate.claim_extraction_coverage import (
+    compute_claim_extraction_targets,
+    summarize_claim_extraction_coverage,
+)
 from app.debate.claims import get_current_claims
 from app.debate.context import CRITIQUE_CONTRACT_VERSION, build_critique_requests
 from app.debate.numeric_verification import DeterministicVerificationAttempt
@@ -51,8 +61,13 @@ from app.orchestrator.orchestrator import Orchestrator
 from app.orchestrator.result import InitialResponsesResult, RoundResult
 from app.providers.base import LLMProvider
 
-_INITIAL_ROUND_NUMBER = 1
-_CRITIQUE_ROUND_NUMBER = 2
+# Repair (adversarial review, Finding A) -- `_INITIAL_ROUND_NUMBER`/
+# `_CRITIQUE_ROUND_NUMBER` deixaram de ser definidos aqui: reimportados
+# (com alias, pra preservar todo uso existente destes 2 nomes neste
+# módulo byte-a-byte) de `app/debate/claim_extraction_coverage.py` -- a
+# ÚNICA fonte destas 2 constantes agora, compartilhada com
+# `DebateResult`/`SingleJudge`, nunca duas definições independentes que
+# poderiam divergir.
 
 
 class DebateEngine:
@@ -120,6 +135,52 @@ class DebateEngine:
                 numeric_verification_attempts=all_verifications,
                 claim_processor_provider=run_config.claim_processor_provider,
                 debate_skipped_reason="insufficient_initial_quorum",
+                cumulative_budget_exceeded=False,
+            )
+
+        # --- Falha ESTRUTURAL total de extração na rodada 1: pula crítica/Judge/Editor ---
+        # Repair (Run02 claim-extraction exhaustion; Finding A da revisão
+        # adversarial) -- roda DEPOIS dos dois gates acima de propósito:
+        # só se aplica quando já sabemos que havia respostas substantivas
+        # suficientes (quórum OK) e budget suficiente (OK) pra a crítica
+        # genuinamente ter acontecido -- este é o único caso onde a razão
+        # de pular continua sendo "as respostas dos participantes
+        # existem, mas o PROCESSAMENTO ESTRUTURAL delas falhou", nunca
+        # confundido com "não havia participante(s)/budget suficiente(s)".
+        #
+        # Derivação CENTRALIZADA (app/debate/claim_extraction_coverage.py)
+        # -- nunca um `any(...)` local reimplementando o mesmo
+        # set-difference que `DebateResult`/`SingleJudge` também precisam
+        # (Finding A: duas implementações independentes é exatamente o
+        # bug que permitia a falha ficar mascarada). A checagem é
+        # "nenhum alvo elegível da rodada 1 teve extração aceita" --
+        # `accepted_count == 0` -- equivalente a "toda `successful_round1`
+        # falhou extração" NESTE ponto específico (o gate de budget acima
+        # já garante `not_attempted_count == 0` aqui: se budget tivesse
+        # impedido alguma extração de sequer ser tentada, o gate anterior
+        # já teria retornado `budget_exhausted_before_critique` primeiro
+        # -- budget só cresce, nunca diminui, então um corte no meio da
+        # rodada sempre deixa o total cumulativo pós-rodada também
+        # excedido). `successful_round1` é sempre não-vazia neste ponto
+        # (Orchestrator já garantiu `successful_count >=
+        # quorum.min_to_return >= 1`, e o gate de quórum acima já
+        # retornou se `insufficient_data_for_consensus`).
+        round1_coverage = summarize_claim_extraction_coverage(
+            compute_claim_extraction_targets(
+                [(_INITIAL_ROUND_NUMBER, successful_round1)], round1_attempts
+            )
+        )
+        if round1_coverage.eligible_count > 0 and round1_coverage.accepted_count == 0:
+            return DebateResult(
+                initial_result=initial_result,
+                critique_round=None,
+                claims=all_claims,
+                claim_processing_attempts=all_attempts,
+                numeric_verification_attempts=all_verifications,
+                claim_processor_provider=run_config.claim_processor_provider,
+                debate_skipped_reason="all_initial_extractions_failed",
+                # Budget não está esgotado aqui -- o gate acima já teria
+                # retornado se estivesse.
                 cumulative_budget_exceeded=False,
             )
 

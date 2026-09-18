@@ -35,7 +35,32 @@ permanece o mesmo).
 
 Os valores golden abaixo foram gerados UMA vez, rodando os builders de
 produção reais com os inputs representativos fixos definidos em cada
-teste (nunca inventados/calculados à mão)."""
+teste (nunca inventados/calculados à mão).
+
+Repair (Run02 claim-extraction exhaustion; Finding C da revisão
+adversarial) -- exceção documentada à regra acima: `CompletionRequest`
+ganhou um campo NOVO (`minimal_reasoning`, ver
+app/models/provider_models.py) que `_canonical_completion_request_payload`
+(app/models/request_provenance.py) agora inclui no digest de TODA
+operação -- inclusive as 7 que nunca setam esse campo (sempre `False`
+pra elas). Como isso é uma mudança na FORMA de canonicalização (não no
+CONTEÚDO semântico de 7 das 8 operações), o prefixo do digest avançou
+de `completion-request-sha256-v1:` pra `completion-request-sha256-v2:`
+(ver `REQUEST_DIGEST_PREFIX_V1`/`REQUEST_DIGEST_PREFIX_V2`,
+app/models/request_provenance.py) -- v1 preservado EXCLUSIVAMENTE como
+formato histórico reconhecido na validação/leitura (nenhuma linha já
+persistida precisa de migração), nunca mais recomputado. Isso muda os 8
+goldens abaixo SIMULTANEAMENTE (todos passam a usar o prefixo v2), mesmo
+que só `claim_extraction_v1` -> `claim_extraction_v2` (a `contract_version`
+da OPERAÇÃO, um conceito inteiramente separado do prefixo de digest)
+tenha avançado: as outras 7 constantes de `contract_version` NÃO
+avançaram, porque seus requests continuam semanticamente idênticos
+(prompt/mensagens/model/max_tokens/temperature byte-a-byte iguais) -- só
+a FORMA de canonicalização evoluiu, uma consequência estrutural de
+adicionar um campo ao schema compartilhado, nunca uma mudança de
+contrato dessas 7 operações. Ver docstring de
+`_canonical_completion_request_payload` pra o mesmo raciocínio do lado
+da implementação."""
 
 from __future__ import annotations
 
@@ -80,8 +105,8 @@ def test_initial_response_contract_version_and_golden_digest():
     )
 
     assert compute_request_digest(request) == (
-        "completion-request-sha256-v1:"
-        "15c2bf72c2afb9f4104898a5d531cd3d5878a4721df7c9f3c21c1083ddd0e920"
+        "completion-request-sha256-v2:"
+        "813facc85b51d8af9e5d3b4e0f115aa52b23c7ffdd32e9b18aec9df27c2d9148"
     )
 
 
@@ -102,18 +127,18 @@ def test_critique_contract_version_and_golden_digest():
     )
 
     assert compute_request_digest(requests["openai"]) == (
-        "completion-request-sha256-v1:"
-        "aafcf11ae424bed25b357291535ba82d3f21efd4c77aaa66ec3b0095847c19b3"
+        "completion-request-sha256-v2:"
+        "c5f0d44c71ccc6fc5064814adf103d99a5104d854c57fc54efa0dabc58baf830"
     )
 
 
 # ---------------------------------------------------------------------------
-# 3. claim_extraction_v1
+# 3. claim_extraction_v2
 # ---------------------------------------------------------------------------
 
 
 def test_claim_extraction_contract_version_and_golden_digest():
-    assert CLAIM_EXTRACTION_CONTRACT_VERSION == "claim_extraction_v1"
+    assert CLAIM_EXTRACTION_CONTRACT_VERSION == "claim_extraction_v2"
 
     response = model_response(
         "openai", id="mr-fixed-1", response_text="Brasília é a capital do Brasil."
@@ -121,8 +146,8 @@ def test_claim_extraction_contract_version_and_golden_digest():
     request = _build_extraction_request(response, None, 1024)
 
     assert compute_request_digest(request) == (
-        "completion-request-sha256-v1:"
-        "9eb9da22ff9aecf9995cb82a7a16621e4bc2b88afb006f168821255a6178c6d3"
+        "completion-request-sha256-v2:"
+        "3e6362ee2cfb1ac2dc6b9912071d5bf0629f9b6b852c031a7351222d743c6d0e"
     )
 
 
@@ -139,8 +164,8 @@ def test_claim_grouping_contract_version_and_golden_digest():
     request = _build_grouping_request([c1, c2], 1024)
 
     assert compute_request_digest(request) == (
-        "completion-request-sha256-v1:"
-        "87ab1588b68e3b0efa882e891eafcc74db2d8cf9bc77d03c61b53954d9d7320e"
+        "completion-request-sha256-v2:"
+        "35b8b9aff06e4ca98caebb6c9a6dca4a8d1e04b5837d5b0ce2f4b70775d65bc7"
     )
 
 
@@ -176,8 +201,8 @@ def test_cross_round_reconciliation_contract_version_and_golden_digest():
     request = _build_reconciliation_request(round1, round2, 1024)
 
     assert compute_request_digest(request) == (
-        "completion-request-sha256-v1:"
-        "020dd9bd14f971109213364430fff2b756deff840b43f935b078ddcfcfef4da9"
+        "completion-request-sha256-v2:"
+        "84a708fdab3129f357a67b3563b4b366d5e44f517c56869fe11b866b4e6b6dcb"
     )
 
 
@@ -195,8 +220,8 @@ def test_source_analysis_contract_version_and_golden_digest():
     )
 
     assert compute_request_digest(request) == (
-        "completion-request-sha256-v1:"
-        "92f999cb41d94eee41e7b6ba455de7d796018d93c43e47cabe8742fbefba2a76"
+        "completion-request-sha256-v2:"
+        "70fb04c9a0847261dedb3cd4747f7a334970f456a2cecb12604ff2c006307afc"
     )
 
 
@@ -219,8 +244,8 @@ def test_judge_contract_version_and_golden_digest():
     )
 
     assert compute_request_digest(request) == (
-        "completion-request-sha256-v1:"
-        "c3d7349da1442809e09a3176a464792b89a20e98e3ac6b121f89052cd07e60df"
+        "completion-request-sha256-v2:"
+        "feac2b539e5c4d30af81fac9cf5d25ea2f7f924c875ec318bfb341ad21fb2497"
     )
 
 
@@ -247,8 +272,8 @@ def test_editor_contract_version_and_golden_digest():
     request = build_editor_request("Qual a capital do Brasil?", verdict, 1024)
 
     assert compute_request_digest(request) == (
-        "completion-request-sha256-v1:"
-        "b73c0be0a7e0040d680d5e28bc2ccb0dc0117340ea381fbcb2fef8c57e575281"
+        "completion-request-sha256-v2:"
+        "ea6788cb44925c66430dd4f477c80743c6ce1ec7f7e5ee213eb93790faae6875"
     )
 
 
