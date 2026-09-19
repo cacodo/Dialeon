@@ -45,6 +45,7 @@ from app.debate.schemas import (
     ClaimExtractionOutput,
     ClaimGroupingOutput,
     ClaimGroupProposal,
+    RawClaimGroupingOutput,
 )
 from app.models.domain import Claim, ClaimSupport, ModelResponse
 from app.models.provider_models import CompletionRequest, Message, ProviderResponse
@@ -90,8 +91,19 @@ _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 # (`RequestProvenance.contract_version` é uma string livre; nada é
 # reescrito). Reconciliação NÃO avança: continua
 # `cross_round_claim_reconciliation_v1`, `minimal_reasoning=False`.
+#
+# Grouping v2 -> v3 (grouping v2 live replay): DUAS mudanças no contrato
+# efetivo da operação -- (1) o prompt de agrupamento ganhou uma
+# clarificação curta (mesma proposição material, não só mesmo tema;
+# canonical_text só com significado compartilhado; sem grupo unitário) e
+# (2) a ACEITAÇÃO passou a normalizar grupos unitários deterministicamente
+# (`_parse_validate_and_normalize_grouping`, `parse_status=
+# "accepted_normalized"`) em vez de rejeitá-los. `minimal_reasoning=True`,
+# `max_tokens` e transporte permanecem. Linhas históricas
+# `claim_grouping_v1`/`v2` seguem legíveis e inalteradas. Reconciliação
+# permanece `cross_round_claim_reconciliation_v1` (validador estrito).
 CLAIM_EXTRACTION_CONTRACT_VERSION = "claim_extraction_v2"
-CLAIM_GROUPING_CONTRACT_VERSION = "claim_grouping_v2"
+CLAIM_GROUPING_CONTRACT_VERSION = "claim_grouping_v3"
 CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION = "cross_round_claim_reconciliation_v1"
 
 
@@ -723,7 +735,15 @@ async def _run_structured_grouping_call(
     `_parse_and_validate_grouping` internamente E adiciona a restrição
     cross-side -- a validação comum nunca é duplicada/reimplementada,
     só estendida por composição."""
-    validate = validate or _parse_and_validate_grouping
+    # claim_grouping_v3 -- normalização de grupos unitários é EXCLUSIVA da
+    # operação "grouping" (derivada de `operation`, nunca de um flag que um
+    # chamador pudesse ligar por engano): reconciliação continua com o
+    # validador estrito, onde grupo unitário segue rejeitado.
+    normalizes_singleton_groups = operation == "grouping"
+    if normalizes_singleton_groups and validate is not None:
+        raise ValueError("operation='grouping' não aceita um `validate` customizado")
+    if not normalizes_singleton_groups:
+        validate = validate or _parse_and_validate_grouping
     attempts: list[ClaimProcessingAttempt] = []
     parsed: ClaimGroupingOutput | None = None
 
@@ -752,8 +772,14 @@ async def _run_structured_grouping_call(
             )
             break
 
+        was_normalized = False
         try:
-            parsed = validate(provider_response.text, raw_ids)
+            if normalizes_singleton_groups:
+                parsed, was_normalized = _parse_validate_and_normalize_grouping(
+                    provider_response.text, raw_ids
+                )
+            else:
+                parsed = validate(provider_response.text, raw_ids)
         except MalformedClaimOutputError as exc:
             attempts.append(
                 _parse_rejected_attempt(
@@ -795,6 +821,10 @@ async def _run_structured_grouping_call(
                 provider_response,
                 target_claim_ids=sorted(raw_ids),
                 request_provenance=request_provenance,
+                # `accepted_normalized` SÓ quando a normalização de grupo
+                # unitário foi de fato necessária; o `raw_output_text`
+                # persistido continua a resposta ORIGINAL do provider.
+                parse_status="accepted_normalized" if was_normalized else "accepted",
             )
         )
         break
@@ -878,8 +908,23 @@ def _compute_status(supports: list[ClaimSupport], total_models_in_round: int) ->
 
 
 def _parse_and_validate_grouping(raw_text: str, raw_claim_ids: set[str]) -> ClaimGroupingOutput:
+    """Validador ESTRITO -- grupo unitário é rejeitado pelo schema
+    (`ClaimGroupProposal.member_claim_ids`, min 2). Usado por
+    `reconcile_claims` (via `_make_cross_side_reconciliation_validator`),
+    que NÃO tolera grupos unitários. O agrupamento intra-round usa
+    `_parse_validate_and_normalize_grouping` (abaixo)."""
     parsed = _parse_json_schema(raw_text, ClaimGroupingOutput, "agrupamento")
+    _validate_grouping_coverage(parsed, raw_claim_ids)
+    return parsed
 
+
+def _validate_grouping_coverage(parsed: ClaimGroupingOutput, raw_claim_ids: set[str]) -> None:
+    """Cobertura EXATA: todo id de entrada aparece exatamente uma vez em
+    grupos + ungrouped; nenhum desconhecido, nenhum duplicado, nenhum
+    id simultâneo em grupo e ungrouped. ÚNICA implementação -- usada pelo
+    validador estrito E pelo caminho com normalização de grupos unitários
+    (que a aplica à partição EFETIVA, então a normalização nunca esconde
+    id faltando/extra/duplicado)."""
     seen: set[str] = set()
     for group in parsed.groups:
         for claim_id in group.member_claim_ids:
@@ -909,7 +954,58 @@ def _parse_and_validate_grouping(raw_text: str, raw_claim_ids: set[str]) -> Clai
         raise InconsistentClaimReferenceError(
             f"agrupamento não cobriu todas as claims brutas — faltando: {sorted(missing)}"
         )
-    return parsed
+
+
+def _parse_validate_and_normalize_grouping(
+    raw_text: str, raw_claim_ids: set[str]
+) -> tuple[ClaimGroupingOutput, bool]:
+    """claim_grouping_v3 -- validação do agrupamento INTRA-ROUND com a
+    ÚNICA tolerância nova: grupo unitário.
+
+    Ordem (fail-closed em cada etapa, nada é "consertado" em silêncio):
+      1. JSON sintaticamente válido e fechado + forma suportada
+         (`RawClaimGroupingOutput`: chave extra/tipo errado/grupo vazio/
+         truncamento -> `MalformedClaimOutputError`, como antes);
+      2. normalização determinística: cada grupo de 1 membro vira um id
+         em `ungrouped_claim_ids` (ids ungrouped originais primeiro, depois
+         os unitários na ordem da resposta); o `canonical_text` do grupo
+         unitário é DESCARTADO -- nenhuma claim canônica é criada dele;
+      3. grupos restantes revalidados pelo schema APLICADO
+         (`ClaimGroupProposal`, min 2 -- invariante NÃO enfraquecida);
+      4. cobertura EXATA da partição EFETIVA (`_validate_grouping_coverage`):
+         id faltando/extra/duplicado, ou id em grupo E ungrouped -> rejeitado
+         (`InconsistentClaimReferenceError`), inclusive quando o defeito
+         envolve um grupo unitário.
+
+    Devolve `(saída efetiva, normalizou?)`. Nunca usado por reconciliação."""
+    raw = _parse_json_schema(raw_text, RawClaimGroupingOutput, "agrupamento")
+
+    applied_groups: list[dict] = []
+    ungrouped: list[str] = list(raw.ungrouped_claim_ids)
+    normalized = False
+    for group in raw.groups:
+        if len(group.member_claim_ids) == 1:
+            ungrouped.append(group.member_claim_ids[0])
+            normalized = True
+        else:
+            applied_groups.append(group.model_dump())
+
+    parsed = _validate_effective_grouping_shape(applied_groups, ungrouped)
+    _validate_grouping_coverage(parsed, raw_claim_ids)
+    return parsed, normalized
+
+
+def _validate_effective_grouping_shape(
+    applied_groups: list[dict], ungrouped: list[str]
+) -> ClaimGroupingOutput:
+    try:
+        return ClaimGroupingOutput.model_validate(
+            {"groups": applied_groups, "ungrouped_claim_ids": ungrouped}
+        )
+    except ValidationError as exc:
+        raise MalformedClaimOutputError(
+            f"agrupamento normalizado não bate com o schema aplicado: {exc}"
+        ) from exc
 
 
 def _make_cross_side_reconciliation_validator(
@@ -965,7 +1061,15 @@ def _build_grouping_request(
         "Você recebe uma lista de afirmações (claims) brutas extraídas de "
         "várias respostas de um debate entre modelos de IA. Identifique "
         "quais são semanticamente equivalentes (dizem a mesma coisa com "
-        "palavras diferentes) e agrupe-as. Responda SOMENTE com um JSON no "
+        "palavras diferentes) e agrupe-as. Agrupe SOMENTE claims que "
+        "expressam a mesma proposição material: mesmo tema, raciocínio "
+        "parecido ou conclusão semelhante NÃO bastam. Mantenha separadas "
+        "claims que diferem materialmente em escopo, polaridade/negação, "
+        "incerteza/modalidade, condições/exceções, sentido numérico ou "
+        "causalidade. O canonical_text só pode conter o significado "
+        "compartilhado por TODOS os membros do grupo — nunca uma "
+        "condição, exceção ou qualificador presente em apenas alguns. "
+        "Responda SOMENTE com um JSON no "
         'formato {"groups": [{"member_claim_ids": ["id1","id2"], '
         '"canonical_text": "..."}], "ungrouped_claim_ids": ["id3"]}, sem '
         "texto fora do JSON. Cada grupo precisa ter no mínimo 2 ids — uma "
@@ -1175,6 +1279,7 @@ def _accepted_attempt(
     target_model_response_id: str | None = None,
     target_claim_ids: list[str] | None = None,
     request_provenance: RequestProvenance | None = None,
+    parse_status: Literal["accepted", "accepted_normalized"] = "accepted",
 ) -> ClaimProcessingAttempt:
     return ClaimProcessingAttempt(
         operation=operation,
@@ -1190,7 +1295,7 @@ def _accepted_attempt(
         transport_error=None,
         transport_attempts=provider_response.attempts,
         raw_output_text=provider_response.text,
-        parse_status="accepted",
+        parse_status=parse_status,
         parse_error_message=None,
         usage=provider_response.usage,
         cost_usd=provider_response.cost_usd,

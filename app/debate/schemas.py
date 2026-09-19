@@ -89,6 +89,39 @@ class ClaimGroupProposal(BaseModel):
     canonical_text: str = Field(min_length=1)
 
 
+class RawClaimGroupProposal(BaseModel):
+    """FRONTEIRA de parse EXCLUSIVA do agrupamento intra-round
+    (claim_grouping_v3) -- NUNCA o schema APLICADO. Idêntica a
+    `ClaimGroupProposal` exceto por `member_claim_ids` aceitar 1 membro:
+    um "grupo" de 1 id é a representação errada, mas inequívoca, de
+    "esta claim não tem equivalente" (replay v2 real: 6 claims postas em
+    grupos unitários com `ungrouped_claim_ids` vazio). O
+    `normalize`-and-validate de `claim_extraction.py` converte cada
+    grupo unitário em id ungrouped ANTES de qualquer claim canônica
+    existir; o `canonical_text` de um grupo unitário é descartado. Grupo
+    com 0 membros continua rejeitado (`min_length=1`)."""
+
+    model_config = _IO_CONFIG
+
+    member_claim_ids: list[str] = Field(min_length=1)
+    canonical_text: str = Field(min_length=1)
+
+
+class RawClaimGroupingOutput(BaseModel):
+    """Forma bruta de uma resposta de agrupamento intra-round, ANTES da
+    normalização de grupos unitários -- ver `RawClaimGroupProposal`.
+    Mesmos campos/config de `ClaimGroupingOutput`, então qualquer outro
+    formato inválido (chave extra, tipo errado, JSON truncado) continua
+    rejeitado exatamente como antes. Só o agrupamento intra-round usa
+    isto; reconciliação continua parseando `ClaimGroupingOutput`
+    diretamente (grupo unitário segue rejeitado por contrato)."""
+
+    model_config = _IO_CONFIG
+
+    groups: list[RawClaimGroupProposal] = Field(default_factory=list)
+    ungrouped_claim_ids: list[str] = Field(default_factory=list)
+
+
 class ClaimGroupingOutput(BaseModel):
     """Resultado de uma chamada de agrupamento. A aplicação valida, depois
     de parsear isto, que a união de `groups` + `ungrouped_claim_ids` é

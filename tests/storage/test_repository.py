@@ -3030,12 +3030,13 @@ async def test_historical_policy_snapshot_without_judge_override_loads_and_is_ne
 
 
 @pytest.mark.asyncio
-async def test_historical_claim_grouping_v1_and_new_v2_provenance_coexist_and_roundtrip_unchanged(repo):
-    """claim_grouping_v2 (R1 grouping latency repair) -- linhas históricas
-    `claim_grouping_v1` continuam persistindo/recarregando EXATAMENTE como
-    estavam (nenhuma reescrita pra v2), lado a lado com uma tentativa nova
-    `claim_grouping_v2`. `contract_version` é uma string livre em
-    `RequestProvenance`: nenhum schema/migração é necessário."""
+async def test_historical_claim_grouping_v1_and_v2_provenance_coexist_and_roundtrip_unchanged(repo):
+    """Proveniência HISTÓRICA de agrupamento: linhas `claim_grouping_v1` e
+    `claim_grouping_v2` (esta última agora também histórica -- a atual é
+    v3, ver tests/debate/test_grouping_reasoning_policy.py) continuam
+    persistindo/recarregando EXATAMENTE como estavam, lado a lado, sem
+    reescrita. `contract_version` é uma string livre em `RequestProvenance`:
+    nenhum schema/migração é necessário."""
     result = very_rich_council_run_result()
     v1 = RequestProvenance(
         contract_version="claim_grouping_v1",
@@ -3071,3 +3072,56 @@ async def test_historical_claim_grouping_v1_and_new_v2_provenance_coexist_and_ro
     assert reloaded[0].request_provenance.contract_version == "claim_grouping_v1"
     assert reloaded[1].request_provenance == v2
     assert reloaded[1].request_provenance.contract_version == "claim_grouping_v2"
+
+
+@pytest.mark.asyncio
+async def test_grouping_accepted_normalized_attempt_roundtrips_and_is_publicly_exposed_verbatim(repo):
+    """claim_grouping_v3 -- `parse_status="accepted_normalized"` (grouping
+    only) persiste na coluna `parse_status` (string, sem migração), recarrega
+    validado, mantém o `raw_output_text` ORIGINAL (com o grupo unitário) e sai
+    no mapper público sem tradução. Linhas históricas v1/v2 (`accepted`)
+    continuam recarregando inalteradas ao lado dela."""
+    from app.debate.processing_record import ClaimProcessingAttempt
+    from app.presentation.mappers import claim_processing_attempt_public
+
+    result = very_rich_council_run_result()
+    raw_with_singleton = (
+        '{"groups": [{"member_claim_ids": ["c1"], "canonical_text": "TEXTO DO SINGLETON"}], '
+        '"ungrouped_claim_ids": ["c2"]}'
+    )
+    base = result.debate_result.claim_processing_attempts[1]
+    normalized = ClaimProcessingAttempt(
+        **{
+            **base.model_dump(),
+            "id": "attempt-grouping-normalized-1",
+            "operation": "grouping",
+            "target_model_response_id": None,
+            "target_claim_ids": ["c1", "c2"],
+            "transport_status": "success",
+            "transport_error": None,
+            "raw_output_text": raw_with_singleton,
+            "parse_status": "accepted_normalized",
+            "parse_error_message": None,
+        }
+    )
+    historical_plain = base.model_copy(update={"parse_status": "accepted"})
+    attempts = [historical_plain, normalized, *result.debate_result.claim_processing_attempts[2:]]
+    result = result.model_copy(
+        update={
+            "debate_result": result.debate_result.model_copy(
+                update={"claim_processing_attempts": attempts}
+            )
+        }
+    )
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = loaded.debate_result.claim_processing_attempts
+    assert reloaded[0].parse_status == "accepted"
+    assert reloaded[1].parse_status == "accepted_normalized"
+    assert reloaded[1].operation == "grouping"
+    assert reloaded[1].raw_output_text == raw_with_singleton  # resposta ORIGINAL intacta
+    public = claim_processing_attempt_public(reloaded[1])
+    assert public.parse_status == "accepted_normalized"
+    assert public.raw_output_text == raw_with_singleton

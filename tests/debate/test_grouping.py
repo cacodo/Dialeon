@@ -121,27 +121,23 @@ async def test_grouping_preserves_each_members_model_identity_source_verbatim():
 
 
 @pytest.mark.asyncio
-async def test_singleton_group_is_rejected_as_malformed():
+async def test_singleton_group_is_normalized_to_ungrouped_without_a_retry():
+    """INTENCIONALMENTE atualizado (claim_grouping_v3): antes, um grupo de
+    1 membro era rejeitado como "malformed" e consumia o retry
+    estruturado. Agora é a ÚNICA deformidade estrutural tolerada no
+    agrupamento intra-round: normalizado deterministicamente (o id vira
+    ungrouped, o canonical_text do grupo unitário é descartado), aceito
+    como `accepted_normalized`, SEM retry. Cobertura/normalização em
+    detalhe: tests/debate/test_grouping_singleton_normalization.py."""
     a = _raw_claim("a", "openai")
     b = _raw_claim("b", "anthropic")
-    # grupo de 1 membro só viola ClaimGroupProposal.member_claim_ids (min 2)
-    # na própria validação de schema — vira "malformed", não passa disso.
     payload = json.dumps(
         {
             "groups": [{"member_claim_ids": [a.id], "canonical_text": "x"}],
             "ungrouped_claim_ids": [b.id],
         }
     )
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response("anthropic", payload),
-            text_response(
-                "anthropic",
-                json.dumps({"groups": [], "ungrouped_claim_ids": [a.id, b.id]}),
-            ),
-        ],
-    )
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
 
     canonical, attempts = await group_claims(
         [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
@@ -150,8 +146,9 @@ async def test_singleton_group_is_rejected_as_malformed():
         prior_output_tokens=0,
         prior_cost_usd=0.0,)
 
-    assert attempts[0].parse_status == "malformed"
-    assert canonical == []  # 2a tentativa: tudo ungrouped, nenhuma canônica criada
+    assert [x.parse_status for x in attempts] == ["accepted_normalized"]
+    assert len(provider.received_requests) == 1  # nenhum retry consumido
+    assert canonical == []  # nenhuma claim canônica criada a partir do singleton
 
 
 @pytest.mark.asyncio

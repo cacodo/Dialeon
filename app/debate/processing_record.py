@@ -102,7 +102,17 @@ class ClaimProcessingAttempt(BaseModel):
     transport_attempts: int = Field(ge=0)
 
     raw_output_text: str | None = None
-    parse_status: Literal["accepted", "malformed", "inconsistent_references", "not_attempted"]
+    # `accepted_normalized` (claim_grouping_v3): EXCLUSIVO de
+    # `operation="grouping"` -- a resposta original do provider continha
+    # grupo(s) unitário(s) e foi aceita depois da normalização
+    # determinística (ver `_parse_validate_and_normalize_grouping`,
+    # app/debate/claim_extraction.py). `raw_output_text` continua a
+    # resposta ORIGINAL, sem reescrita. Nunca um conceito genérico de
+    # "saída normalizada": extração/reconciliação não têm essa saída
+    # (validador `_accepted_normalized_is_grouping_only`).
+    parse_status: Literal[
+        "accepted", "accepted_normalized", "malformed", "inconsistent_references", "not_attempted"
+    ]
     parse_error_message: str | None = None
 
     usage: TokenUsage | None = None
@@ -152,8 +162,11 @@ class ClaimProcessingAttempt(BaseModel):
 
     @model_validator(mode="after")
     def _parse_status_and_error_message_are_consistent(self) -> ClaimProcessingAttempt:
-        if self.parse_status == "accepted" and self.parse_error_message is not None:
-            raise ValueError("parse_status='accepted' não deve ter parse_error_message")
+        if (
+            self.parse_status in ("accepted", "accepted_normalized")
+            and self.parse_error_message is not None
+        ):
+            raise ValueError(f"parse_status={self.parse_status!r} não deve ter parse_error_message")
         if (
             self.parse_status in ("malformed", "inconsistent_references")
             and not self.parse_error_message
@@ -161,6 +174,15 @@ class ClaimProcessingAttempt(BaseModel):
             raise ValueError(
                 "parse_status em {'malformed','inconsistent_references'} exige "
                 "parse_error_message preenchido"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _accepted_normalized_is_grouping_only(self) -> ClaimProcessingAttempt:
+        if self.parse_status == "accepted_normalized" and self.operation != "grouping":
+            raise ValueError(
+                "parse_status='accepted_normalized' só existe pra operation='grouping' "
+                f"(recebido operation={self.operation!r})"
             )
         return self
 

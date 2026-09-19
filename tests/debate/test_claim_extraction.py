@@ -149,11 +149,11 @@ async def test_extraction_request_asks_for_minimal_reasoning():
 
 
 @pytest.mark.asyncio
-async def test_grouping_request_asks_for_minimal_reasoning_under_claim_grouping_v2():
+async def test_grouping_request_asks_for_minimal_reasoning():
     """INTENCIONALMENTE atualizado (R1 grouping latency repair): no repair
     original (Run02 claim-extraction exhaustion) só EXTRAÇÃO usava
-    `minimal_reasoning` e este teste fixava agrupamento em `False`. Sob
-    `claim_grouping_v2` o agrupamento intra-round também pede raciocínio
+    `minimal_reasoning` e este teste fixava agrupamento em `False`. Desde
+    `claim_grouping_v2` (mantido em v3) o agrupamento intra-round também pede raciocínio
     mínimo/desabilitado (replay exato do request R1 persistido: 6.284 de
     8.192 tokens de saída em raciocínio não visível, `max_tokens`, JSON
     truncado). Reconciliação continua `False` --
