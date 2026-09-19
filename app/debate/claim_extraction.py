@@ -77,8 +77,21 @@ _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 # ver `_build_extraction_request`) -- as duas mudanças alteram o contrato
 # efetivo da OPERAÇÃO (o que pode legitimamente ser pedido/aceito), nunca
 # só um ajuste de redação cosmético, por isso a versão avança.
+#
+# Grouping v1 -> v2 (R1 grouping latency repair): mesma disciplina -- o
+# prompt, o schema e a validação de cobertura de ids são BYTE-IDÊNTICOS ao
+# v1; o que mudou foi a política de raciocínio do request
+# (`minimal_reasoning=True`, ver `_build_grouping_request`). Um replay
+# exato do request R1 persistido (36 claims, v1) gastou 6.284 dos 8.192
+# tokens de saída em raciocínio NÃO visível (81,5 s, `max_tokens`,
+# JSON truncado, 30/36 ids) -- mudança de política de request que altera o
+# comportamento efetivo da OPERAÇÃO, por isso a versão avança. Linhas
+# históricas `claim_grouping_v1` continuam legíveis/inalteradas
+# (`RequestProvenance.contract_version` é uma string livre; nada é
+# reescrito). Reconciliação NÃO avança: continua
+# `cross_round_claim_reconciliation_v1`, `minimal_reasoning=False`.
 CLAIM_EXTRACTION_CONTRACT_VERSION = "claim_extraction_v2"
-CLAIM_GROUPING_CONTRACT_VERSION = "claim_grouping_v1"
+CLAIM_GROUPING_CONTRACT_VERSION = "claim_grouping_v2"
 CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION = "cross_round_claim_reconciliation_v1"
 
 
@@ -468,8 +481,8 @@ def _build_extraction_request(
         # `CompletionRequest.minimal_reasoning`, mapeado explicitamente
         # pelo AnthropicProvider) reduz a chance de output "invisível" pro
         # adapter consumir o teto de `max_tokens` sem produzir JSON visível.
-        # Só extração usa isto nesta etapa -- agrupamento/reconciliação
-        # (abaixo) não são tocados.
+        # Extração e agrupamento intra-round (`_build_grouping_request`)
+        # usam isto; reconciliação cross-round NÃO.
         minimal_reasoning=True,
     )
 
@@ -970,6 +983,16 @@ def _build_grouping_request(
         messages=[Message(role="user", content=body)],
         system_prompt=system_prompt,
         max_tokens=max_output_tokens_per_call,
+        # claim_grouping_v2 -- raciocínio mínimo/desabilitado (mesmo
+        # campo REQUEST-LEVEL que a extração já usa; o AnthropicProvider o
+        # mapeia pra `thinking={"type": "disabled"}`, ver
+        # `CompletionRequest.minimal_reasoning`). Agrupar é classificar/
+        # transcrever ids + um `canonical_text` curto a partir de um
+        # payload pequeno e fechado; o replay exato do request R1 persistido
+        # mostrou raciocínio oculto consumindo ~77% do teto de saída (6.284
+        # de 8.192 tokens), estourando `max_tokens` com JSON truncado.
+        # `max_tokens`, prompt, schema e validação NÃO mudam.
+        minimal_reasoning=True,
     )
 
 

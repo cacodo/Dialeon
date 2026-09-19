@@ -149,10 +149,15 @@ async def test_extraction_request_asks_for_minimal_reasoning():
 
 
 @pytest.mark.asyncio
-async def test_grouping_request_never_asks_for_minimal_reasoning():
-    """Repair (Run02 claim-extraction exhaustion) -- escopo estrito: só
-    EXTRAÇÃO usa `minimal_reasoning`. Agrupamento continua com o default
-    (`False`) -- nunca tocado por este repair."""
+async def test_grouping_request_asks_for_minimal_reasoning_under_claim_grouping_v2():
+    """INTENCIONALMENTE atualizado (R1 grouping latency repair): no repair
+    original (Run02 claim-extraction exhaustion) só EXTRAÇÃO usava
+    `minimal_reasoning` e este teste fixava agrupamento em `False`. Sob
+    `claim_grouping_v2` o agrupamento intra-round também pede raciocínio
+    mínimo/desabilitado (replay exato do request R1 persistido: 6.284 de
+    8.192 tokens de saída em raciocínio não visível, `max_tokens`, JSON
+    truncado). Reconciliação continua `False` --
+    tests/debate/test_grouping_reasoning_policy.py."""
     c1 = _old_claim("c1", "X.")
     provider = ScriptedProvider(
         "anthropic",
@@ -162,7 +167,7 @@ async def test_grouping_request_never_asks_for_minimal_reasoning():
         [c1], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
         run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
     )
-    assert provider.received_requests[0].minimal_reasoning is False
+    assert provider.received_requests[0].minimal_reasoning is True
 
 
 @pytest.mark.asyncio

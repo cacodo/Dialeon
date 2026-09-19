@@ -3027,3 +3027,47 @@ async def test_historical_policy_snapshot_without_judge_override_loads_and_is_ne
             )
         ).scalar_one()
     assert json.loads(raw) == historical  # nada fabricado retroativamente
+
+
+@pytest.mark.asyncio
+async def test_historical_claim_grouping_v1_and_new_v2_provenance_coexist_and_roundtrip_unchanged(repo):
+    """claim_grouping_v2 (R1 grouping latency repair) -- linhas históricas
+    `claim_grouping_v1` continuam persistindo/recarregando EXATAMENTE como
+    estavam (nenhuma reescrita pra v2), lado a lado com uma tentativa nova
+    `claim_grouping_v2`. `contract_version` é uma string livre em
+    `RequestProvenance`: nenhum schema/migração é necessário."""
+    result = very_rich_council_run_result()
+    v1 = RequestProvenance(
+        contract_version="claim_grouping_v1",
+        request_digest=(
+            REQUEST_DIGEST_PREFIX
+            + "197a843192b5849d4c46ceb2f8492f8d2fd22d69fe55496a1bc87fd2970b5906"
+        ),
+    )
+    v2 = RequestProvenance(
+        contract_version="claim_grouping_v2",
+        request_digest=(
+            REQUEST_DIGEST_PREFIX
+            + "b9f2f0451bd33fe6943ed6c32bc6053497e9d94bff997f8335914d2f4ed2df1a"
+        ),
+    )
+    attempts = list(result.debate_result.claim_processing_attempts)
+    assert len(attempts) >= 2
+    attempts[0] = attempts[0].model_copy(update={"request_provenance": v1})
+    attempts[1] = attempts[1].model_copy(update={"request_provenance": v2})
+    result = result.model_copy(
+        update={
+            "debate_result": result.debate_result.model_copy(
+                update={"claim_processing_attempts": attempts}
+            )
+        }
+    )
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    reloaded = loaded.debate_result.claim_processing_attempts
+    assert reloaded[0].request_provenance == v1
+    assert reloaded[0].request_provenance.contract_version == "claim_grouping_v1"
+    assert reloaded[1].request_provenance == v2
+    assert reloaded[1].request_provenance.contract_version == "claim_grouping_v2"

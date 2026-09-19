@@ -60,7 +60,11 @@ a FORMA de canonicalização evoluiu, uma consequência estrutural de
 adicionar um campo ao schema compartilhado, nunca uma mudança de
 contrato dessas 7 operações. Ver docstring de
 `_canonical_completion_request_payload` pra o mesmo raciocínio do lado
-da implementação."""
+da implementação.
+
+(Nota posterior: `claim_grouping_v1` -> `claim_grouping_v2` avançou depois,
+por uma mudança de política de request INDEPENDENTE desta -- ver a seção 4
+abaixo. O parágrafo acima descreve só o que valia NESTE patch.)"""
 
 from __future__ import annotations
 
@@ -152,12 +156,18 @@ def test_claim_extraction_contract_version_and_golden_digest():
 
 
 # ---------------------------------------------------------------------------
-# 4. claim_grouping_v1
+# 4. claim_grouping_v2
 # ---------------------------------------------------------------------------
+#
+# Intencional (governança acima): v1 -> v2 porque `_build_grouping_request`
+# passou a pedir `minimal_reasoning=True` (R1 grouping latency repair). O
+# golden v1 (`35b8b9af...`) segue documentado em
+# tests/debate/test_grouping_reasoning_policy.py como o digest do MESMO
+# request com `minimal_reasoning=False` -- prova de que SÓ esse campo mudou.
 
 
 def test_claim_grouping_contract_version_and_golden_digest():
-    assert CLAIM_GROUPING_CONTRACT_VERSION == "claim_grouping_v1"
+    assert CLAIM_GROUPING_CONTRACT_VERSION == "claim_grouping_v2"
 
     c1 = raw_claim("Brasília é a capital.", "resp-1", provider="openai", id="claim-fixed-1")
     c2 = raw_claim("Brasília é a capital.", "resp-1", provider="openai", id="claim-fixed-2")
@@ -165,7 +175,7 @@ def test_claim_grouping_contract_version_and_golden_digest():
 
     assert compute_request_digest(request) == (
         "completion-request-sha256-v2:"
-        "35b8b9aff06e4ca98caebb6c9a6dca4a8d1e04b5837d5b0ce2f4b70775d65bc7"
+        "662adfe838102f9fc581b106c71a902f1ec205e2007f85579910db093f9bd73a"
     )
 
 

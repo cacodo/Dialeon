@@ -139,22 +139,31 @@ def _canonical_completion_request_payload(request: CompletionRequest) -> dict:
     avançar de v1 (5 campos) pra v2 (6 campos, este payload) -- É um
     campo REQUEST-LEVEL (ver docstring de `CompletionRequest.minimal_reasoning`),
     então participa do digest como qualquer outro. Como é um campo NOVO
-    (nunca existiu antes, sempre `False` pra toda chamada que não seja
-    extração), a forma canônica de TODO request NOVO passou a incluí-lo
-    -- inclusive as 7 operações que nunca setam `minimal_reasoning=True`
-    (só ganham `"minimal_reasoning":false` explícito no payload). Isso
+    (nunca existiu antes; NA ÉPOCA deste patch sempre `False` pra toda
+    chamada que não fosse extração -- hoje o agrupamento intra-round
+    também o seta `True`, ver abaixo), a forma canônica de TODO request
+    NOVO passou a incluí-lo -- inclusive as 7 operações que NÃO setavam
+    `minimal_reasoning=True` (só ganham `"minimal_reasoning":false`
+    explícito no payload). Isso
     NÃO é uma mudança de CONTRATO DE REQUEST dessas 7 operações (prompt/
     mensagens/model/max_tokens/temperature permanecem byte-idênticos pra
     elas) -- é uma evolução do FORMATO DE CANONICALIZAÇÃO em si, por
     isso versionada separadamente (`REQUEST_DIGEST_PREFIX_V1` ->
     `REQUEST_DIGEST_PREFIX_V2`, nunca a `contract_version` de cada
-    operação). Só `CLAIM_EXTRACTION_CONTRACT_VERSION` avançou (v1->v2,
-    mudança semântica REAL: prompt + `minimal_reasoning=True`); as
-    outras 7 constantes de `contract_version` nunca avançam por causa
+    operação). Neste patch só `CLAIM_EXTRACTION_CONTRACT_VERSION` avançou
+    (v1->v2, mudança semântica REAL: prompt + `minimal_reasoning=True`);
+    as outras 7 constantes de `contract_version` não avançam por causa
     desta mudança de formato de canonicalização, mesmo que seus goldens
     em `tests/models/test_request_provenance_contracts.py` agora
     apareçam com o prefixo v2 (ver nota de governança no topo daquele
-    arquivo)."""
+    arquivo).
+
+    Posteriormente, `CLAIM_GROUPING_CONTRACT_VERSION` também avançou
+    (v1->v2), mas por um motivo INDEPENDENTE desta mudança de formato: o
+    agrupamento intra-round passou a pedir `minimal_reasoning=True`
+    (mudança de política de request da operação; prompt/schema/validação
+    inalterados). Reconciliação, Judge e as demais operações seguem nas
+    versões originais e com `minimal_reasoning=False`."""
     return {
         "system_prompt": request.system_prompt,
         "messages": [
