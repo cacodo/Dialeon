@@ -43,6 +43,7 @@ from app.models.provider_models import (
     ProviderErrorType,
     ProviderResponse,
     TokenUsage,
+    TransportAttemptPolicy,
 )
 from app.providers.errors import ProviderAuthError, ProviderError, ProviderMalformedResponseError
 from app.providers.pricing import PricingRegistry
@@ -207,12 +208,34 @@ class LLMProvider(ABC):
             return None, None
         return priced.cost_usd, priced.provenance
 
-    async def complete(self, request: CompletionRequest) -> ProviderResponse:
+    async def complete(
+        self,
+        request: CompletionRequest,
+        *,
+        execution_policy: TransportAttemptPolicy | None = None,
+    ) -> ProviderResponse:
         """Executa a requisição com timeout e retry limitado, e normaliza o resultado.
 
         Esta é a única lógica de retry/timeout do sistema — cada provider
         concreto não reimplementa isso, só levanta os erros certos.
+
+        `execution_policy` (Judge Transport Execution Policy V1) --
+        override OPCIONAL, resolvido LOCALMENTE só pra ESTA chamada
+        (`attempt_timeout`/`max_retries` abaixo são variáveis locais):
+        NUNCA muta `self._timeout_seconds`/`self._max_retries`, então uma
+        chamada com override jamais vaza pra chamadas seguintes do mesmo
+        provider (que continuam usando o default do deployment). `None`
+        (o caso de toda operação exceto Judge) = comportamento
+        EXATAMENTE anterior. Política operacional de transporte nunca
+        entra em `CompletionRequest` (que é só conteúdo semântico e
+        participa do digest de provenance).
         """
+        if execution_policy is None:
+            attempt_timeout = self._timeout_seconds
+            max_retries = self._max_retries
+        else:
+            attempt_timeout = execution_policy.attempt_timeout_seconds
+            max_retries = execution_policy.max_transport_attempts_per_completion - 1
         # Etapa 13 (T03.A): resolvido UMA ÚNICA VEZ, antes de qualquer
         # chamada de rede — provenance histórica do que foi PEDIDO,
         # nunca reatribuída depois, mesmo em retries ou falhas.
@@ -272,7 +295,7 @@ class LLMProvider(ABC):
                 # fallback quando o SDK não expõe identidade efetiva
                 # (ver contrato de cada adapter._call_api()).
                 text, usage, observed_model, finish_reason = await asyncio.wait_for(
-                    self._call_api(request), timeout=self._timeout_seconds
+                    self._call_api(request), timeout=attempt_timeout
                 )
                 # Etapa 13 / provenance de identidade de modelo: único
                 # ponto de mescla observed_model (CRU, do adapter) ->
@@ -321,7 +344,7 @@ class LLMProvider(ABC):
                 )
             except asyncio.TimeoutError:
                 last_error = ProviderError(
-                    f"{self.provider_name}: sem resposta após {self._timeout_seconds}s",
+                    f"{self.provider_name}: sem resposta após {attempt_timeout}s",
                     ProviderErrorType.TIMEOUT,
                     retryable=True,
                 )
@@ -337,7 +360,7 @@ class LLMProvider(ABC):
                     retryable=False,
                 )
 
-            can_retry = last_error.retryable and attempts <= self._max_retries
+            can_retry = last_error.retryable and attempts <= max_retries
             if not can_retry:
                 # Depois que _call_api() já começou, uma falha sem usage
                 # confiável fica DESCONHECIDA, nunca conhecido-zero — a

@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.models.provider_models import (
     ProviderExecutionPolicy,
+    TransportAttemptPolicy,
     validate_provider_execution_policy_for_new_execution,
 )
 
@@ -127,11 +128,18 @@ def test_from_settings_never_persists_max_retries_as_the_canonical_field():
 # ---------------------------------------------------------------------------
 
 
-def test_serialized_policy_contains_only_the_two_approved_fields():
+def test_serialized_policy_contains_only_the_approved_fields():
+    """Default (dois campos) + `judge_override` (mesmos dois campos,
+    aninhado). Nada além disso -- nunca backoff/jitter/SDK/provider."""
     policy = ProviderExecutionPolicy.from_settings(_settings())
     dumped = policy.model_dump(mode="json")
 
     assert set(dumped.keys()) == {
+        "attempt_timeout_seconds",
+        "max_transport_attempts_per_completion",
+        "judge_override",
+    }
+    assert set(dumped["judge_override"].keys()) == {
         "attempt_timeout_seconds",
         "max_transport_attempts_per_completion",
     }
@@ -288,3 +296,171 @@ def test_b19_positive_infinity_token_is_not_accepted_as_policy_input():
             attempt_timeout_seconds="positive_infinity",
             max_transport_attempts_per_completion=3,
         )
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1 -- default vs. judge_override
+# ---------------------------------------------------------------------------
+
+
+def test_from_settings_default_policy_unchanged_and_judge_override_120s_one_attempt():
+    policy = ProviderExecutionPolicy.from_settings(_settings())
+
+    # DEFAULT do deployment -- inalterado (60s / 3 tentativas)
+    assert policy.attempt_timeout_seconds == 60.0
+    assert policy.max_transport_attempts_per_completion == 3
+    # Override do Judge (120s / 1 tentativa)
+    assert policy.judge_override is not None
+    assert policy.judge_override.attempt_timeout_seconds == 120.0
+    assert policy.judge_override.max_transport_attempts_per_completion == 1
+
+
+def test_from_settings_judge_override_honors_deployment_settings_and_leaves_default_alone():
+    policy = ProviderExecutionPolicy.from_settings(
+        _settings(
+            provider_timeout_seconds=45,
+            provider_max_retries=4,
+            judge_provider_timeout_seconds=200,
+            judge_provider_max_transport_attempts=2,
+        )
+    )
+
+    assert (policy.attempt_timeout_seconds, policy.max_transport_attempts_per_completion) == (45.0, 5)
+    assert policy.judge_override.attempt_timeout_seconds == 200.0
+    assert policy.judge_override.max_transport_attempts_per_completion == 2
+
+
+@pytest.mark.parametrize("bad_timeout", [0, -1])
+def test_from_settings_rejects_non_positive_judge_timeout(bad_timeout):
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy.from_settings(_settings(judge_provider_timeout_seconds=bad_timeout))
+
+
+@pytest.mark.parametrize("bad_attempts", [0, -1])
+def test_from_settings_rejects_fewer_than_one_judge_transport_attempt(bad_attempts):
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy.from_settings(
+            _settings(judge_provider_max_transport_attempts=bad_attempts)
+        )
+
+
+def test_new_execution_validation_rejects_non_finite_judge_override_timeout():
+    """Constrói o snapshot com `judge_override` +inf (construível, como o
+    default -- ver docstring da função) -- a fronteira de execução NOVA
+    o recusa, mesmo com o default finito."""
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=60.0,
+        max_transport_attempts_per_completion=3,
+        judge_override=TransportAttemptPolicy(
+            attempt_timeout_seconds=math.inf, max_transport_attempts_per_completion=1
+        ),
+    )
+    with pytest.raises(ValueError, match="judge_override"):
+        validate_provider_execution_policy_for_new_execution(policy)
+
+
+def test_new_execution_validation_accepts_the_real_default_policy():
+    validate_provider_execution_policy_for_new_execution(
+        ProviderExecutionPolicy.from_settings(_settings())
+    )
+
+
+def test_historical_snapshot_without_judge_override_loads_as_no_recorded_override():
+    """Snapshot persistido ANTES deste campo existir (só as duas chaves
+    originais) -- `judge_override` é `None` = "nenhum override registrado";
+    nunca um override fabricado retroativamente."""
+    historical = {"attempt_timeout_seconds": 60.0, "max_transport_attempts_per_completion": 3}
+
+    policy = ProviderExecutionPolicy(**historical)
+
+    assert policy.judge_override is None
+    assert policy.attempt_timeout_seconds == 60.0
+    assert policy.max_transport_attempts_per_completion == 3
+
+
+def test_judge_override_roundtrips_through_json_dump_and_reload():
+    policy = ProviderExecutionPolicy.from_settings(_settings())
+
+    reloaded = ProviderExecutionPolicy(**policy.model_dump(mode="json"))
+
+    assert reloaded == policy
+
+
+def test_judge_override_rejects_unknown_extra_keys():
+    with pytest.raises(ValidationError):
+        ProviderExecutionPolicy(
+            attempt_timeout_seconds=60.0,
+            max_transport_attempts_per_completion=3,
+            judge_override={
+                "attempt_timeout_seconds": 120.0,
+                "max_transport_attempts_per_completion": 1,
+                "backoff": 1.0,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1 -- o override é ESCOPADO ao Judge
+# ---------------------------------------------------------------------------
+
+
+def test_only_the_single_judge_module_passes_an_execution_policy_to_complete():
+    """Guarda ESTRUTURAL contra vazamento: varre todo `app/` e exige que
+    a ÚNICA chamada `.complete(..., execution_policy=...)` do projeto
+    esteja em `app/judge/single_judge.py`. Participantes, extração,
+    agrupamento, reconciliação, Source Analysis e Editor nunca passam
+    override -- continuam no default do provider."""
+    import ast
+    from pathlib import Path
+
+    app_root = Path(__file__).resolve().parents[2] / "app"
+    offenders: list[str] = []
+    judge_call_sites = 0
+    for path in app_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "complete"
+                and any(kw.arg == "execution_policy" for kw in node.keywords)
+            ):
+                rel = path.relative_to(app_root).as_posix()
+                if rel == "judge/single_judge.py":
+                    judge_call_sites += 1
+                else:
+                    offenders.append(f"{rel}:{node.lineno}")
+
+    assert offenders == []
+    assert judge_call_sites == 1  # a única chamada de completion do Judge
+
+
+def test_request_digest_is_independent_of_the_transport_policy_field_set():
+    """`CompletionRequest` (única entrada do digest de provenance) NÃO ganhou
+    nenhum campo de política de transporte -- o override viaja por
+    `complete(execution_policy=...)`, fora do request."""
+    from app.models.provider_models import CompletionRequest
+
+    assert not any(
+        "policy" in name or "timeout" in name or "attempt" in name
+        for name in CompletionRequest.model_fields
+    )
+
+
+def test_create_run_request_contract_is_unchanged_and_exposes_no_transport_knobs():
+    """Nenhum knob público de transporte: `CreateRunRequest` continua com
+    exatamente os 3 campos, e uma chave de política enviada por um
+    cliente é RECUSADA (extra="forbid"), nunca aceita."""
+    from app.presentation.schemas import CreateRunRequest
+
+    assert set(CreateRunRequest.model_fields) == {"question", "enabled_providers", "source_text"}
+
+    # cliente NÃO consegue enviar knob de transporte (extra="forbid")
+    for forged in ("judge_provider_timeout_seconds", "judge_override", "attempt_timeout_seconds"):
+        with pytest.raises(ValidationError):
+            CreateRunRequest.model_validate(
+                {"question": "Pergunta?", "enabled_providers": ["openai"], forged: 1}
+            )
+
+    ok = CreateRunRequest.model_validate({"question": "Pergunta?", "enabled_providers": ["openai"]})
+    assert ok.source_text is None

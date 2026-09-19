@@ -179,7 +179,43 @@ class PricingProvenance(BaseModel):
     canonical_model_id: str | None = None
 
 
-class ProviderExecutionPolicy(BaseModel):
+class TransportAttemptPolicy(BaseModel):
+    """Par mínimo (timeout por tentativa, teto de tentativas de
+    transporte) -- a ÚNICA forma de uma política de transporte neste
+    projeto. Usado tanto como o DEFAULT do deployment (via
+    `ProviderExecutionPolicy`, que herda estes dois campos) quanto como
+    override por chamada (`LLMProvider.complete(execution_policy=...)`) e
+    como o snapshot do override do Judge
+    (`ProviderExecutionPolicy.judge_override`). Nunca contém nada
+    específico de provider/operação -- nome de provider/model, backoff,
+    jitter, timeout/retry nativo do SDK continuam fora daqui."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Teto de espera EM NÍVEL DE APLICAÇÃO ao redor de UMA invocação de
+    # `_call_api` (`LLMProvider.complete`, via `asyncio.wait_for`) --
+    # reseta a cada tentativa de transporte normalizada, EXCLUI o tempo
+    # de backoff entre tentativas (`_backoff_delay`, fora deste
+    # timeout). NÃO afirma representar o timeout nativo de
+    # conexão/leitura default do SDK -- isso é responsabilidade
+    # exclusiva de cada client concreto, nunca modelado aqui.
+    attempt_timeout_seconds: float = Field(gt=0)
+
+    # Número máximo de invocações de `_call_api` dentro de UM
+    # `LLMProvider.complete()` -- derivado de `provider_max_retries + 1`
+    # (ver `ProviderExecutionPolicy.from_settings`), NUNCA
+    # persistido/nomeado como "max retries" (esse número descreveria
+    # retries, não o teto real de tentativas -- ver relatório T02.2).
+    # Descreve só tentativas de TRANSPORTE normalizadas -- nunca o
+    # contador de retry de output ESTRUTURADO
+    # (ClaimProcessingAttempt.attempt_number/
+    # SourceAnalysisAttempt.attempt_number/JudgeAttempt.attempt_number/
+    # EditorAttempt.attempt_number são contadores INTEIRAMENTE
+    # DISTINTOS, nunca renomeados/colapsados com este).
+    max_transport_attempts_per_completion: int = Field(ge=1)
+
+
+class ProviderExecutionPolicy(TransportAttemptPolicy):
     """T02.2 -- snapshot IMUTÁVEL da política de transporte (timeout +
     retry) que um deployment tinha REALMENTE configurado no momento em
     que um Run foi aceito. Resolvido UMA ÚNICA VEZ por aplicação
@@ -200,34 +236,27 @@ class ProviderExecutionPolicy(BaseModel):
     provenance de deployment -- nunca a autoridade de enforcement em si
     (ver relatório T02.2, "AUTHORITY MODEL").
 
-    Contém APENAS os dois números normalizados abaixo -- nunca backoff,
+    Contém APENAS os dois números normalizados de `TransportAttemptPolicy`
+    (o default do deployment) mais o override opcional do Judge
+    (`judge_override`, do mesmo tipo) -- nunca backoff,
     jitter, timeout nativo do SDK, retry nativo do SDK (esses continuam
     exclusivamente desligados/configurados dentro de cada adapter
     concreto, ver `AnthropicProvider`/`OpenAIProvider`/`GeminiProvider`),
     nome de provider/model, endpoint, ou segredo."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    # Teto de espera EM NÍVEL DE APLICAÇÃO ao redor de UMA invocação de
-    # `_call_api` (`LLMProvider.complete`, via `asyncio.wait_for`) --
-    # reseta a cada tentativa de transporte normalizada, EXCLUI o tempo
-    # de backoff entre tentativas (`_backoff_delay`, fora deste
-    # timeout). NÃO afirma representar o timeout nativo de
-    # conexão/leitura default do SDK -- isso é responsabilidade
-    # exclusiva de cada client concreto, nunca modelado aqui.
-    attempt_timeout_seconds: float = Field(gt=0)
-
-    # Número máximo de invocações de `_call_api` dentro de UM
-    # `LLMProvider.complete()` -- derivado de `provider_max_retries + 1`
-    # (ver `from_settings`), NUNCA persistido/nomeado como "max
-    # retries" (esse número descreveria retries, não o teto real de
-    # tentativas -- ver relatório T02.2). Descreve só tentativas de
-    # TRANSPORTE normalizadas -- nunca o contador de retry de output
-    # ESTRUTURADO (ClaimProcessingAttempt.attempt_number/
-    # SourceAnalysisAttempt.attempt_number/JudgeAttempt.attempt_number/
-    # EditorAttempt.attempt_number são contadores INTEIRAMENTE
-    # DISTINTOS, nunca renomeados/colapsados com este).
-    max_transport_attempts_per_completion: int = Field(ge=1)
+    # Judge-scoped transport policy (Judge Transport Execution Policy
+    # V1). Os dois campos herdados acima são o DEFAULT do deployment --
+    # o que TODA operação sem override usa (participantes, extração,
+    # agrupamento/reconciliação, Source Analysis, Editor). `judge_override`
+    # é o override EFETIVO que só a chamada de Judge aplica
+    # (`SingleJudge` -> `LLMProvider.complete(execution_policy=...)`).
+    #
+    # `None` = "nenhum override do Judge registrado" -- é exatamente o
+    # que um snapshot persistido ANTES deste campo existir representa
+    # (chave ausente no JSON -> Pydantic aplica este default), nunca um
+    # override fabricado retroativamente. Também nunca `{}`/zeros: ou
+    # há um `TransportAttemptPolicy` completo e validado, ou `None`.
+    judge_override: TransportAttemptPolicy | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "ProviderExecutionPolicy":
@@ -245,6 +274,16 @@ class ProviderExecutionPolicy(BaseModel):
         return cls(
             attempt_timeout_seconds=float(settings.provider_timeout_seconds),
             max_transport_attempts_per_completion=settings.provider_max_retries + 1,
+            # Judge Transport Execution Policy V1 -- MESMA resolução única
+            # (este método) pro override do Judge: nunca uma segunda
+            # resolução independente em bootstrap/SingleJudge que pudesse
+            # divergir do que fica registrado no snapshot do Run.
+            judge_override=TransportAttemptPolicy(
+                attempt_timeout_seconds=float(settings.judge_provider_timeout_seconds),
+                max_transport_attempts_per_completion=(
+                    settings.judge_provider_max_transport_attempts
+                ),
+            ),
         )
 
 
@@ -278,14 +317,18 @@ def validate_provider_execution_policy_for_new_execution(
 
     ÚNICO ponto de comparação numérica desta regra no repositório --
     qualquer chamador delega aqui, nunca reimplementa a comparação."""
-    value = policy.attempt_timeout_seconds
-    if not (math.isfinite(value) and value > 0):
-        raise ValueError(
-            "ProviderExecutionPolicy.attempt_timeout_seconds "
-            f"({value!r}) não é válido pra execução nova -- precisa ser positivo "
-            "e finito, mesmo que o objeto em si permaneça construível com outros "
-            "valores pra fins de reconstrução histórica."
-        )
+    candidates: list[tuple[str, TransportAttemptPolicy]] = [("ProviderExecutionPolicy", policy)]
+    if policy.judge_override is not None:
+        candidates.append(("ProviderExecutionPolicy.judge_override", policy.judge_override))
+    for label, candidate in candidates:
+        value = candidate.attempt_timeout_seconds
+        if not (math.isfinite(value) and value > 0):
+            raise ValueError(
+                f"{label}.attempt_timeout_seconds "
+                f"({value!r}) não é válido pra execução nova -- precisa ser positivo "
+                "e finito, mesmo que o objeto em si permaneça construível com outros "
+                "valores pra fins de reconstrução histórica."
+            )
 
 
 class DefaultModelAuthoritySnapshot(BaseModel):

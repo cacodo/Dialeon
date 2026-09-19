@@ -86,11 +86,23 @@ def _human_provider_execution_policy_line(policy: ProviderExecutionPolicy | None
     docstring de ProviderExecutionPolicy)."""
     if policy is None:
         return "política_de_execução_do_provider: desconhecida (execução anterior a este registro)"
-    return (
+    line = (
         "política_de_execução_do_provider: "
         f"timeout_por_tentativa={policy.attempt_timeout_seconds}s, "
         f"tentativas_de_transporte_max={policy.max_transport_attempts_per_completion}"
     )
+    if policy.judge_override is not None:
+        # Judge Transport Execution Policy V1 -- os dois números acima
+        # são o DEFAULT (todas as operações exceto Judge); o Judge tem
+        # política própria persistida no snapshot. Sem esta distinção a
+        # linha diria que o default vale pro run inteiro.
+        line += (
+            " (padrão, exceto Judge); "
+            f"juiz: timeout_por_tentativa={policy.judge_override.attempt_timeout_seconds}s, "
+            "tentativas_de_transporte_max="
+            f"{policy.judge_override.max_transport_attempts_per_completion}"
+        )
+    return line
 
 
 def human_run_result(run: CompletedRunResponse) -> str:

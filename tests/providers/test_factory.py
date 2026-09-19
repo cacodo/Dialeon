@@ -140,3 +140,78 @@ def test_b11_build_all_providers_rejects_infinite_supplied_policy():
 
     with pytest.raises(ValueError):
         build_all_providers(settings, bad_policy)
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1 -- o override do Judge NUNCA vaza pra
+# os providers construídos, e o SDK segue sem retry próprio.
+# ---------------------------------------------------------------------------
+
+
+def _real_settings_with_keys() -> Settings:
+    return _settings(
+        anthropic_api_key="k-anthropic", openai_api_key="k-openai", google_api_key="k-google"
+    )
+
+
+def test_built_providers_keep_the_default_policy_never_the_judge_override():
+    """Todo provider construído (usado por participantes, extração,
+    agrupamento/reconciliação, Source Analysis, Editor E Judge) tem como
+    default o `ProviderExecutionPolicy` de topo (60s / 3 tentativas) --
+    `judge_override` (120s / 1) só chega ao Judge via
+    `complete(execution_policy=...)`, nunca como default de instância."""
+    settings = _real_settings_with_keys()
+    policy = ProviderExecutionPolicy.from_settings(settings)
+    assert policy.judge_override is not None  # o override EXISTE no snapshot
+
+    providers = build_all_providers(settings, policy)
+
+    for name, provider in providers.items():
+        assert provider._timeout_seconds == 60.0, name
+        assert provider._max_retries == 2, name
+
+
+def test_sdk_native_retries_stay_disabled_for_every_provider():
+    """Retry é responsabilidade ÚNICA de `LLMProvider.complete()` --
+    nenhum SDK pode ter retry próprio (nested retries fariam o número
+    real de tentativas de transporte divergir do que a policy declara)."""
+    settings = _real_settings_with_keys()
+    providers = build_all_providers(settings, ProviderExecutionPolicy.from_settings(settings))
+
+    assert providers["anthropic"]._client.max_retries == 0
+    assert providers["openai"]._client.max_retries == 0
+    gemini_retry = providers["gemini"]._client._api_client._http_options.retry_options
+    assert gemini_retry.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_override_completion_leaves_sdk_retry_config_untouched():
+    """Uma `complete(execution_policy=override)` real (com `_call_api`
+    stubado, sem rede) não altera a configuração de retry do SDK."""
+    from app.models.provider_models import (
+        CompletionRequest,
+        Message,
+        TokenUsage,
+        TransportAttemptPolicy,
+    )
+
+    settings = _real_settings_with_keys()
+    providers = build_all_providers(settings, ProviderExecutionPolicy.from_settings(settings))
+    anthropic = providers["anthropic"]
+
+    async def _fake_call_api(request):
+        return ("ok", TokenUsage(input_tokens=1, output_tokens=1), "claude-sonnet-5", "end_turn")
+
+    anthropic._call_api = _fake_call_api  # type: ignore[method-assign]
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=120.0, max_transport_attempts_per_completion=1
+    )
+    response = await anthropic.complete(
+        CompletionRequest(messages=[Message(role="user", content="oi")]),
+        execution_policy=override,
+    )
+
+    assert response.status == "success"
+    assert anthropic._client.max_retries == 0
+    assert anthropic._timeout_seconds == 60.0
+    assert anthropic._max_retries == 2

@@ -7,6 +7,7 @@ from app.models.provider_models import (
     ProviderErrorType,
     ProviderResponse,
     TokenUsage,
+    TransportAttemptPolicy,
 )
 from app.providers.base import LLMProvider
 from app.providers.pricing import PricingRegistry
@@ -32,6 +33,7 @@ class ScriptedProvider(LLMProvider):
         self._responses = list(responses)
         self._default_model_name = default_model
         self.received_requests: list[CompletionRequest] = []
+        self.received_execution_policies: list[TransportAttemptPolicy | None] = []
 
     @property
     def default_model(self) -> str:
@@ -40,8 +42,14 @@ class ScriptedProvider(LLMProvider):
     async def _call_api(self, request: CompletionRequest):
         raise NotImplementedError("ScriptedProvider sobrescreve complete() diretamente")
 
-    async def complete(self, request: CompletionRequest) -> ProviderResponse:
+    async def complete(
+        self,
+        request: CompletionRequest,
+        *,
+        execution_policy: TransportAttemptPolicy | None = None,
+    ) -> ProviderResponse:
         self.received_requests.append(request)
+        self.received_execution_policies.append(execution_policy)
         assert self._responses, "ScriptedProvider esgotou as respostas roteirizadas"
         return self._responses.pop(0)
 
@@ -62,6 +70,7 @@ class CallableProvider(LLMProvider):
         self._handler = handler
         self._default_model_name = default_model
         self.received_requests: list[CompletionRequest] = []
+        self.received_execution_policies: list[TransportAttemptPolicy | None] = []
         self.call_count = 0
 
     @property
@@ -71,8 +80,14 @@ class CallableProvider(LLMProvider):
     async def _call_api(self, request: CompletionRequest):
         raise NotImplementedError("CallableProvider sobrescreve complete() diretamente")
 
-    async def complete(self, request: CompletionRequest) -> ProviderResponse:
+    async def complete(
+        self,
+        request: CompletionRequest,
+        *,
+        execution_policy: TransportAttemptPolicy | None = None,
+    ) -> ProviderResponse:
         self.received_requests.append(request)
+        self.received_execution_policies.append(execution_policy)
         self.call_count += 1
         return await self._handler(self.call_count, request)
 

@@ -21,6 +21,7 @@ from app.models.provider_models import (
     ProviderErrorType,
     ProviderResponse,
     TokenUsage,
+    TransportAttemptPolicy,
 )
 from app.providers.base import LLMProvider
 from app.providers.pricing import PricingRegistry
@@ -60,7 +61,12 @@ class StubProvider(LLMProvider):
     async def _call_api(self, request: CompletionRequest):
         raise NotImplementedError("StubProvider sobrescreve complete() diretamente")
 
-    async def complete(self, request: CompletionRequest) -> ProviderResponse:
+    async def complete(
+        self,
+        request: CompletionRequest,
+        *,
+        execution_policy: TransportAttemptPolicy | None = None,
+    ) -> ProviderResponse:
         self.call_count += 1
         self.received_requests.append(request)
         if self._delay:
@@ -104,7 +110,12 @@ class MutatingProvider(LLMProvider):
     async def _call_api(self, request: CompletionRequest):
         raise NotImplementedError("MutatingProvider sobrescreve complete() diretamente")
 
-    async def complete(self, request: CompletionRequest) -> ProviderResponse:
+    async def complete(
+        self,
+        request: CompletionRequest,
+        *,
+        execution_policy: TransportAttemptPolicy | None = None,
+    ) -> ProviderResponse:
         self.received_requests.append(request)
         self._mutate(request)
         return self._response

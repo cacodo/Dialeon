@@ -20,16 +20,35 @@ export function ProviderExecutionPolicyView({ policy }: ProviderExecutionPolicyV
     )
   }
 
+  // Judge Transport Execution Policy V1 -- quando o snapshot registra um
+  // override do Judge, os dois valores de topo valem só pras DEMAIS
+  // operações; os rótulos dizem isso explicitamente. Sem override
+  // registrado (histórico), os rótulos originais permanecem.
+  const judge = policy.judge_override ?? null
+  const defaultSuffix = judge === null ? '' : ' (padrão, exceto Juiz)'
+
   return (
     <dl className="provider-execution-policy">
       <div className="provider-execution-policy__row">
-        <dt>Timeout por tentativa</dt>
+        <dt>Timeout por tentativa{defaultSuffix}</dt>
         <dd>{policy.attempt_timeout_seconds}s</dd>
       </div>
       <div className="provider-execution-policy__row">
-        <dt>Tentativas de transporte (máx.)</dt>
+        <dt>Tentativas de transporte (máx.){defaultSuffix}</dt>
         <dd>{policy.max_transport_attempts_per_completion}</dd>
       </div>
+      {judge !== null && (
+        <>
+          <div className="provider-execution-policy__row">
+            <dt>Timeout por tentativa (Juiz)</dt>
+            <dd>{judge.attempt_timeout_seconds}s</dd>
+          </div>
+          <div className="provider-execution-policy__row">
+            <dt>Tentativas de transporte (máx., Juiz)</dt>
+            <dd>{judge.max_transport_attempts_per_completion}</dd>
+          </div>
+        </>
+      )}
     </dl>
   )
 }

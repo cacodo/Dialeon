@@ -2899,3 +2899,131 @@ async def test_save_success_without_prior_accepted_row_leaves_snapshot_none(repo
     loaded = await repo.get_run(result.id)
     assert isinstance(loaded, CompletedRunRecord)
     assert loaded.default_model_authority_snapshot is None
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1 -- snapshot de política com
+# `judge_override`: persistência, reload terminal, compat histórica.
+# ---------------------------------------------------------------------------
+
+
+def _policy_with_judge_override():
+    from app.models.provider_models import TransportAttemptPolicy
+
+    return provider_execution_policy(
+        attempt_timeout_seconds=60.0,
+        max_transport_attempts_per_completion=3,
+        judge_override=TransportAttemptPolicy(
+            attempt_timeout_seconds=120.0, max_transport_attempts_per_completion=1
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_accepted_run_persists_default_policy_and_judge_override(engine, repo):
+    policy = _policy_with_judge_override()
+    await repo.save_accepted(
+        "run-judge-policy-1",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=policy,
+    )
+
+    loaded = await repo.get_run("run-judge-policy-1")
+    assert loaded.provider_execution_policy == policy
+    assert loaded.provider_execution_policy.judge_override.attempt_timeout_seconds == 120.0
+    assert loaded.provider_execution_policy.judge_override.max_transport_attempts_per_completion == 1
+    # default (topo) preservado, distinto do override
+    assert loaded.provider_execution_policy.attempt_timeout_seconds == 60.0
+    assert loaded.provider_execution_policy.max_transport_attempts_per_completion == 3
+
+    async with engine.begin() as conn:
+        raw = (
+            await conn.execute(
+                text("SELECT provider_execution_policy_json FROM accepted_runs WHERE id = :id"),
+                {"id": "run-judge-policy-1"},
+            )
+        ).scalar_one()
+    assert json.loads(raw)["judge_override"] == {
+        "attempt_timeout_seconds": 120.0,
+        "max_transport_attempts_per_completion": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_terminal_completed_run_reloads_the_same_policy_with_judge_override(repo):
+    result = full_council_run_result()
+    policy = _policy_with_judge_override()
+    await repo.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=policy,
+    )
+
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.provider_execution_policy == policy
+
+
+@pytest.mark.asyncio
+async def test_terminal_quorum_failure_reloads_the_same_policy_with_judge_override(repo):
+    exc = quorum_failure_exception()
+    rc = run_config()
+    started_at = now()
+    policy = _policy_with_judge_override()
+    await repo.save_accepted(
+        "run-judge-policy-qf", run_config=rc, started_at=started_at, provider_execution_policy=policy
+    )
+
+    await repo.save_quorum_failure(
+        exc, run_config=rc, started_at=started_at, failed_at=now(), run_id="run-judge-policy-qf"
+    )
+
+    loaded = await repo.get_run("run-judge-policy-qf")
+    assert isinstance(loaded, QuorumFailureRecord)
+    assert loaded.provider_execution_policy == policy
+
+
+@pytest.mark.asyncio
+async def test_historical_policy_snapshot_without_judge_override_loads_and_is_never_rewritten(
+    engine, repo
+):
+    """Snapshot no formato ANTIGO (só as duas chaves originais) -- carrega
+    com `judge_override=None` ("nenhum override registrado") e a cópia
+    verbatim accepted -> completed NÃO fabrica a chave nova: o JSON
+    persistido continua exatamente igual ao histórico. Sem migração de
+    banco (coluna JSON pré-existente)."""
+    result = full_council_run_result()
+    await repo.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=provider_execution_policy(),
+    )
+    historical = {"attempt_timeout_seconds": 60.0, "max_transport_attempts_per_completion": 3}
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE accepted_runs SET provider_execution_policy_json = :j WHERE id = :id"),
+            {"j": json.dumps(historical), "id": result.id},
+        )
+
+    before = await repo.get_run(result.id)  # ainda "running" (accepted)
+    assert before.provider_execution_policy.judge_override is None
+
+    await repo.save_success(result)
+
+    loaded = await repo.get_run(result.id)
+    assert isinstance(loaded, CompletedRunRecord)
+    assert loaded.provider_execution_policy.judge_override is None
+    assert loaded.provider_execution_policy.attempt_timeout_seconds == 60.0
+    async with engine.begin() as conn:
+        raw = (
+            await conn.execute(
+                text("SELECT provider_execution_policy_json FROM council_runs WHERE id = :id"),
+                {"id": result.id},
+            )
+        ).scalar_one()
+    assert json.loads(raw) == historical  # nada fabricado retroativamente

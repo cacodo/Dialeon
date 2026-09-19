@@ -939,3 +939,209 @@ async def test_timeout_exhaustion_retains_uncertain_prior_attempts_and_unknown_a
     # Backoff é chamado só ENTRE tentativas -- 2 chamadas (antes da 2ª e
     # da 3ª tentativa), nunca dentro do wait_for de cada tentativa.
     assert mock_backoff.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1 -- `complete(execution_policy=...)`
+#
+# Override POR CHAMADA, resolvido localmente: nunca muta o default do
+# provider, `None` = comportamento anterior exato. Determinístico: timeouts
+# curtos reais (centésimos de segundo) e `_backoff_delay` mockado -- nenhum
+# sleep de backoff real, nenhuma chamada de rede.
+# ---------------------------------------------------------------------------
+
+import asyncio as _aio  # noqa: E402
+
+from app.models.provider_models import TransportAttemptPolicy  # noqa: E402
+
+
+class _SleepThenSucceedProvider(_ScriptedProvider):
+    """`_call_api` dorme `delay` segundos e então responde com sucesso."""
+
+    def __init__(self, delay: float, **kwargs):
+        super().__init__(script=[], **kwargs)
+        self._delay = delay
+
+    async def _call_api(self, request):
+        self.call_count += 1
+        await _aio.sleep(self._delay)
+        return ("ok", TokenUsage(input_tokens=1, output_tokens=1), "scripted-model", "end_turn")
+
+
+class _AlwaysTimesOutProvider(_ScriptedProvider):
+    async def _call_api(self, request):
+        self.call_count += 1
+        await _aio.sleep(10)  # nunca retorna -- sempre estoura o timeout curto
+        raise AssertionError("nunca deveria chegar aqui")
+
+
+@pytest.mark.asyncio
+async def test_override_timeout_applies_instead_of_provider_default():
+    """Default do provider (0.02s) estouraria uma chamada de 0.1s -- o
+    override (5s, 1 tentativa) a deixa concluir na 1ª tentativa."""
+    provider = _SleepThenSucceedProvider(delay=0.1, timeout_seconds=0.02, max_retries=2)
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=1
+    )
+
+    result = await provider.complete(_request(), execution_policy=override)
+
+    assert result.status == "success"
+    assert result.attempts == 1
+    assert provider.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_override_timeout_value_is_the_one_reported_in_the_error_message():
+    provider = _AlwaysTimesOutProvider(script=[], timeout_seconds=5, max_retries=2)
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=0.01, max_transport_attempts_per_completion=1
+    )
+
+    result = await provider.complete(_request(), execution_policy=override)
+
+    assert result.status == "error"
+    assert result.error.type.value == "timeout"
+    assert "0.01s" in result.error.message  # nunca "5s" (o default do provider)
+
+
+@pytest.mark.asyncio
+async def test_override_single_attempt_never_sleeps_or_retries_after_the_only_attempt():
+    """Judge: 1 tentativa de transporte = `_backoff_delay` NUNCA chamado
+    (nenhum sleep de backoff depois da única tentativa) e `_call_api`
+    chamado exatamente 1 vez, mesmo com um provider cujo default é 3
+    tentativas e um erro RETRYABLE."""
+    provider = _ScriptedProvider(
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("nunca deveria ser consumido", retryable=True),
+            ProviderAPIError("nem este", retryable=True),
+        ],
+        timeout_seconds=5,
+        max_retries=2,
+    )
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=1
+    )
+    with patch("app.providers.base._backoff_delay") as mock_backoff, patch(
+        "app.providers.base.asyncio.sleep", new_callable=AsyncMock
+    ) as mock_sleep:
+        result = await provider.complete(_request(), execution_policy=override)
+
+    assert result.status == "error"
+    assert provider.call_count == 1
+    assert result.attempts == 1
+    mock_backoff.assert_not_called()
+    mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_single_timed_out_attempt_keeps_unknown_usage_without_false_uncertain_prior_attempts():
+    """Contabilidade: UMA tentativa que estoura o timeout deixa
+    usage/cost DESCONHECIDOS (None, nunca zero) -- mas, como não houve
+    tentativa ANTERIOR, `had_uncertain_prior_attempts` é False (só
+    `attempts > 1` sinaliza isso)."""
+    provider = _AlwaysTimesOutProvider(script=[], timeout_seconds=5, max_retries=2)
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=0.01, max_transport_attempts_per_completion=1
+    )
+
+    result = await provider.complete(_request(), execution_policy=override)
+
+    assert result.status == "error"
+    assert result.attempts == 1
+    assert result.usage is None
+    assert result.cost_usd is None
+    assert result.pricing_provenance is None
+    assert result.had_uncertain_prior_attempts is False
+
+
+@pytest.mark.asyncio
+async def test_override_can_allow_more_attempts_than_the_provider_default():
+    """O override é simétrico -- resolve max_retries a partir do próprio
+    `max_transport_attempts_per_completion`, nunca só "reduz"."""
+    provider = _ScriptedProvider(
+        script=[
+            ProviderRateLimitError("rate limited"),
+            ("ok", TokenUsage(), "scripted-model"),
+        ],
+        timeout_seconds=5,
+        max_retries=0,
+    )
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=2
+    )
+    with patch("app.providers.base._backoff_delay", return_value=0.0):
+        result = await provider.complete(_request(), execution_policy=override)
+
+    assert result.status == "success"
+    assert result.attempts == 2
+    assert result.had_uncertain_prior_attempts is True
+
+
+@pytest.mark.asyncio
+async def test_no_override_keeps_provider_defaults_three_attempts():
+    """Chamada ordinária (sem override) -- comportamento EXATAMENTE
+    anterior: default do provider (60s/3 tentativas na produção; aqui
+    5s/3), nunca influenciado por nenhuma chamada com override."""
+    provider = _ScriptedProvider(
+        script=[
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500", retryable=True),
+        ],
+        timeout_seconds=5,
+        max_retries=2,
+    )
+    with patch("app.providers.base._backoff_delay", return_value=0.0):
+        result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert provider.call_count == 3
+    assert result.attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_override_never_mutates_provider_defaults_nor_leaks_into_later_calls():
+    provider = _ScriptedProvider(
+        script=[
+            ProviderAPIError("erro 500", retryable=True),  # chamada 1 (override, 1 tentativa)
+            ProviderAPIError("erro 500", retryable=True),  # chamada 2 (default, 3 tentativas)
+            ProviderAPIError("erro 500", retryable=True),
+            ProviderAPIError("erro 500", retryable=True),
+        ],
+        timeout_seconds=5,
+        max_retries=2,
+    )
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=99.0, max_transport_attempts_per_completion=1
+    )
+    with patch("app.providers.base._backoff_delay", return_value=0.0):
+        first = await provider.complete(_request(), execution_policy=override)
+        assert provider._timeout_seconds == 5
+        assert provider._max_retries == 2
+        second = await provider.complete(_request())
+
+    assert first.attempts == 1
+    assert second.attempts == 3
+    assert provider._timeout_seconds == 5
+    assert provider._max_retries == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_override_and_default_calls_do_not_interfere():
+    """Duas completions concorrentes no MESMO provider instance (uma com
+    override, outra sem) -- o estado resolvido é local a cada chamada."""
+    provider = _SleepThenSucceedProvider(delay=0.1, timeout_seconds=0.02, max_retries=0)
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=1
+    )
+
+    with_override, without_override = await _aio.gather(
+        provider.complete(_request(), execution_policy=override),
+        provider.complete(_request()),
+    )
+
+    assert with_override.status == "success"
+    assert without_override.status == "error"  # default 0.02s ainda estoura
+    assert without_override.error.type.value == "timeout"

@@ -109,8 +109,83 @@ def test_get_run_completed_with_known_policy_displays_it():
     assert body["provider_execution_policy"] == {
         "attempt_timeout_seconds": 30.0,
         "max_transport_attempts_per_completion": 2,
+        # Judge Transport Execution Policy V1 -- a política de teste não
+        # tem override do Judge: `null` honesto ("nenhum override
+        # registrado"), nunca um override inventado.
+        "judge_override": None,
     }
     assert "provider_execution_policy" not in body["config"]
+
+
+def test_get_run_completed_exposes_default_policy_and_judge_override_distinctly():
+    """Judge Transport Execution Policy V1 -- o snapshot aceito com um
+    override do Judge expõe os DOIS: o default (topo) e o override
+    (`judge_override`), distinguíveis, tanto no detail comum quanto no
+    audit. Mesmo objeto, mesmo valor nos dois caminhos."""
+    from app.models.provider_models import ProviderExecutionPolicy, TransportAttemptPolicy
+
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=60.0,
+        max_transport_attempts_per_completion=3,
+        judge_override=TransportAttemptPolicy(
+            attempt_timeout_seconds=120.0, max_transport_attempts_per_completion=1
+        ),
+    )
+    expected = {
+        "attempt_timeout_seconds": 60.0,
+        "max_transport_attempts_per_completion": 3,
+        "judge_override": {
+            "attempt_timeout_seconds": 120.0,
+            "max_transport_attempts_per_completion": 1,
+        },
+    }
+    result = full_council_run_result()
+    app = create_app(
+        settings=_settings(),
+        components_factory=make_components_factory(provider_execution_policy=policy),
+    )
+
+    with TestClient(app) as client:
+        run_id = client.portal.call(_seed_accepted_then_success, app.state.components, result)
+        detail = client.get(f"/runs/{run_id}").json()
+        audit = client.get(f"/runs/{run_id}/audit").json()
+
+    assert detail["provider_execution_policy"] == expected
+    assert audit["provider_execution_policy"] == expected
+
+
+def test_get_run_historical_policy_snapshot_without_judge_override_reads_back_as_null():
+    """Snapshot persistido ANTES do campo existir (JSON com só as duas
+    chaves originais) -- a leitura pública devolve `judge_override: null`;
+    nada é fabricado e a linha persistida NÃO é reescrita."""
+    import json as _json
+    from sqlalchemy import text
+
+    result = full_council_run_result()
+    app = create_app(settings=_settings(), components_factory=make_components_factory())
+
+    async def _seed_historical(components):
+        await _seed_accepted_then_success(components, result)
+        async with components.engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE council_runs SET provider_execution_policy_json = :j WHERE id = :id"),
+                {
+                    "j": _json.dumps(
+                        {"attempt_timeout_seconds": 60.0, "max_transport_attempts_per_completion": 3}
+                    ),
+                    "id": result.id,
+                },
+            )
+
+    with TestClient(app) as client:
+        client.portal.call(_seed_historical, app.state.components)
+        body = client.get(f"/runs/{result.id}").json()
+
+    assert body["provider_execution_policy"] == {
+        "attempt_timeout_seconds": 60.0,
+        "max_transport_attempts_per_completion": 3,
+        "judge_override": None,
+    }
 
 
 def test_get_run_completed_exposes_default_model_authority_snapshot():

@@ -1092,3 +1092,209 @@ def test_single_judge_judge_does_not_accept_source_analysis_result_or_reconcilia
     signature = inspect.signature(SingleJudge.judge)
     assert "source_analysis_result" not in signature.parameters
     assert "reconciliation" not in signature.parameters
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1
+#
+# `SingleJudge(execution_policy=...)` passa o override de TRANSPORTE a CADA
+# `LLMProvider.complete()` do Judge. Transporte e retry de output
+# ESTRUTURADO são mecanismos separados: o retry estruturado continua
+# existindo, e cada completion dele recebe a política independentemente.
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from app.config import Settings  # noqa: E402
+from app.models.provider_models import (  # noqa: E402
+    ProviderExecutionPolicy,
+    TransportAttemptPolicy,
+)
+from app.providers.base import LLMProvider  # noqa: E402
+from app.providers.pricing import PricingRegistry  # noqa: E402
+
+
+def _resolved_judge_override() -> TransportAttemptPolicy:
+    """O override REAL de produção (resolvido de `Settings` default)."""
+    override = ProviderExecutionPolicy.from_settings(Settings(_env_file=None)).judge_override
+    assert override is not None
+    return override
+
+
+async def _judge_once(judge: SingleJudge, dr):
+    return await judge.judge(
+        dr,
+        _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd,
+    )
+
+
+class _RealTransportProvider(LLMProvider):
+    """`LLMProvider` REAL (loop de retry/timeout de produção, sem
+    sobrescrever `complete()`), com `_call_api` roteirizado -- cada item
+    do script é `(delay_s, texto)` ou uma exceção."""
+
+    provider_name = "anthropic"
+
+    def __init__(self, script, *, timeout_seconds: float, max_retries: int):
+        super().__init__(
+            api_key="fake-key",
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            pricing=PricingRegistry({}),
+        )
+        self._script = list(script)
+        self.call_count = 0
+
+    @property
+    def default_model(self) -> str:
+        return "fake-model"
+
+    async def _call_api(self, request):
+        self.call_count += 1
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        delay, text = item
+        await asyncio.sleep(delay)
+        return (text, TokenUsage(input_tokens=10, output_tokens=5), "fake-model", "end_turn")
+
+
+@pytest.mark.asyncio
+async def test_judge_completion_receives_the_resolved_120s_single_attempt_policy():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", _assessment_payload(c1.id))])
+    override = _resolved_judge_override()
+    judge = SingleJudge({"anthropic": provider}, execution_policy=override)
+
+    result = await _judge_once(judge, dr)
+
+    assert result.verdict is not None
+    assert provider.received_execution_policies == [override]
+    assert override.attempt_timeout_seconds == 120.0
+    assert override.max_transport_attempts_per_completion == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_without_configured_policy_passes_none_default_behavior_unchanged():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    provider = ScriptedProvider("anthropic", [text_response("anthropic", _assessment_payload(c1.id))])
+
+    result = await _judge_once(SingleJudge({"anthropic": provider}), dr)
+
+    assert result.verdict is not None
+    assert provider.received_execution_policies == [None]
+
+
+@pytest.mark.asyncio
+async def test_structured_output_retry_still_works_and_each_completion_gets_the_policy():
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    good = _assessment_payload(c1.id)
+    provider = ScriptedProvider(
+        "anthropic", [text_response("anthropic", "isso não é json"), text_response("anthropic", good)]
+    )
+    override = _resolved_judge_override()
+    judge = SingleJudge({"anthropic": provider}, execution_policy=override)
+
+    result = await _judge_once(judge, dr)
+
+    assert result.verdict is not None
+    assert [a.parse_status for a in result.attempts] == ["malformed", "accepted"]
+    # DUAS completions (retry estruturado preservado), CADA UMA com a
+    # política do Judge independentemente.
+    assert provider.received_execution_policies == [override, override]
+
+
+@pytest.mark.asyncio
+async def test_structured_retry_completions_each_get_a_full_independent_transport_budget():
+    """Provider REAL cujo default (0.02s) estouraria QUALQUER chamada de
+    0.1s: o override (5s / 1 tentativa) precisa valer pra completion do
+    1º output inválido E pra do retry estruturado -- a 2ª completion não
+    herda "o que sobrou" da 1ª."""
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    provider = _RealTransportProvider(
+        [(0.1, "isso não é json"), (0.1, _assessment_payload(c1.id))],
+        timeout_seconds=0.02,
+        max_retries=2,
+    )
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=1
+    )
+    judge = SingleJudge({"anthropic": provider}, execution_policy=override)
+
+    result = await _judge_once(judge, dr)
+
+    assert result.verdict is not None
+    assert [a.parse_status for a in result.attempts] == ["malformed", "accepted"]
+    assert [a.transport_attempts for a in result.attempts] == [1, 1]
+    assert provider.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_single_timed_out_judge_attempt_never_retries_or_sleeps_and_keeps_unknown_accounting():
+    """Provider REAL, default 3 tentativas: com o override (1 tentativa)
+    um timeout gera UMA chamada de transporte, nenhum sleep de backoff,
+    `JudgeAttempt.transport_attempts == 1`, usage/cost DESCONHECIDOS e
+    `had_uncertain_prior_attempts` False (não houve tentativa ANTERIOR)."""
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    provider = _RealTransportProvider(
+        [(10, "nunca chega lá")] * 3, timeout_seconds=5.0, max_retries=2
+    )
+    override = TransportAttemptPolicy(
+        attempt_timeout_seconds=0.01, max_transport_attempts_per_completion=1
+    )
+    judge = SingleJudge({"anthropic": provider}, execution_policy=override)
+
+    with patch("app.providers.base._backoff_delay") as mock_backoff:
+        result = await _judge_once(judge, dr)
+
+    assert result.verdict is None
+    assert result.verdict_unavailable_reason == "judge_transport_failed"
+    assert len(result.attempts) == 1  # sem retry estruturado pra erro de transporte
+    assert provider.call_count == 1
+    mock_backoff.assert_not_called()
+    attempt = result.attempts[0]
+    assert attempt.transport_status == "error"
+    assert attempt.transport_error is not None
+    assert attempt.transport_error.type.value == "timeout"
+    assert attempt.transport_attempts == 1
+    assert attempt.had_uncertain_prior_attempts is False
+    assert attempt.usage is None
+    assert attempt.cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_judge_request_content_and_digest_are_identical_with_and_without_the_policy():
+    """A política de transporte NUNCA entra no `CompletionRequest` -- o
+    request enviado e o digest `judge_v1` gravado são idênticos com e sem
+    override (semântica do request inalterada)."""
+    from app.models.request_provenance import compute_request_digest
+
+    c1 = raw_claim("A", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    good = _assessment_payload(c1.id)
+
+    plain = ScriptedProvider("anthropic", [text_response("anthropic", good)])
+    overridden = ScriptedProvider("anthropic", [text_response("anthropic", good)])
+    plain_result = await _judge_once(SingleJudge({"anthropic": plain}), dr)
+    overridden_result = await _judge_once(
+        SingleJudge({"anthropic": overridden}, execution_policy=_resolved_judge_override()), dr
+    )
+
+    assert plain.received_requests[0] == overridden.received_requests[0]
+    assert compute_request_digest(plain.received_requests[0]) == compute_request_digest(
+        overridden.received_requests[0]
+    )
+    assert (
+        plain_result.attempts[0].request_provenance
+        == overridden_result.attempts[0].request_provenance
+    )
+    assert plain_result.attempts[0].request_provenance.contract_version == JUDGE_CONTRACT_VERSION == "judge_v1"

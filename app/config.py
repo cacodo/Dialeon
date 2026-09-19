@@ -191,6 +191,22 @@ class Settings(BaseSettings):
     provider_timeout_seconds: int = 60
     provider_max_retries: int = 2
 
+    # --- Política de transporte ESCOPADA ao Judge (deployment-only) ---
+    # Judge Transport Execution Policy V1 -- override operacional, NÃO um
+    # knob semântico de RunConfig nem input de run pública: o Judge
+    # gera um assessment por claim atual numa ÚNICA resposta (saída
+    # proporcional ao nº de claims), então um deadline de tentativa
+    # calibrado pras demais operações (`provider_timeout_seconds`) pode
+    # ser binding só pra ele. 1 tentativa de transporte porque repetir
+    # um request idêntico e longo N vezes não muda o resultado (o retry
+    # de output ESTRUTURADO do SingleJudge é um mecanismo separado e
+    # continua existindo -- cada completion dele recebe esta política
+    # de forma independente). Validação (>0 / >=1) acontece em
+    # `ProviderExecutionPolicy.from_settings`, mesma convenção de
+    # `provider_timeout_seconds`/`provider_max_retries` acima.
+    judge_provider_timeout_seconds: int = 120
+    judge_provider_max_transport_attempts: int = 1
+
     # --- Timeout de dispatch de UMA rodada de providers em paralelo ---
     # Renomeado de `orchestrator_overall_timeout_seconds` (clarificação de
     # contrato de execução, pós-run real): o nome antigo dava a entender

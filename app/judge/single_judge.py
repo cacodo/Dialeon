@@ -11,7 +11,10 @@ Retry: `_MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2` (1 inicial + 1 retry) — LOCAL a
 este módulo, não importado do claim processor (camadas independentes, mesmo
 número por coincidência de política, não por acoplamento). Erro de
 TRANSPORTE não é retentado aqui — o `LLMProvider` já esgotou o retry dele
-antes de devolver `status="error"`.
+antes de devolver `status="error"`. A política de transporte do Judge
+(timeout por tentativa + teto de tentativas de transporte) é um override
+por chamada injetado no construtor (`execution_policy`), independente do
+retry de output estruturado abaixo.
 
 Etapa 17A.2 — truncamento CONHECIDO (provider_finish_reason confirmado,
 nunca inferido de JSON malformado sozinho) também cancela o retry: o
@@ -39,7 +42,7 @@ from app.judge.result import JudgeResult
 from app.judge.schemas import JudgeOutput
 from app.judge.strategy import JudgeStrategy
 from app.models.domain import ClaimAssessment, JudgeVerdict
-from app.models.provider_models import ProviderResponse
+from app.models.provider_models import ProviderResponse, TransportAttemptPolicy
 from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
@@ -54,8 +57,22 @@ _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 
 
 class SingleJudge(JudgeStrategy):
-    def __init__(self, providers: dict[str, LLMProvider]):
+    def __init__(
+        self,
+        providers: dict[str, LLMProvider],
+        *,
+        execution_policy: TransportAttemptPolicy | None = None,
+    ):
+        """`execution_policy` (Judge Transport Execution Policy V1) --
+        política de TRANSPORTE só das completions do Judge (resolvida uma
+        vez no composition root, `ProviderExecutionPolicy.judge_override`).
+        Passada a CADA `LLMProvider.complete()` deste módulo: uma
+        completion de retry ESTRUTURADO (`_MAX_STRUCTURED_OUTPUT_ATTEMPTS`)
+        recebe a política de forma INDEPENDENTE -- os dois mecanismos de
+        retry (transporte vs. output estruturado) seguem separados.
+        `None` = default do provider, comportamento anterior."""
         self._providers = providers
+        self._execution_policy = execution_policy
 
     async def judge(
         self,
@@ -187,7 +204,9 @@ class SingleJudge(JudgeStrategy):
                     run_config,
                 ):
                     break  # budget já esgotado -- não inicia o retry
-            provider_response = await judge_llm.complete(request)
+            provider_response = await judge_llm.complete(
+                request, execution_policy=self._execution_policy
+            )
 
             if provider_response.status == "error":
                 attempts.append(

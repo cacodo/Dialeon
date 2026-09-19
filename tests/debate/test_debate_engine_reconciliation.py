@@ -681,3 +681,53 @@ async def test_judge_facing_current_claims_reflect_successful_reconciliation():
     judge_facing_claims = get_current_claims(result.claims)
     assert len(judge_facing_claims) == 1
     assert judge_facing_claims[0].text == "crescimento de receita confirmado"
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1 -- nenhum override vaza pro pipeline de
+# debate (participantes, extração, agrupamento, reconciliação)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_transport_policy_override_reaches_participants_extraction_grouping_or_reconciliation():
+    r1_text = "O céu é azul devido ao espalhamento de Rayleigh."
+    r2_text = "A cor azul do céu vem do espalhamento de Rayleigh da luz solar."
+    participant = _participant_handler("openai", "resposta inicial", "resposta de crítica")
+    processor = _processor_handler(
+        extraction_map={
+            "resposta inicial": _extraction(r1_text),
+            "resposta de crítica": _extraction(r2_text),
+        },
+        reconciliation_response=None,
+    )
+
+    async def reconciling_processor(call_index: int, request):
+        content = request.messages[0].content
+        if "CLAIMS_ATUAIS" in content:
+            payload = json.loads(content.split("rodada de crítica combinadas):\n", 1)[1])
+            ids = [c["id"] for c in payload]
+            return _ok(
+                "claude-processor",
+                json.dumps(
+                    {
+                        "groups": [{"member_claim_ids": ids, "canonical_text": "proposição unificada"}],
+                        "ungrouped_claim_ids": [],
+                    }
+                ),
+            )
+        return await processor(call_index, request)
+
+    providers = _providers(participant, reconciling_processor)
+    result = await DebateEngine(providers).run(_run_config(["openai"]))
+
+    processor_requests = providers["claude-processor"].received_requests
+    # o cenário exercita mesmo extração E reconciliação (não é vácuo)
+    assert any("CLAIMS_ATUAIS" in r.messages[0].content for r in processor_requests)
+    assert len(processor_requests) >= 3
+    assert len(providers["openai"].received_requests) >= 2  # rodada inicial + crítica
+    assert get_current_claims(result.claims)  # pipeline completou
+
+    for name, provider in providers.items():
+        assert provider.received_execution_policies, name
+        assert all(p is None for p in provider.received_execution_policies), name

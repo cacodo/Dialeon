@@ -693,7 +693,7 @@ async def test_initial_response_provenance_survives_synthetic_timeout_despite_mu
         await asyncio.sleep(9999)
 
     class _HangingMutatingProvider(StubProvider):
-        async def complete(self, request: CompletionRequest):
+        async def complete(self, request: CompletionRequest, *, execution_policy=None):
             self.received_requests.append(request)
             await _mutate_then_hang(request)
             raise AssertionError("nunca deveria chegar aqui")

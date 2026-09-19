@@ -444,6 +444,7 @@ async def test_cmd_get_completed_run_with_known_policy_json_and_human(capsys):
     assert body["provider_execution_policy"] == {
         "attempt_timeout_seconds": 30.0,
         "max_transport_attempts_per_completion": 2,
+        "judge_override": None,  # política de teste sem override do Judge
     }
 
     exit_code = await commands.cmd_get(components, run_id=result.id, as_json=False)
@@ -451,6 +452,48 @@ async def test_cmd_get_completed_run_with_known_policy_json_and_human(capsys):
     out = capsys.readouterr().out
     assert "30.0" in out
     assert "2" in out
+
+
+@pytest.mark.asyncio
+async def test_cmd_get_completed_run_with_judge_override_distinguishes_it_in_json_and_human(capsys):
+    """Judge Transport Execution Policy V1 -- o snapshot aceito com override
+    do Judge aparece distinguível do default, em --json e no texto humano
+    (a linha nunca diz que o default vale pro run inteiro)."""
+    from app.models.provider_models import ProviderExecutionPolicy, TransportAttemptPolicy
+
+    components = await _components()
+    result = full_council_run_result()
+    policy = ProviderExecutionPolicy(
+        attempt_timeout_seconds=60.0,
+        max_transport_attempts_per_completion=3,
+        judge_override=TransportAttemptPolicy(
+            attempt_timeout_seconds=120.0, max_transport_attempts_per_completion=1
+        ),
+    )
+    await components.repository.save_accepted(
+        result.id,
+        run_config=result.run_config,
+        started_at=result.started_at,
+        provider_execution_policy=policy,
+    )
+    await components.repository.save_success(result)
+
+    assert await commands.cmd_get(components, run_id=result.id, as_json=True) == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert body["provider_execution_policy"]["judge_override"] == {
+        "attempt_timeout_seconds": 120.0,
+        "max_transport_attempts_per_completion": 1,
+    }
+
+    assert await commands.cmd_get(components, run_id=result.id, as_json=False) == commands.EXIT_OK
+    line = next(
+        l for l in capsys.readouterr().out.split("\n") if "política_de_execução_do_provider" in l
+    )
+    assert "timeout_por_tentativa=60.0s" in line
+    assert "tentativas_de_transporte_max=3" in line
+    assert "padrão, exceto Judge" in line
+    assert "juiz: timeout_por_tentativa=120.0s" in line
+    assert "tentativas_de_transporte_max=1" in line
 
 
 @pytest.mark.asyncio

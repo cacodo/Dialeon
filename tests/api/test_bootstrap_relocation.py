@@ -468,3 +468,75 @@ async def test_app_components_settings_reference_remains_frozen_after_compositio
         )
     finally:
         await components.engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Judge Transport Execution Policy V1 -- composition root
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_resolves_default_and_judge_policy_once_and_wires_judge_only():
+    """Uma única resolução (`ProviderExecutionPolicy.from_settings`): o
+    MESMO objeto vira (a) o snapshot de aceite do service e (b) o override
+    injetado no `SingleJudge`. Os providers construídos mantêm o DEFAULT
+    (60s / 3 tentativas) -- o override nunca vira default de instância."""
+    from app.bootstrap import build_app_components
+    from app.judge.single_judge import SingleJudge
+
+    settings = Settings(_env_file=None, database_url="sqlite+aiosqlite:///:memory:")
+    components = await build_app_components(settings)
+    try:
+        policy = components.provider_execution_policy
+        assert (policy.attempt_timeout_seconds, policy.max_transport_attempts_per_completion) == (60.0, 3)
+        assert policy.judge_override is not None
+        assert (
+            policy.judge_override.attempt_timeout_seconds,
+            policy.judge_override.max_transport_attempts_per_completion,
+        ) == (120.0, 1)
+
+        assert components.service._provider_execution_policy is policy
+        judge = components.service._runner._judge
+        assert isinstance(judge, SingleJudge)
+        assert judge._execution_policy is policy.judge_override
+
+        for name, provider in components.providers.items():
+            assert provider._timeout_seconds == 60.0, name
+            assert provider._max_retries == 2, name
+    finally:
+        await components.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_honors_judge_policy_deployment_settings():
+    from app.bootstrap import build_app_components
+
+    settings = Settings(
+        _env_file=None,
+        database_url="sqlite+aiosqlite:///:memory:",
+        judge_provider_timeout_seconds=200,
+        judge_provider_max_transport_attempts=2,
+    )
+    components = await build_app_components(settings)
+    try:
+        override = components.provider_execution_policy.judge_override
+        assert (override.attempt_timeout_seconds, override.max_transport_attempts_per_completion) == (200.0, 2)
+        assert components.service._runner._judge._execution_policy is override
+        # default de topo intocado pelo override do Judge
+        assert components.provider_execution_policy.attempt_timeout_seconds == 60.0
+    finally:
+        await components.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_rejects_invalid_judge_policy_settings():
+    from app.bootstrap import build_app_components
+
+    with pytest.raises(ValidationError):
+        await build_app_components(
+            Settings(
+                _env_file=None,
+                database_url="sqlite+aiosqlite:///:memory:",
+                judge_provider_max_transport_attempts=0,
+            )
+        )

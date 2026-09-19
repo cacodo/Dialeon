@@ -219,7 +219,9 @@ async def build_app_components(settings: Settings) -> AppComponents:
 
         debate_engine = DebateEngine(providers)
         source_analyzer = SourceAnalyzer(providers)
-        judge = SingleJudge(providers)
+        judge = SingleJudge(
+            providers, execution_policy=provider_execution_policy.judge_override
+        )
         editor = Editor(providers)
         runner = CouncilRunner(
             debate_engine=debate_engine,

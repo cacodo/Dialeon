@@ -54,9 +54,18 @@ export interface ProviderErrorInfo {
 // app/models/provider_models.py:ProviderExecutionPolicy). `null` só pra
 // runs persistidos antes desta feature existir -- nunca substituído
 // pelos defaults atuais.
-export interface ProviderExecutionPolicy {
+export interface TransportAttemptPolicy {
   attempt_timeout_seconds: number
   max_transport_attempts_per_completion: number
+}
+
+// Os dois números de topo são o DEFAULT do deployment (todas as
+// operações exceto o Judge). `judge_override` é a política de transporte
+// PRÓPRIA do Judge registrada no snapshot; `null` (ou ausente -- payload
+// histórico/externo anterior a este campo) = nenhum override do Judge
+// registrado, nunca um override inventado.
+export interface ProviderExecutionPolicy extends TransportAttemptPolicy {
+  judge_override?: TransportAttemptPolicy | null
 }
 
 // Provider Default-Model Snapshot Provenance V1 -- snapshot IMUTÁVEL,
