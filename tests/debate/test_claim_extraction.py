@@ -161,7 +161,7 @@ async def test_grouping_request_asks_for_minimal_reasoning():
     c1 = _old_claim("c1", "X.")
     provider = ScriptedProvider(
         "anthropic",
-        [text_response("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": [c1.id]}))],
+        [text_response("anthropic", json.dumps({"clusters": [[c1.id]]}))],
     )
     await group_claims(
         [c1], round_number=1, grouper=provider, max_output_tokens_per_call=1024,

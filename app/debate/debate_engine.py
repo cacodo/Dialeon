@@ -364,9 +364,9 @@ class DebateEngine:
 
         Etapa 15: `verification_attempts` só é produzido durante a
         EXTRAÇÃO (sobre claims brutas) — `group_claims` nunca gera
-        nenhum, porque a claim canônica de fusão tem texto sintetizado
-        pela LLM e nunca teve proposta numérica própria (ver
-        `numeric_verification.py`).
+        nenhum. (Historicamente, v1-v3, a claim canônica de fusão tinha
+        texto sintetizado pela LLM e nunca teve proposta numérica própria;
+        em v4 o agrupamento nem cria claim -- ver `group_claims`.)
 
         Etapa 17A (B2): `prior_*` é o total conhecido ANTES desta rodada
         de processamento começar (dispatch do round + qualquer fase
@@ -423,7 +423,12 @@ class DebateEngine:
         ):
             return raw_claims, attempts, verification_attempts  # agrupamento não é chamado
 
-        canonical_claims, grouping_attempts = await group_claims(
+        # claim_grouping_v4 -- agrupamento é CONSULTIVO: só devolve as
+        # tentativas (a proposta fica auditável na resposta bruta). Nenhuma
+        # claim canônica, nenhuma fusão de suporte, nenhuma supersessão:
+        # TODAS as claims brutas seguem atuais e são as que a crítica, a
+        # reconciliação, a Source Analysis e o Judge veem.
+        grouping_attempts = await group_claims(
             raw_claims,
             round_number=round_number,
             grouper=processor,
@@ -441,7 +446,7 @@ class DebateEngine:
         )
         attempts.extend(grouping_attempts)
 
-        return raw_claims + canonical_claims, attempts, verification_attempts
+        return raw_claims, attempts, verification_attempts
 
 
 def _cumulative_totals(

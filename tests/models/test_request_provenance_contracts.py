@@ -156,18 +156,20 @@ def test_claim_extraction_contract_version_and_golden_digest():
 
 
 # ---------------------------------------------------------------------------
-# 4. claim_grouping_v3
+# 4. claim_grouping_v4
 # ---------------------------------------------------------------------------
 #
 # Intencional (governança acima): v1 -> v2 (`minimal_reasoning=True`) -> v3
-# (prompt clarificado + aceitação com normalização de grupo unitário). Os
-# goldens v1/v2 desta MESMA fixture (`35b8b9af...` / `662adfe8...`) seguem
-# documentados em tests/debate/test_grouping_reasoning_policy.py, derivados
-# do prompt histórico -- prova de que só prompt/flag mudaram entre versões.
+# (prompt clarificado + normalização de grupo unitário) -> v4 (REDESENHO
+# não-destrutivo: partição consultiva em `clusters`, sem canonical_text). Os
+# goldens v1/v2/v3 desta MESMA fixture (`35b8b9af...` / `662adfe8...` /
+# `1af61f27...`) seguem documentados em
+# tests/debate/test_grouping_reasoning_policy.py, derivados dos prompts
+# históricos.
 
 
 def test_claim_grouping_contract_version_and_golden_digest():
-    assert CLAIM_GROUPING_CONTRACT_VERSION == "claim_grouping_v3"
+    assert CLAIM_GROUPING_CONTRACT_VERSION == "claim_grouping_v4"
 
     c1 = raw_claim("Brasília é a capital.", "resp-1", provider="openai", id="claim-fixed-1")
     c2 = raw_claim("Brasília é a capital.", "resp-1", provider="openai", id="claim-fixed-2")
@@ -175,7 +177,7 @@ def test_claim_grouping_contract_version_and_golden_digest():
 
     assert compute_request_digest(request) == (
         "completion-request-sha256-v2:"
-        "1af61f27dc79e5fc099a38ac64a4003089e760d14aea979ffed4d31b2e62acff"
+        "2e670987ee5c6677c867cdf31b617cec27aa81c5dc3aed8cf2b32d16ad8cd696"
     )
 
 

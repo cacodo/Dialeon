@@ -74,6 +74,11 @@ async def _err_coro(provider_name: str) -> ProviderResponse:
     return _err(provider_name)
 
 
+def _all_singleton_clusters(ids: list[str]) -> str:
+    """Resposta válida do agrupamento v4 sem nenhuma proposta de equivalência."""
+    return json.dumps({"clusters": [[i] for i in ids]})
+
+
 def _ungrouped_response(provider_name: str, content: str, split_marker: str) -> ProviderResponse:
     """Resposta padrão de agrupamento/reconciliação: devolve TODOS os ids
     recebidos em `ungrouped_claim_ids`, sem nenhuma fusão -- merge/
@@ -85,6 +90,9 @@ def _ungrouped_response(provider_name: str, content: str, split_marker: str) -> 
     ver `split_marker`)."""
     payload = json.loads(content.split(split_marker, 1)[1])
     ids = [c["id"] for c in payload]
+    if split_marker == "CLAIMS_BRUTAS:\n":
+        # claim_grouping_v4 -- partição exata, tudo em clusters unitários
+        return _ok(provider_name, _all_singleton_clusters(ids))
     return _ok(provider_name, json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
 
 
@@ -261,7 +269,7 @@ async def test_critique_coverage_0_of_3_does_not_raise_and_debate_still_returns(
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
-            return _ok("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("anthropic", _all_singleton_clusters(ids))
         if "RESPOSTA_A_ANALISAR" in content:
             return _ok(
                 "anthropic",
@@ -382,7 +390,7 @@ async def _budget_example_handler(call_index: int, request) -> ProviderResponse:
         assert "CLAIMS_BRUTAS" in content
         payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
         ids = [c["id"] for c in payload]
-        text = json.dumps({"groups": [], "ungrouped_claim_ids": ids})
+        text = _all_singleton_clusters(ids)
         return _ok("anthropic", text, input_tokens=700, output_tokens=300)
     raise AssertionError(f"chamada inesperada nº {call_index}")
 
@@ -685,7 +693,7 @@ async def test_partial_extraction_coverage_is_disclosed_while_debate_proceeds_no
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
-            return _ok("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("anthropic", _all_singleton_clusters(ids))
         if "CLAIMS_ATUAIS" in content:
             payload = json.loads(content.split("rodada de crítica combinadas):\n", 1)[1])
             ids = [c["id"] for c in payload]
@@ -772,7 +780,7 @@ async def test_round_one_success_is_never_masked_by_total_critique_extraction_fa
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
-            return _ok("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("anthropic", _all_singleton_clusters(ids))
         if "RESPOSTA_A_ANALISAR" in content:
             # Diferencia rodada 1 de rodada de crítica por `call_index`,
             # nunca por conteúdo do texto -- as 2 primeiras chamadas de

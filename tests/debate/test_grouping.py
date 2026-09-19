@@ -1,586 +1,517 @@
+"""
+claim_grouping_v4 -- contrato da PARTIÇÃO consultiva do agrupamento
+intra-round (`group_claims`).
+
+`group_claims` pede uma partição exata das claims em `clusters` (listas de
+ids), valida exata-uma-vez, registra a tentativa e devolve SÓ as tentativas.
+Cluster de 1 id é válido e esperado; não há `canonical_text`, nem
+`ungrouped_claim_ids`. Nenhuma partição malformada é normalizada.
+
+Autoridade (nada é criado/unido/supersedido pelo agrupamento) e o
+downstream: tests/debate/test_grouping_v4_authority.py.
+"""
+
 from __future__ import annotations
 
 import json
 
 import pytest
 
-from app.debate.claim_extraction import CLAIM_GROUPING_CONTRACT_VERSION, group_claims
-from tests.council.fixtures import run_config as _run_config
-from app.models.domain import Claim, ClaimSupport
+from app.debate.claim_extraction import (
+    CLAIM_GROUPING_CONTRACT_VERSION,
+    _parse_and_validate_grouping_partition,
+    group_claims,
+)
+from app.debate.errors import InconsistentClaimReferenceError, MalformedClaimOutputError
 from app.models.provider_models import ModelIdentitySource
+from app.models.request_provenance import build_request_provenance
+from tests.council.fixtures import run_config as _run_config
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
+from tests.judge.fixtures import raw_claim
+
+_PROVIDERS = ("openai", "anthropic", "gemini")
 
 
-def _raw_claim(
-    claim_id_suffix: str,
-    provider: str,
-    total: int = 3,
-    model_identity_source: ModelIdentitySource | None = None,
-) -> Claim:
-    return Claim(
-        text=f"claim de {provider}",
-        source_model_response_id=f"resp-{claim_id_suffix}",
-        round_introduced=1,
-        status="active",
-        supporting_model_response_ids=[
-            ClaimSupport(
-                model_response_id=f"resp-{claim_id_suffix}",
-                provider=provider,
-                model="m",
-                model_identity_source=model_identity_source,
-            )
-        ],
-        total_models_in_round=total,
+def _claims(n: int = 4):
+    return [
+        raw_claim(f"claim {chr(97 + i)}", f"resp-{i}", provider=_PROVIDERS[i % 3])
+        for i in range(n)
+    ]
+
+
+def _payload(*clusters) -> str:
+    return json.dumps({"clusters": [list(c) for c in clusters]})
+
+
+async def _group(claims, responses):
+    provider = ScriptedProvider("anthropic", responses)
+    attempts = await group_claims(
+        claims,
+        round_number=1,
+        grouper=provider,
+        max_output_tokens_per_call=8192,
+        run_config=_run_config(),
+        prior_input_tokens=0,
+        prior_output_tokens=0,
+        prior_cost_usd=0.0,
     )
+    return attempts, provider
+
+
+def _ok(payload: str, **kwargs):
+    return text_response("anthropic", payload, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Contrato da partição v4 (parser/validador direto)
+# ---------------------------------------------------------------------------
+
+
+def test_valid_mixed_partition_multi_and_singleton_clusters():
+    a, b, c, d = _claims(4)
+    ids = {a.id, b.id, c.id, d.id}
+
+    parsed = _parse_and_validate_grouping_partition(_payload([a.id, b.id], [c.id], [d.id]), ids)
+
+    assert parsed.clusters == [[a.id, b.id], [c.id], [d.id]]
+
+
+def test_valid_all_singleton_partition():
+    claims = _claims(3)
+    parsed = _parse_and_validate_grouping_partition(
+        _payload(*[[c.id] for c in claims]), {c.id for c in claims}
+    )
+
+    assert [len(c) for c in parsed.clusters] == [1, 1, 1]
+
+
+def test_valid_single_cluster_with_every_claim():
+    claims = _claims(3)
+    parsed = _parse_and_validate_grouping_partition(
+        _payload([c.id for c in claims]), {c.id for c in claims}
+    )
+
+    assert len(parsed.clusters) == 1 and len(parsed.clusters[0]) == 3
+
+
+def test_every_id_appears_exactly_once_across_the_partition():
+    claims = _claims(5)
+    ids = {c.id for c in claims}
+    parsed = _parse_and_validate_grouping_partition(
+        _payload([claims[0].id, claims[3].id], [claims[1].id], [claims[2].id, claims[4].id]), ids
+    )
+
+    flat = [i for cluster in parsed.clusters for i in cluster]
+    assert sorted(flat) == sorted(ids) and len(flat) == len(set(flat))
+
+
+def test_returned_order_is_the_response_order_never_re_sorted():
+    a, b, c = _claims(3)
+    parsed = _parse_and_validate_grouping_partition(
+        _payload([c.id], [b.id, a.id]), {a.id, b.id, c.id}
+    )
+
+    assert parsed.clusters == [[c.id], [b.id, a.id]]  # clusters e membros como vieram
+
+
+def test_fenced_json_is_accepted():
+    a, b = _claims(2)
+    fenced = "```json\n" + _payload([a.id, b.id]) + "\n```"
+
+    parsed = _parse_and_validate_grouping_partition(fenced, {a.id, b.id})
+
+    assert parsed.clusters == [[a.id, b.id]]
+
+
+# ---------------------------------------------------------------------------
+# Rejeição fail-closed -- nada é normalizado
+# ---------------------------------------------------------------------------
+
+
+def _reject(text: str, ids: set[str], exc):
+    with pytest.raises(exc):
+        _parse_and_validate_grouping_partition(text, ids)
+
+
+def test_missing_id_is_rejected():
+    a, b, c = _claims(3)
+    _reject(_payload([a.id, b.id]), {a.id, b.id, c.id}, InconsistentClaimReferenceError)
+
+
+def test_extra_unknown_id_is_rejected():
+    a, b = _claims(2)
+    _reject(_payload([a.id], [b.id], ["id-que-nao-existe"]), {a.id, b.id}, InconsistentClaimReferenceError)
+
+
+def test_duplicate_id_within_a_cluster_is_rejected():
+    a, b = _claims(2)
+    _reject(_payload([a.id, a.id], [b.id]), {a.id, b.id}, InconsistentClaimReferenceError)
+
+
+def test_duplicate_id_across_clusters_is_rejected():
+    a, b, c = _claims(3)
+    _reject(_payload([a.id, b.id], [b.id, c.id]), {a.id, b.id, c.id}, InconsistentClaimReferenceError)
+
+
+def test_empty_cluster_is_rejected():
+    a, b = _claims(2)
+    _reject(_payload([a.id, b.id], []), {a.id, b.id}, MalformedClaimOutputError)
+
+
+def test_empty_clusters_list_is_rejected_because_ids_are_missing():
+    a, b = _claims(2)
+    _reject(_payload(), {a.id, b.id}, InconsistentClaimReferenceError)
+
+
+def test_malformed_json_is_rejected():
+    a, b = _claims(2)
+    _reject("isto não é json", {a.id, b.id}, MalformedClaimOutputError)
+
+
+def test_truncated_json_is_rejected():
+    a, b = _claims(2)
+    _reject('{"clusters": [["' + a.id + '", "', {a.id, b.id}, MalformedClaimOutputError)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        '{"clusters": "nao-e-lista"}',
+        '{"clusters": ["id-solto"]}',  # cluster é string, não lista
+        '{"clusters": [[1, 2]]}',  # ids não-string
+        '{"clusters": [[null]]}',
+        '{"clusters": {"a": ["x"]}}',
+        '["x"]',
+        "{}",
+    ],
+    ids=["clusters-not-list", "cluster-is-string", "non-string-ids", "null-id", "clusters-object", "top-level-list", "missing-clusters-key"],
+)
+def test_wrong_types_and_shapes_are_rejected(bad):
+    a, b = _claims(2)
+    with pytest.raises((MalformedClaimOutputError, InconsistentClaimReferenceError)):
+        _parse_and_validate_grouping_partition(bad, {a.id, b.id})
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"ungrouped_claim_ids": []},
+        {"groups": []},
+        {"canonical_text": "texto sintetizado"},
+        {"notes": "qualquer coisa"},
+    ],
+    ids=["ungrouped-key", "groups-key", "canonical-text-key", "unknown-key"],
+)
+def test_unsupported_extra_structure_is_rejected(extra):
+    a, b = _claims(2)
+    body = {"clusters": [[a.id, b.id]], **extra}
+    _reject(json.dumps(body), {a.id, b.id}, MalformedClaimOutputError)
+
+
+def test_legacy_v1_v3_response_shape_is_rejected_under_v4():
+    """`{"groups": [...canonical_text...], "ungrouped_claim_ids": [...]}`
+    (formato v1-v3) NÃO é aceito pelo contrato v4 -- nenhuma tradução."""
+    a, b = _claims(2)
+    legacy = json.dumps(
+        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
+    )
+    _reject(legacy, {a.id, b.id}, MalformedClaimOutputError)
+
+
+# ---------------------------------------------------------------------------
+# group_claims -- aceitação, registro, retry, contabilidade
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_empty_raw_claims_short_circuits_without_calling_llm():
     provider = ScriptedProvider("anthropic", [])
-    canonical, attempts = await group_claims(
+
+    attempts = await group_claims(
         [], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert canonical == []
+        run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
+    )
+
     assert attempts == []
     assert provider.received_requests == []
 
 
 @pytest.mark.asyncio
-async def test_group_of_two_or_more_creates_canonical_claim():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    c = _raw_claim("c", "gemini")
-    payload = json.dumps(
-        {
-            "groups": [
-                {"member_claim_ids": [a.id, b.id, c.id], "canonical_text": "texto unificado"}
-            ],
-            "ungrouped_claim_ids": [],
-        }
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+async def test_group_claims_returns_only_attempts_no_claims():
+    a, b, c = _claims(3)
 
-    canonical, attempts = await group_claims(
-        [a, b, c], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
+    attempts, _p = await _group([a, b, c], [_ok(_payload([a.id, b.id], [c.id]))])
 
-    assert len(canonical) == 1
-    merged = canonical[0]
-    assert merged.text == "texto unificado"
-    assert merged.source_model_response_id is None
-    assert set(merged.merged_from_claim_ids) == {a.id, b.id, c.id}
-    assert merged.total_models_in_round == 3
-    assert {s.provider for s in merged.supporting_model_response_ids} == {
-        "openai", "anthropic", "gemini"
-    }
-    assert merged.status == "consensus"  # ratio 3/3, >=2 participantes
-    assert attempts[0].parse_status == "accepted"
+    assert isinstance(attempts, list) and len(attempts) == 1
+    assert all(type(x).__name__ == "ClaimProcessingAttempt" for x in attempts)
 
 
 @pytest.mark.asyncio
-async def test_grouping_preserves_each_members_model_identity_source_verbatim():
-    """Cross-round/merge regression (repair pós-revisão independente) --
-    `group_claims` (via `_merge_supports`) NUNCA reconstrói um
-    ClaimSupport novo: reusa a MESMA instância dos membros fundidos, por
-    design (ver `app/debate/claim_extraction.py::_merge_supports` --
-    dedup por `model_response_id`, `merged.append(support)` sem
-    reconstrução). Prova isso na fronteira pública: 3 membros com 3
-    model_identity_source DIFERENTES entre si sobrevivem intactos, cada
-    um no seu próprio support, depois da fusão."""
-    a = _raw_claim("a", "openai", model_identity_source=ModelIdentitySource.PROVIDER_REPORTED)
-    b = _raw_claim("b", "anthropic", model_identity_source=ModelIdentitySource.REQUESTED_FALLBACK)
-    c = _raw_claim("c", "gemini", model_identity_source=None)
-    payload = json.dumps(
-        {
-            "groups": [
-                {"member_claim_ids": [a.id, b.id, c.id], "canonical_text": "texto unificado"}
-            ],
-            "ungrouped_claim_ids": [],
-        }
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+async def test_valid_v4_partition_is_plain_accepted_and_never_accepted_normalized():
+    a, b, c = _claims(3)
 
-    canonical, _attempts = await group_claims(
-        [a, b, c], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
+    attempts, provider = await _group([a, b, c], [_ok(_payload([a.id, b.id], [c.id]))])
 
-    merged = canonical[0]
-    by_provider = {s.provider: s.model_identity_source for s in merged.supporting_model_response_ids}
-    assert by_provider["openai"] == ModelIdentitySource.PROVIDER_REPORTED
-    assert by_provider["anthropic"] == ModelIdentitySource.REQUESTED_FALLBACK
-    assert by_provider["gemini"] is None
+    assert [x.parse_status for x in attempts] == ["accepted"]
+    assert attempts[0].parse_error_message is None
+    assert len(provider.received_requests) == 1  # nenhum retry
 
 
 @pytest.mark.asyncio
-async def test_singleton_group_is_normalized_to_ungrouped_without_a_retry():
-    """INTENCIONALMENTE atualizado (claim_grouping_v3): antes, um grupo de
-    1 membro era rejeitado como "malformed" e consumia o retry
-    estruturado. Agora é a ÚNICA deformidade estrutural tolerada no
-    agrupamento intra-round: normalizado deterministicamente (o id vira
-    ungrouped, o canonical_text do grupo unitário é descartado), aceito
-    como `accepted_normalized`, SEM retry. Cobertura/normalização em
-    detalhe: tests/debate/test_grouping_singleton_normalization.py."""
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    payload = json.dumps(
-        {
-            "groups": [{"member_claim_ids": [a.id], "canonical_text": "x"}],
-            "ungrouped_claim_ids": [b.id],
-        }
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+async def test_all_singleton_partition_is_plain_accepted_with_no_retry():
+    claims = _claims(3)
 
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
+    attempts, provider = await _group(claims, [_ok(_payload(*[[c.id] for c in claims]))])
 
-    assert [x.parse_status for x in attempts] == ["accepted_normalized"]
-    assert len(provider.received_requests) == 1  # nenhum retry consumido
-    assert canonical == []  # nenhuma claim canônica criada a partir do singleton
+    assert [x.parse_status for x in attempts] == ["accepted"]
+    assert len(provider.received_requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_unknown_id_reference_is_inconsistent():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    payload = json.dumps(
-        {
-            "groups": [{"member_claim_ids": [a.id, "id-que-nao-existe"], "canonical_text": "x"}],
-            "ungrouped_claim_ids": [b.id],
-        }
-    )
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response("anthropic", payload),
-            text_response(
-                "anthropic",
-                json.dumps({"groups": [], "ungrouped_claim_ids": [a.id, b.id]}),
-            ),
-        ],
-    )
+async def test_raw_v4_response_is_persisted_unchanged_in_the_attempt():
+    a, b, c = _claims(3)
+    payload = _payload([a.id, b.id], [c.id])
 
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert attempts[0].parse_status == "inconsistent_references"
-    assert canonical == []
+    attempts, _p = await _group([a, b, c], [_ok(payload)])
+
+    assert attempts[0].raw_output_text == payload  # byte a byte
+    assert attempts[0].operation == "grouping"
+    assert sorted(attempts[0].target_claim_ids) == sorted([a.id, b.id, c.id])
 
 
 @pytest.mark.asyncio
-async def test_id_in_two_groups_is_inconsistent():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    c = _raw_claim("c", "gemini")
-    payload = json.dumps(
-        {
-            "groups": [
-                {"member_claim_ids": [a.id, b.id], "canonical_text": "x"},
-                {"member_claim_ids": [a.id, c.id], "canonical_text": "y"},
-            ],
-            "ungrouped_claim_ids": [],
-        }
-    )
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response("anthropic", payload),
-            text_response(
-                "anthropic",
-                json.dumps(
-                    {
-                        "groups": [{"member_claim_ids": [a.id, b.id, c.id], "canonical_text": "z"}],
-                        "ungrouped_claim_ids": [],
-                    }
-                ),
-            ),
-        ],
-    )
+@pytest.mark.parametrize(
+    "bad_builder, expected_status",
+    [
+        (lambda a, b, c: _payload([a.id, b.id]), "inconsistent_references"),  # c faltando
+        (lambda a, b, c: _payload([a.id, b.id], [c.id], ["x"]), "inconsistent_references"),  # extra
+        (lambda a, b, c: _payload([a.id, a.id], [b.id], [c.id]), "inconsistent_references"),
+        (lambda a, b, c: _payload([a.id, b.id], [b.id, c.id]), "inconsistent_references"),
+        (lambda a, b, c: _payload([a.id, b.id, c.id], []), "malformed"),  # cluster vazio
+        (lambda a, b, c: "não é json", "malformed"),
+    ],
+    ids=["missing", "extra", "dup-in-cluster", "dup-across", "empty-cluster", "malformed-json"],
+)
+async def test_invalid_partition_keeps_the_existing_structured_retry(bad_builder, expected_status):
+    a, b, c = _claims(3)
+    good = _payload([a.id], [b.id], [c.id])
 
-    canonical, attempts = await group_claims(
-        [a, b, c], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert attempts[0].parse_status == "inconsistent_references"
-    assert len(canonical) == 1  # 2a tentativa foi válida
+    attempts, provider = await _group([a, b, c], [_ok(bad_builder(a, b, c)), _ok(good)])
+
+    assert [x.parse_status for x in attempts] == [expected_status, "accepted"]
+    assert [x.attempt_number for x in attempts] == [1, 2]
+    assert attempts[0].parse_error_message
+    assert len(provider.received_requests) == 2
 
 
 @pytest.mark.asyncio
-async def test_overlap_between_group_and_ungrouped_is_inconsistent():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    payload = json.dumps(
-        {
-            "groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}],
-            "ungrouped_claim_ids": [a.id],  # 'a' aparece nos dois
-        }
-    )
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response("anthropic", payload),
-            text_response(
-                "anthropic",
-                json.dumps(
-                    {
-                        "groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}],
-                        "ungrouped_claim_ids": [],
-                    }
-                ),
-            ),
-        ],
-    )
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert attempts[0].parse_status == "inconsistent_references"
-    assert len(canonical) == 1
+async def test_no_invalid_partition_is_normalized_it_is_rejected_twice_then_fails_closed():
+    a, b = _claims(2)
+    bad = _payload([a.id])  # b faltando
+
+    attempts, _p = await _group([a, b], [_ok(bad), _ok(bad)])
+
+    assert [x.parse_status for x in attempts] == ["inconsistent_references"] * 2
+    assert all(x.parse_status != "accepted_normalized" for x in attempts)
 
 
 @pytest.mark.asyncio
-async def test_forgotten_claim_violates_completeness():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    c = _raw_claim("c", "gemini")
-    # 'c' não aparece em nenhum grupo nem em ungrouped — claim esquecida.
-    payload = json.dumps(
-        {
-            "groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}],
-            "ungrouped_claim_ids": [],
-        }
+async def test_known_truncation_skips_retry_and_fails_closed():
+    a, b = _claims(2)
+    truncated = '{"clusters": [["' + a.id + '", "'
+    attempts, provider = await _group(
+        [a, b],
+        [_ok(truncated, input_tokens=5059, output_tokens=8192, cost_usd=0.092038, provider_finish_reason="max_tokens")],
     )
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response("anthropic", payload),
-            text_response(
-                "anthropic",
-                json.dumps(
-                    {
-                        "groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}],
-                        "ungrouped_claim_ids": [c.id],
-                    }
-                ),
-            ),
-        ],
-    )
-    canonical, attempts = await group_claims(
-        [a, b, c], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert attempts[0].parse_status == "inconsistent_references"
-    assert "faltando" in attempts[0].parse_error_message
-    assert len(canonical) == 1  # 2a tentativa cobriu todo mundo
+
+    assert [x.parse_status for x in attempts] == ["malformed"]
+    assert attempts[0].provider_finish_reason == "max_tokens"
+    assert len(provider.received_requests) == 1  # truncamento confirmado: sem retry
+    assert attempts[0].usage.input_tokens == 5059 and attempts[0].usage.output_tokens == 8192
+    assert attempts[0].cost_usd == pytest.approx(0.092038)
 
 
 @pytest.mark.asyncio
-async def test_ungrouped_claims_are_preserved_as_themselves():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    payload = json.dumps({"groups": [], "ungrouped_claim_ids": [a.id, b.id]})
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+async def test_malformed_without_truncation_signal_still_retries():
+    a, b = _claims(2)
 
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    # nenhuma canônica criada — 'a' e 'b' continuam sendo elas mesmas,
-    # o chamador não precisa fazer nada especial.
-    assert canonical == []
-    assert attempts[0].parse_status == "accepted"
-
-
-@pytest.mark.asyncio
-async def test_grouping_failure_preserves_raw_claims_untouched():
-    """Se o agrupamento falhar totalmente (esgota retries), o chamador
-    simplesmente não recebe canônicas — as brutas, que já existiam antes
-    de group_claims ser chamada, não são afetadas de forma alguma."""
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    provider = ScriptedProvider(
-        "anthropic",
-        [transport_error_response("anthropic")],
+    attempts, provider = await _group(
+        [a, b],
+        [_ok("não é JSON", provider_finish_reason="end_turn"), _ok(_payload([a.id], [b.id]))],
     )
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert canonical == []
-    assert len(attempts) == 1
-    assert attempts[0].transport_status == "error"
-    # a e b, como objetos Python, continuam intactos e válidos
-    assert a.text == "claim de openai"
-    assert b.text == "claim de anthropic"
 
-
-@pytest.mark.asyncio
-async def test_same_round_grouping_round_introduced_equals_round_number():
-    """19 -- fusão DENTRO da rodada 1: round_introduced=1, comportamento
-    inalterado por `_build_canonical_claim` ter generalizado a regra pra
-    max(member.round_introduced) -- todo membro aqui já compartilha
-    round_introduced=1, então max() é idêntico ao round_number de antes."""
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    payload = json.dumps(
-        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-    canonical, _ = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert canonical[0].round_introduced == 1
-
-
-@pytest.mark.asyncio
-async def test_round2_grouping_round_introduced_equals_two():
-    """19 -- fusão DENTRO da rodada 2 (crítica): round_introduced=2, mesma
-    generalização, mesmo resultado de antes."""
-    a = _raw_claim("a", "openai")
-    a = a.model_copy(update={"round_introduced": 2})
-    b = _raw_claim("b", "anthropic")
-    b = b.model_copy(update={"round_introduced": 2})
-    payload = json.dumps(
-        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-    canonical, _ = await group_claims(
-        [a, b], round_number=2, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert canonical[0].round_introduced == 2
-
-
-@pytest.mark.asyncio
-async def test_ordinary_grouping_never_sets_support_scope_model_count():
-    """18/19 -- agrupamento DENTRO de uma rodada nunca precisa de um
-    universo de suporte maior que o da própria rodada --
-    support_scope_model_count fica None, denominador continua sendo
-    total_models_in_round (comportamento histórico)."""
-    a = _raw_claim("a", "openai", total=3)
-    b = _raw_claim("b", "anthropic", total=3)
-    payload = json.dumps(
-        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-    canonical, _ = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert canonical[0].support_scope_model_count is None
-    assert canonical[0].total_models_in_round == 3
-
-
-@pytest.mark.asyncio
-async def test_canonical_status_active_when_ratio_below_one():
-    a = _raw_claim("a", "openai", total=3)
-    b = _raw_claim("b", "anthropic", total=3)
-    payload = json.dumps(
-        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-    canonical, _ = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-    assert canonical[0].supporting_model_ratio == pytest.approx(2 / 3)
-    assert canonical[0].status == "active"  # ratio<1.0 nunca vira disputed automaticamente
-
-
-# ---------------------------------------------------------------------------
-# Etapa 17A (B2) — retry bloqueado por budget já esgotado
-# ---------------------------------------------------------------------------
+    assert [x.parse_status for x in attempts] == ["malformed", "accepted"]
+    assert len(provider.received_requests) == 2
 
 
 @pytest.mark.asyncio
 async def test_retry_blocked_when_budget_already_exhausted():
-    a, b = _raw_claim("a", "openai"), _raw_claim("b", "anthropic")
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", "não é JSON válido")])
+    a, b = _claims(2)
 
-    canonical, attempts = await group_claims(
+    provider = ScriptedProvider("anthropic", [_ok("não é JSON válido")])
+    attempts = await group_claims(
         [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
         run_config=_run_config(max_cost_usd=0.05),
         prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.06,
     )
 
-    assert len(attempts) == 1  # sem retry
-    assert canonical == []
+    assert len(attempts) == 1  # sem retry: budget já esgotado
+
+
+@pytest.mark.asyncio
+async def test_accounting_of_each_attempt_is_recorded_and_unchanged():
+    a, b, c = _claims(3)
+    bad = _ok(_payload([a.id]), input_tokens=100, output_tokens=50, cost_usd=0.01)
+    good = _ok(_payload([a.id, b.id], [c.id]), input_tokens=100, output_tokens=60, cost_usd=0.012)
+
+    attempts, _p = await _group([a, b, c], [bad, good])
+
+    assert [x.usage.output_tokens for x in attempts] == [50, 60]
+    assert [x.cost_usd for x in attempts] == [pytest.approx(0.01), pytest.approx(0.012)]
+    assert attempts[1].transport_attempts == good.attempts
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_accounting_stays_unknown():
+    a, b = _claims(2)
+
+    attempts, _p = await _group([a, b], [transport_error_response("anthropic", attempts=3)])
+
+    assert attempts[0].transport_status == "error" and attempts[0].parse_status == "not_attempted"
+    assert attempts[0].usage is None and attempts[0].cost_usd is None
+    assert attempts[0].transport_attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_grouping_preserves_each_claims_identity_source_untouched():
+    """Cada claim de entrada permanece byte-a-byte a mesma (nenhuma é
+    reconstruída/substituída pelo agrupamento)."""
+    a = raw_claim("a", "resp-a", provider="openai")
+    a.supporting_model_response_ids[0] = a.supporting_model_response_ids[0].model_copy(
+        update={"model_identity_source": ModelIdentitySource.PROVIDER_REPORTED}
+    )
+    b = raw_claim("b", "resp-b", provider="anthropic")
+    before = [a.model_dump(), b.model_dump()]
+
+    await _group([a, b], [_ok(_payload([a.id, b.id]))])
+
+    assert [a.model_dump(), b.model_dump()] == before
 
 
 # ---------------------------------------------------------------------------
-# Etapa 17A.1 (Objetivo D) — tolerância a cerca de código Markdown
+# Provenance
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_real_run_fenced_json_shape_succeeds():
-    """Reprodução exata do Run B: JSON de agrupamento genuinamente
-    válido (nenhum grupo, tudo ungrouped), mas envolto numa cerca de
-    código Markdown -- antes da Etapa 17A.1 isso era rejeitado
-    inteiramente como malformado."""
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    payload = (
-        '```json\n{"groups": [], "ungrouped_claim_ids": ["'
-        + a.id
-        + '", "'
-        + b.id
-        + '"]}\n```'
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
+async def test_grouping_attempts_carry_the_v4_request_provenance():
+    a, b = _claims(2)
 
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0,
-        prior_cost_usd=0.0,
-    )
+    attempts, provider = await _group([a, b], [_ok(_payload([a.id], [b.id]))])
 
-    assert attempts[0].parse_status == "accepted"  # não mais "malformed"
-    assert canonical == []  # nenhum grupo, mas o parse teve sucesso
-
-
-# ---------------------------------------------------------------------------
-# Etapa 17A.2 (Objetivo C/D) — truncamento conhecido cancela o retry
-# ---------------------------------------------------------------------------
+    assert CLAIM_GROUPING_CONTRACT_VERSION == "claim_grouping_v4"
+    expected = build_request_provenance(CLAIM_GROUPING_CONTRACT_VERSION, provider.received_requests[0])
+    assert attempts[0].request_provenance == expected
+    assert attempts[0].request_provenance.contract_version == "claim_grouping_v4"
 
 
 @pytest.mark.asyncio
-async def test_known_truncation_on_malformed_grouping_output_skips_retry():
-    """Reprodução do Run B (Evidência C): agrupamento cortado no meio por
-    max_tokens não deve disparar uma 2a tentativa idêntica -- só 1
-    resposta roteirizada; se o retry fosse tentado, o ScriptedProvider
-    esgotaria o roteiro."""
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response(
-                "anthropic",
-                '{"groups": [{"member_claim_ids": ["' + a.id + '"',
-                provider_finish_reason="max_tokens",
-            )
-        ],
-    )
+async def test_malformed_then_success_attempts_share_identical_request_provenance():
+    a, b = _claims(2)
 
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
+    attempts, _p = await _group([a, b], [_ok("não é json"), _ok(_payload([a.id], [b.id]))])
 
-    assert canonical == []
-    assert len(attempts) == 1
-    assert attempts[0].parse_status == "malformed"
-    assert attempts[0].provider_finish_reason == "max_tokens"
-    assert len(provider.received_requests) == 1
-
-
-@pytest.mark.asyncio
-async def test_malformed_grouping_output_without_truncation_signal_still_retries():
-    """Regressão: malformação SEM motivo de truncamento confirmado
-    continua retentando normalmente."""
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response("anthropic", "não é JSON", provider_finish_reason="end_turn"),
-            text_response(
-                "anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": [a.id, b.id]})
-            ),
-        ],
-    )
-
-    canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,)
-
-    assert canonical == []
-    assert len(attempts) == 2
-    assert attempts[1].parse_status == "accepted"
-
-
-# ---------------------------------------------------------------------------
-# Provider-Neutral Request Provenance V1
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_accepted_grouping_attempt_carries_request_provenance():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    payload = json.dumps(
-        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "x"}], "ungrouped_claim_ids": []}
-    )
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-
-    _canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
-    )
-
-    assert attempts[0].request_provenance is not None
-    assert attempts[0].request_provenance.contract_version == CLAIM_GROUPING_CONTRACT_VERSION
-
-
-@pytest.mark.asyncio
-async def test_malformed_then_success_grouping_attempts_share_identical_request_provenance():
-    a = _raw_claim("a", "openai")
-    b = _raw_claim("b", "anthropic")
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response("anthropic", "não é JSON"),
-            text_response(
-                "anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": [a.id, b.id]})
-            ),
-        ],
-    )
-
-    _canonical, attempts = await group_claims(
-        [a, b], round_number=1, grouper=provider, max_output_tokens_per_call=1024,
-        run_config=_run_config(), prior_input_tokens=0, prior_output_tokens=0, prior_cost_usd=0.0,
-    )
-
-    assert len(attempts) == 2
-    assert attempts[0].request_provenance is not None
     assert attempts[0].request_provenance == attempts[1].request_provenance
+
+
+# ---------------------------------------------------------------------------
+# IDs EXATOS -- nenhuma normalização de whitespace (grouping v4)
+# ---------------------------------------------------------------------------
+
+_WHITESPACE_VARIANTS = [
+    lambda i: " " + i,
+    lambda i: i + " ",
+    lambda i: "\t" + i,
+    lambda i: i + "\n",
+    lambda i: "\n" + i + "\t",
+    lambda i: "  " + i + "  ",
+]
+_WS_IDS = ["leading-space", "trailing-space", "leading-tab", "trailing-newline", "both-ws", "both-spaces"]
+
+
+def test_exact_original_id_is_still_accepted_and_kept_verbatim():
+    a, b = _claims(2)
+
+    parsed = _parse_and_validate_grouping_partition(_payload([a.id], [b.id]), {a.id, b.id})
+
+    assert parsed.clusters == [[a.id], [b.id]]
+
+
+@pytest.mark.parametrize("alter", _WHITESPACE_VARIANTS, ids=_WS_IDS)
+def test_whitespace_altered_id_is_never_silently_normalized_and_is_rejected(alter):
+    a, b = _claims(2)
+    altered = alter(a.id)
+    assert altered != a.id and altered.strip() == a.id  # a variante É só whitespace
+
+    # o id alterado não vira o id válido: vira desconhecido (e o válido, faltando)
+    with pytest.raises(InconsistentClaimReferenceError):
+        _parse_and_validate_grouping_partition(_payload([altered], [b.id]), {a.id, b.id})
+    with pytest.raises(InconsistentClaimReferenceError):
+        _parse_and_validate_grouping_partition(_payload([altered, b.id]), {a.id, b.id})
+
+
+def test_whitespace_altered_id_alongside_its_exact_id_is_not_a_duplicate_it_is_an_unknown_id():
+    """`" id"` + `"id"` NÃO é tratado como duplicata (isso exigiria strip): é
+    um id desconhecido -- a partição inteira é rejeitada de qualquer forma."""
+    a, b = _claims(2)
+
+    with pytest.raises(InconsistentClaimReferenceError) as info:
+        _parse_and_validate_grouping_partition(
+            _payload([a.id, " " + a.id], [b.id]), {a.id, b.id}
+        )
+    assert "desconhecido" in str(info.value)
+
+
+def test_parsed_partition_preserves_the_exact_returned_strings():
+    """Schema-level: nenhum strip acontece nem em ids inválidos (o valor
+    parseado == a string bruta), então o parse aceito nunca diverge da saída."""
+    from app.debate.schemas import ClaimGroupingPartitionOutput
+
+    parsed = ClaimGroupingPartitionOutput.model_validate({"clusters": [[" a ", "b\n"], ["\tc"]]})
+
+    assert parsed.clusters == [[" a ", "b\n"], ["\tc"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alter", _WHITESPACE_VARIANTS[:4], ids=_WS_IDS[:4])
+async def test_whitespace_altered_partition_follows_the_existing_structured_retry(alter):
+    a, b, c = _claims(3)
+    bad = _payload([alter(a.id)], [b.id], [c.id])
+    good = _payload([a.id], [b.id], [c.id])
+
+    attempts, provider = await _group([a, b, c], [_ok(bad), _ok(good)])
+
+    assert [x.parse_status for x in attempts] == ["inconsistent_references", "accepted"]
+    assert attempts[0].raw_output_text == bad  # saída bruta INALTERADA (com o whitespace)
+    assert attempts[1].raw_output_text == good
+    assert len(provider.received_requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_whitespace_altered_partition_twice_fails_closed():
+    a, b = _claims(2)
+    bad = _payload([" " + a.id], [b.id])
+
+    attempts, _p = await _group([a, b], [_ok(bad), _ok(bad)])
+
+    assert [x.parse_status for x in attempts] == ["inconsistent_references"] * 2
+    assert all(x.parse_status != "accepted_normalized" for x in attempts)
+
+
+def test_other_schemas_keep_their_whitespace_stripping_config():
+    """A mudança é ESCOPADA ao schema da partição v4: reconciliação e demais
+    contratos históricos continuam com `_IO_CONFIG`."""
+    from app.debate.schemas import ClaimGroupingOutput, ClaimGroupingPartitionOutput
+
+    assert ClaimGroupingPartitionOutput.model_config.get("str_strip_whitespace") is False
+    assert ClaimGroupingOutput.model_config.get("str_strip_whitespace") is True

@@ -13,7 +13,7 @@ LLM.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -89,37 +89,32 @@ class ClaimGroupProposal(BaseModel):
     canonical_text: str = Field(min_length=1)
 
 
-class RawClaimGroupProposal(BaseModel):
-    """FRONTEIRA de parse EXCLUSIVA do agrupamento intra-round
-    (claim_grouping_v3) -- NUNCA o schema APLICADO. Idêntica a
-    `ClaimGroupProposal` exceto por `member_claim_ids` aceitar 1 membro:
-    um "grupo" de 1 id é a representação errada, mas inequívoca, de
-    "esta claim não tem equivalente" (replay v2 real: 6 claims postas em
-    grupos unitários com `ungrouped_claim_ids` vazio). O
-    `normalize`-and-validate de `claim_extraction.py` converte cada
-    grupo unitário em id ungrouped ANTES de qualquer claim canônica
-    existir; o `canonical_text` de um grupo unitário é descartado. Grupo
-    com 0 membros continua rejeitado (`min_length=1`)."""
+class ClaimGroupingPartitionOutput(BaseModel):
+    """claim_grouping_v4 -- saída do agrupamento intra-round: UMA partição
+    exata das claims de entrada em `clusters` (lista de listas de ids).
 
-    model_config = _IO_CONFIG
+    NÃO-DESTRUTIVO e apenas CONSULTIVO/auditável: um cluster de 2+ ids é uma
+    PROPOSTA do modelo de que aquelas claims expressam a mesma proposição
+    material -- nunca equivalência verificada, consenso nem verdade. Não
+    existe `canonical_text`, nenhum texto sintetizado, nenhum
+    `ungrouped_claim_ids` (claim sem equivalente = cluster de 1 id, válido e
+    esperado). O resultado NÃO cria claim canônica, NÃO une suporte, NÃO
+    supersede nem remove nenhuma claim original (ver `group_claims`).
 
-    member_claim_ids: list[str] = Field(min_length=1)
-    canonical_text: str = Field(min_length=1)
+    Forma: `{"clusters": [["id1", "id2"], ["id3"]]}`. Cluster vazio,
+    chave extra ou tipo errado -> rejeitado pelo schema; cobertura
+    exata-uma-vez é validada em `_parse_and_validate_grouping_partition`
+    (app/debate/claim_extraction.py). Nenhuma partição malformada é
+    normalizada. Os schemas `ClaimGroupProposal`/`ClaimGroupingOutput`
+    abaixo continuam existindo SÓ pra reconciliação cross-round."""
 
+    # Config PRÓPRIA (não `_IO_CONFIG`): SEM `str_strip_whitespace`. Os ids da
+    # partição precisam casar EXATAMENTE com os ids fornecidos -- " id" ou
+    # "id\n" NÃO podem virar "id" em silêncio (a resposta bruta e o parse
+    # aceito divergiriam). Escopo: só este schema; os demais mantêm `_IO_CONFIG`.
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
 
-class RawClaimGroupingOutput(BaseModel):
-    """Forma bruta de uma resposta de agrupamento intra-round, ANTES da
-    normalização de grupos unitários -- ver `RawClaimGroupProposal`.
-    Mesmos campos/config de `ClaimGroupingOutput`, então qualquer outro
-    formato inválido (chave extra, tipo errado, JSON truncado) continua
-    rejeitado exatamente como antes. Só o agrupamento intra-round usa
-    isto; reconciliação continua parseando `ClaimGroupingOutput`
-    diretamente (grupo unitário segue rejeitado por contrato)."""
-
-    model_config = _IO_CONFIG
-
-    groups: list[RawClaimGroupProposal] = Field(default_factory=list)
-    ungrouped_claim_ids: list[str] = Field(default_factory=list)
+    clusters: list[Annotated[list[str], Field(min_length=1)]]
 
 
 class ClaimGroupingOutput(BaseModel):

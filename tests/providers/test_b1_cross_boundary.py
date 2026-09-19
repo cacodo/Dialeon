@@ -54,13 +54,12 @@ async def test_extraction_survives_missing_api_key():
 @pytest.mark.asyncio
 async def test_grouping_survives_missing_api_key():
     c1 = raw_claim("A", "resp-1", provider="openai")
-    canonical, attempts = await group_claims(
+    attempts = await group_claims(
         [c1], round_number=1, grouper=_keyless_provider(), max_output_tokens_per_call=1024,
         run_config=_base_run_config(), prior_input_tokens=0,
         prior_output_tokens=0, prior_cost_usd=0.0,
     )
 
-    assert canonical == []
     assert len(attempts) == 1
     assert attempts[0].transport_attempts == 0
     assert attempts[0].cost_usd == 0.0

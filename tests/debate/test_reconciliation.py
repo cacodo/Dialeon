@@ -538,23 +538,20 @@ async def test_cross_side_metadata_only_assigned_to_genuine_cross_round_merge():
 
 
 @pytest.mark.asyncio
-async def test_ordinary_grouping_still_allows_same_round_merge_of_two_claims():
-    """15 -- group_claims (operation='grouping') continua livre pra
-    fundir múltiplas claims da MESMA rodada -- a restrição cross-side é
-    exclusiva de reconcile_claims, nunca vaza pro validador comum.
-    Verificação direta via reconcile_claims não se aplica aqui -- ver
-    tests/debate/test_grouping.py::test_group_of_two_or_more_creates_canonical_claim
-    pra confirmação completa; este teste só documenta a distinção."""
+async def test_ordinary_grouping_has_no_same_side_concept_and_never_merges():
+    """15 -- ATUALIZADO (claim_grouping_v4): `group_claims` é consultivo e
+    NÃO-DESTRUTIVO -- um cluster de 2 claims da MESMA rodada é aceito (a
+    restrição cross-side é exclusiva de `reconcile_claims`), mas nunca gera
+    claim canônica nem remove as originais. Detalhes de autoridade:
+    tests/debate/test_grouping_v4_authority.py."""
     from app.debate.claim_extraction import group_claims
 
     a = _current_claim("a", "openai", round_introduced=1)
     b = _current_claim("b", "anthropic", round_introduced=1)
-    payload = json.dumps(
-        {"groups": [{"member_claim_ids": [a.id, b.id], "canonical_text": "fusão dentro do round 1"}], "ungrouped_claim_ids": []}
-    )
+    payload = json.dumps({"clusters": [[a.id, b.id]]})
     provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
 
-    canonical, attempts = await group_claims(
+    attempts = await group_claims(
         [a, b],
         round_number=1,
         grouper=provider,
@@ -565,8 +562,7 @@ async def test_ordinary_grouping_still_allows_same_round_merge_of_two_claims():
         prior_cost_usd=0.0,
     )
 
-    assert attempts[0].parse_status == "accepted"
-    assert len(canonical) == 1  # nunca rejeitado por ser "same-side" -- grouping não tem esse conceito
+    assert attempts[0].parse_status == "accepted"  # nunca rejeitado por ser "same-side"
 
 
 # ---------------------------------------------------------------------------

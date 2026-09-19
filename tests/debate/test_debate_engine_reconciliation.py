@@ -130,7 +130,7 @@ def _processor_handler(
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
             return _ok(
-                "claude-processor", json.dumps({"groups": [], "ungrouped_claim_ids": ids})
+                "claude-processor", json.dumps({"clusters": [[i] for i in ids]})
             )
         if "RESPOSTA_A_ANALISAR" in content:
             if revision_of_prefix is not None and revision_of_prefix in content:
@@ -352,7 +352,7 @@ async def test_empty_round2_side_skips_reconciliation_entirely():
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
-            return _ok("claude-processor", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("claude-processor", json.dumps({"clusters": [[i] for i in ids]}))
         if "RESPOSTA_A_ANALISAR" in content:
             if "resposta inicial" in content:
                 return _ok("claude-processor", _extraction(r1_text))
@@ -434,7 +434,7 @@ async def test_support_scope_model_count_reflects_real_cross_round_union():
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
-            return _ok("claude-processor", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("claude-processor", json.dumps({"clusters": [[i] for i in ids]}))
         if "RESPOSTA_A_ANALISAR" in content:
             if "resposta inicial openai" in content:
                 return _ok("claude-processor", _extraction(r1_text_openai))
@@ -545,7 +545,7 @@ async def test_support_scope_model_count_uses_union_not_max_of_round_counts():
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
-            return _ok("claude-processor", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("claude-processor", json.dumps({"clusters": [[i] for i in ids]}))
         if "RESPOSTA_A_ANALISAR" in content:
             if "resposta inicial openai" in content:
                 return _ok("claude-processor", _extraction(r1_text_openai))
@@ -665,7 +665,7 @@ async def test_judge_facing_current_claims_reflect_successful_reconciliation():
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             ids = [c["id"] for c in payload]
-            return _ok("claude-processor", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("claude-processor", json.dumps({"clusters": [[i] for i in ids]}))
         if "RESPOSTA_A_ANALISAR" in content:
             if "resposta inicial" in content:
                 return _ok("claude-processor", _extraction(r1_text))

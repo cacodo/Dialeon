@@ -102,14 +102,15 @@ class ClaimProcessingAttempt(BaseModel):
     transport_attempts: int = Field(ge=0)
 
     raw_output_text: str | None = None
-    # `accepted_normalized` (claim_grouping_v3): EXCLUSIVO de
-    # `operation="grouping"` -- a resposta original do provider continha
-    # grupo(s) unitário(s) e foi aceita depois da normalização
-    # determinística (ver `_parse_validate_and_normalize_grouping`,
-    # app/debate/claim_extraction.py). `raw_output_text` continua a
-    # resposta ORIGINAL, sem reescrita. Nunca um conceito genérico de
-    # "saída normalizada": extração/reconciliação não têm essa saída
-    # (validador `_accepted_normalized_is_grouping_only`).
+    # `accepted_normalized` -- HISTÓRICO (claim_grouping_v3): EXCLUSIVO de
+    # `operation="grouping"`; registrava uma resposta que continha grupo(s)
+    # unitário(s) aceita após normalização determinística. O agrupamento v4
+    # (partição consultiva) NÃO normaliza nada e NUNCA emite este valor --
+    # ele permanece no vocabulário SÓ pra que registros v3 persistidos
+    # continuem legíveis. `raw_output_text` sempre foi a resposta ORIGINAL.
+    # Nunca um conceito genérico de "saída normalizada": extração/
+    # reconciliação não têm essa saída (validador
+    # `_accepted_normalized_is_grouping_only`).
     parse_status: Literal[
         "accepted", "accepted_normalized", "malformed", "inconsistent_references", "not_attempted"
     ]
