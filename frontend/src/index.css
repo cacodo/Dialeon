@@ -653,6 +653,40 @@ main {
   font-size: var(--font-size-sm);
 }
 
+.final-answer__unevaluated-claims-note {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  margin: 0 0 var(--space-3);
+}
+
+.final-answer__unevaluated-claims summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-fg);
+  padding: var(--space-1) 0;
+}
+
+.final-answer__unevaluated-claims summary:hover {
+  color: var(--brand-700);
+}
+
+.final-answer__unevaluated-claims-list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.final-answer__unevaluated-claims-list li {
+  color: var(--color-fg);
+  line-height: var(--line-height-base);
+  white-space: pre-wrap;
+}
+
 .accounting {
   display: flex;
   flex-wrap: wrap;

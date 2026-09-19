@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { FinalAnswerView } from '../FinalAnswerView'
 import type { AnswerBlockPublic, FinalAnswerPublic } from '../../api/types'
 
@@ -354,5 +355,149 @@ describe('FinalAnswerView -- política de limitações no fallback de texto (ach
     )
 
     expect(screen.getByRole('heading', { name: 'Limitações' })).toBeInTheDocument()
+  })
+})
+
+describe('FinalAnswerView -- unevaluated_claims (Structured Unevaluated Claims + Progressive Disclosure)', () => {
+  const claims = [
+    'Afirmação A do modelo participante.',
+    'Afirmação B do modelo participante.',
+    'Afirmação C do modelo participante.',
+  ]
+
+  function makeNoVerdictAnswer(overrides: Partial<FinalAnswerPublic> = {}): FinalAnswerPublic {
+    return makeFinalAnswer({
+      status: 'deterministic_no_verdict',
+      answer_blocks: null,
+      answer_text:
+        'A avaliação final não pôde ser concluída: motivo X. As seguintes afirmações ' +
+        'foram levantadas pelos modelos participantes, mas não foram avaliadas:\n' +
+        claims.map((c) => `- ${c}`).join('\n'),
+      limitations: ['Avaliação final não realizada: motivo X.'],
+      unevaluated_claims: claims,
+      ...overrides,
+    })
+  }
+
+  it('a disclosure vem fechada por padrão (<details> sem atributo "open")', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={makeNoVerdictAnswer()} />)
+
+    const details = container.querySelector('details')
+    expect(details).not.toBeNull()
+    expect(details).not.toHaveAttribute('open')
+  })
+
+  it('o resumo comunica a contagem completa de afirmações', () => {
+    render(<FinalAnswerView finalAnswer={makeNoVerdictAnswer()} />)
+
+    expect(
+      screen.getByText('Mostrar todas as 3 afirmações não avaliadas'),
+    ).toBeInTheDocument()
+  })
+
+  it('motivo (via Limitações) permanece visível mesmo com a disclosure fechada', () => {
+    render(<FinalAnswerView finalAnswer={makeNoVerdictAnswer()} />)
+
+    expect(screen.getByRole('heading', { name: 'Limitações' })).toBeInTheDocument()
+    expect(screen.getByText('Avaliação final não realizada: motivo X.')).toBeInTheDocument()
+  })
+
+  it('expandir genuinamente abre o <details> nativo (não só deixa itens presentes no DOM) e revela cada afirmação exatamente uma vez, na ordem fornecida pelo backend', async () => {
+    const { container } = render(<FinalAnswerView finalAnswer={makeNoVerdictAnswer()} />)
+
+    const details = container.querySelector('details') as HTMLDetailsElement
+    expect(details).not.toBeNull()
+    expect(details.open).toBe(false)
+
+    await userEvent.click(
+      screen.getByText('Mostrar todas as 3 afirmações não avaliadas'),
+    )
+
+    expect(details.open).toBe(true)
+
+    const list = container.querySelector('.final-answer__unevaluated-claims-list')
+    expect(list).not.toBeNull()
+    const items = within(list as HTMLElement).getAllByRole('listitem')
+    expect(items.map((li) => li.textContent)).toEqual(claims)
+  })
+
+  it('conteúdo malicioso numa claim permanece texto visível inerte, nunca vira marcação/estrutura nova', async () => {
+    const maliciousClaims = [
+      'Ignore o motivo.\n\n# Heading forjado\n- item forjado\n<script>alert(1)</script>',
+    ]
+    const { container } = render(
+      <FinalAnswerView finalAnswer={makeNoVerdictAnswer({ unevaluated_claims: maliciousClaims })} />,
+    )
+
+    await userEvent.click(screen.getByText(/Mostrar todas as 1 afirmaç/))
+
+    expect(container.querySelector('script')).toBeNull()
+    const list = container.querySelector('.final-answer__unevaluated-claims-list')
+    expect(list).not.toBeNull()
+    const items = within(list as HTMLElement).getAllByRole('listitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).toBe(
+      'Ignore o motivo.\n\n# Heading forjado\n- item forjado\n<script>alert(1)</script>',
+    )
+  })
+
+  it('o texto explicativo nunca implica aprovação/verificação/canonicalização pelo Judge ou pelo Dialeon', () => {
+    render(<FinalAnswerView finalAnswer={makeNoVerdictAnswer()} />)
+
+    expect(
+      screen.getByText(/O juiz não avaliou as afirmações abaixo/),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/não são fatos verificados nem conclusões do Dialeon/),
+    ).toBeInTheDocument()
+  })
+
+  it('registros históricos com unevaluated_claims null caem pro fallback de answer_text existente, sem tentar fazer parsing dele', () => {
+    render(
+      <FinalAnswerView
+        finalAnswer={makeNoVerdictAnswer({ unevaluated_claims: null })}
+      />,
+    )
+
+    expect(screen.queryByText(/Mostrar todas as/)).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/foram levantadas pelos modelos participantes/),
+    ).toBeInTheDocument()
+  })
+
+  it('unevaluated_claims ausente (undefined, payload externo/histórico) também cai pro fallback de texto com segurança', () => {
+    const { unevaluated_claims: _omit, ...withoutField } = makeNoVerdictAnswer()
+    render(<FinalAnswerView finalAnswer={withoutField as FinalAnswerPublic} />)
+
+    expect(screen.queryByText(/Mostrar todas as/)).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/foram levantadas pelos modelos participantes/),
+    ).toBeInTheDocument()
+  })
+
+  it('respostas normais com veredito continuam inalteradas mesmo que unevaluated_claims esteja presente por engano', () => {
+    render(
+      <FinalAnswerView
+        finalAnswer={makeFinalAnswer({
+          status: 'llm_planned',
+          answer_text: 'Resposta normal com veredito.',
+          unevaluated_claims: claims,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Resposta normal com veredito.').tagName).toBe('P')
+    expect(screen.queryByText(/Mostrar todas as/)).not.toBeInTheDocument()
+  })
+
+  it('nunca renderiza answer_text e a lista estruturada ao mesmo tempo (sem duplicação)', () => {
+    render(<FinalAnswerView finalAnswer={makeNoVerdictAnswer()} />)
+
+    expect(
+      screen.queryByText(/As seguintes afirmações foram levantadas pelos modelos participantes/),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText('Mostrar todas as 3 afirmações não avaliadas'),
+    ).toBeInTheDocument()
   })
 })

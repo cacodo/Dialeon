@@ -730,26 +730,38 @@ class Editor:
             else {}
         )
 
-        if current_claims:
-            claim_lines = []
-            for claim in current_claims:
-                line = f"- {claim.text}"
-                outcome = outcomes_by_claim_id.get(claim.id)
-                if outcome is not None:
-                    note = _render_source_only_note(outcome.source_state)
-                    if note is not None:
-                        line += f"\n  {note}"
-                claim_lines.append(line)
+        # Repair (adversarial review -- Structured Unevaluated Claims) --
+        # DERIVAÇÃO ÚNICA: a sequência ordenada de strings de exibição
+        # (uma por claim corrente, ver `get_current_claims` acima) é
+        # computada UMA VEZ aqui, sem o prefixo sintético `"- "` -- nunca
+        # duas derivações independentes pra `answer_text` (prosa legada)
+        # e `unevaluated_claims` (campo estruturado novo). `answer_text`
+        # acrescenta o prefixo `"- "` só na hora de montar a prosa,
+        # preservando o texto legado byte-a-byte idêntico ao
+        # comportamento anterior a este repair.
+        claim_display_texts: list[str] = []
+        for claim in current_claims:
+            text = claim.text
+            outcome = outcomes_by_claim_id.get(claim.id)
+            if outcome is not None:
+                note = _render_source_only_note(outcome.source_state)
+                if note is not None:
+                    text += f"\n  {note}"
+            claim_display_texts.append(text)
+
+        if claim_display_texts:
             answer_text = (
                 f"A avaliação final não pôde ser concluída: {reason_text}. As seguintes "
                 "afirmações foram levantadas pelos modelos participantes, mas não foram "
-                "avaliadas:\n" + "\n".join(claim_lines)
+                "avaliadas:\n" + "\n".join(f"- {t}" for t in claim_display_texts)
             )
+            unevaluated_claims: tuple[str, ...] | None = tuple(claim_display_texts)
         else:
             answer_text = (
                 f"Não foi possível produzir uma resposta avaliável para esta pergunta: "
                 f"{reason_text}."
             )
+            unevaluated_claims = None
 
         # Repair (adversarial review, recheck Finding A) -- este caminho
         # (sem veredito -- budget/transporte/falha do Judge, NUNCA a
@@ -782,6 +794,9 @@ class Editor:
             limitations=_limitations_with_coverage_note(
                 [f"Avaliação final não realizada: {reason_text}."], coverage_note
             ),
+            # Mesma sequência computada acima, sem prefixo `"- "` -- ver
+            # comentário na derivação única (`claim_display_texts`).
+            unevaluated_claims=unevaluated_claims,
             status="deterministic_no_verdict",
         )
 

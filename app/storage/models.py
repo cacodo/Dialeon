@@ -641,6 +641,16 @@ class FinalAnswerRow(Base):
     # histórico `llm_composed`; nunca reconstruído retroativamente a
     # partir de `answer_text`.
     answer_blocks_json: Mapped[list | None] = mapped_column(JSON)
+    # Repair (adversarial review -- Structured Unevaluated Claims) --
+    # mesma disciplina exata de `answer_blocks_json` acima: NULLABLE sem
+    # DEFAULT -- `NULL` é honesto pra toda linha persistida antes desta
+    # coluna existir (ver `_upgrade_legacy_unevaluated_claims`,
+    # app/storage/database.py), pra `status` diferente de
+    # `deterministic_no_verdict`, e pro caso sem claims correntes
+    # nenhuma; nunca reconstruído retroativamente a partir de
+    # `answer_text` (ver FinalAnswer.unevaluated_claims,
+    # app/editor/result.py).
+    unevaluated_claims_json: Mapped[list | None] = mapped_column(JSON)
     limitations_json: Mapped[list] = mapped_column(JSON)
     status: Mapped[str]
     editor_model: Mapped[str | None]

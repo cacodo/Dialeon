@@ -178,6 +178,57 @@ def test_final_answer_deterministic_no_verdict_valid():
     assert answer.editor_model is None
     assert answer.based_on_verdict_id is None
     assert answer.judge_confidence is None
+    assert answer.unevaluated_claims is None
+
+
+# ---------------------------------------------------------------------------
+# Repair (adversarial review -- Structured Unevaluated Claims) --
+# `FinalAnswer.unevaluated_claims`.
+# ---------------------------------------------------------------------------
+
+
+def test_final_answer_unevaluated_claims_rejected_for_status_with_verdict():
+    """Requisito 7 -- outros status rejeitam o campo não-nulo."""
+    with pytest.raises(ValidationError, match="unevaluated_claims"):
+        _final_answer(
+            status="deterministic_from_verdict",
+            editor_model=None,
+            unevaluated_claims=("claim a", "claim b"),
+        )
+
+
+def test_final_answer_unevaluated_claims_rejected_for_llm_planned_status():
+    with pytest.raises(ValidationError, match="unevaluated_claims"):
+        _final_answer(status="llm_planned", unevaluated_claims=("claim a",))
+
+
+def test_final_answer_unevaluated_claims_rejects_empty_tuple():
+    """Requisito 8 -- coleção não-nula vazia é rejeitada; ausência de
+    claims correntes é sempre `None`, nunca uma coleção vazia explícita
+    ('no explicit empty list state')."""
+    with pytest.raises(ValidationError, match="vazio"):
+        FinalAnswer(
+            answer_text="não avaliado",
+            limitations=["motivo"],
+            status="deterministic_no_verdict",
+            unevaluated_claims=(),
+        )
+
+
+def test_final_answer_unevaluated_claims_valid_with_deterministic_no_verdict():
+    answer = FinalAnswer(
+        answer_text="não avaliado",
+        limitations=["motivo"],
+        status="deterministic_no_verdict",
+        unevaluated_claims=("primeira claim", "segunda claim"),
+    )
+    assert answer.unevaluated_claims == ("primeira claim", "segunda claim")
+    assert isinstance(answer.unevaluated_claims, tuple)
+
+
+def test_final_answer_unevaluated_claims_default_is_none():
+    answer = _final_answer(status="llm_composed")
+    assert answer.unevaluated_claims is None
 
 
 # ---------------------------------------------------------------------------
@@ -463,3 +514,74 @@ def test_final_answer_public_still_accepts_historical_llm_composed_status():
         judge_confidence=0.6,
     )
     assert public.status == "llm_composed"
+
+
+# ---------------------------------------------------------------------------
+# Repair (adversarial review -- Structured Unevaluated Claims) --
+# `FinalAnswerPublic.unevaluated_claims`.
+# ---------------------------------------------------------------------------
+
+
+def test_final_answer_public_accepts_unevaluated_claims():
+    from app.presentation.schemas import FinalAnswerPublic
+
+    public = FinalAnswerPublic(
+        answer_text="não avaliado",
+        answer_blocks=None,
+        unevaluated_claims=["claim a", "claim b"],
+        limitations=["motivo"],
+        status="deterministic_no_verdict",
+        editor_model=None,
+        editor_model_identity_source=None,
+        judge_confidence=None,
+    )
+    assert public.unevaluated_claims == ["claim a", "claim b"]
+
+
+def test_final_answer_public_mapper_propagates_unevaluated_claims():
+    """Requisito 13 -- `final_answer_public()` (app/presentation/mappers.py)
+    é o ÚNICO ponto de conversão domínio -> público usado tanto por
+    `completed_run_response` (create/get) quanto por `completed_run_audit`
+    -- testar o mapper diretamente garante consistência estrutural entre
+    os dois caminhos, sem precisar duplicar o teste em cada um."""
+    from app.presentation.mappers import final_answer_public
+
+    domain_answer = FinalAnswer(
+        answer_text="não avaliado",
+        limitations=["motivo"],
+        status="deterministic_no_verdict",
+        unevaluated_claims=("primeira claim", "segunda claim"),
+    )
+    public = final_answer_public(domain_answer)
+    assert public.unevaluated_claims == ["primeira claim", "segunda claim"]
+    assert isinstance(public.unevaluated_claims, list)
+
+
+def test_final_answer_public_mapper_propagates_none_unevaluated_claims():
+    from app.presentation.mappers import final_answer_public
+
+    domain_answer = FinalAnswer(
+        answer_text="não avaliado",
+        limitations=["motivo"],
+        status="deterministic_no_verdict",
+    )
+    public = final_answer_public(domain_answer)
+    assert public.unevaluated_claims is None
+
+
+def test_final_answer_public_unevaluated_claims_defaults_to_none_when_omitted():
+    """Requisito de compatibilidade histórica -- um chamador que constrói
+    `FinalAnswerPublic` sem passar `unevaluated_claims` (runs persistidos
+    antes deste repair) continua funcionando, com o campo `None`."""
+    from app.presentation.schemas import FinalAnswerPublic
+
+    public = FinalAnswerPublic(
+        answer_text="resposta histórica",
+        answer_blocks=None,
+        limitations=[],
+        status="deterministic_no_verdict",
+        editor_model=None,
+        editor_model_identity_source=None,
+        judge_confidence=None,
+    )
+    assert public.unevaluated_claims is None

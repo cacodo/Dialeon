@@ -77,6 +77,42 @@ class FinalAnswer(BaseModel):
     # passado (lista mutável do chamador, ou lista reconstruída de JSON
     # persistido), fecham essa lacuna sem cópia defensiva manual.
     answer_blocks: tuple[AnswerBlock, ...] | None = None
+    # Repair (adversarial review -- Structured Unevaluated Claims) --
+    # representação ADITIVA e ESTRUTURADA (tupla de strings de exibição,
+    # uma por claim CORRENTE, ver `get_current_claims`,
+    # app/debate/claims.py) do MESMO conteúdo que `answer_text` já
+    # listava em prosa quando `status="deterministic_no_verdict"` e
+    # existiam claims correntes sem veredito. Nunca uma segunda
+    # derivação independente -- `Editor._no_verdict_result`
+    # (app/editor/compose.py) computa a sequência ordenada UMA vez e
+    # usa a MESMA sequência tanto aqui (crua, sem prefixo `"- "`) quanto
+    # pra montar `answer_text` (com o prefixo `"- "` acrescentado só
+    # ali, formatação de apresentação em prosa).
+    #
+    # `None` em QUATRO casos, todos honestos:
+    # (1) `status` diferente de `deterministic_no_verdict` (nunca
+    #     aplicável -- ver validador abaixo);
+    # (2) `status="deterministic_no_verdict"` mas não havia NENHUMA
+    #     claim corrente no momento (nunca uma lista vazia explícita --
+    #     ver validador abaixo, "no explicit empty list state");
+    # (3) run persistido antes desta coluna existir (upgrade de schema
+    #     sem backfill, ver `_upgrade_legacy_unevaluated_claims`,
+    #     app/storage/database.py) -- NUNCA reconstruído por parsing de
+    #     `answer_text` já persistido;
+    # (4) qualquer caminho COM veredito (`llm_planned`/
+    #     `llm_composed`/`deterministic_from_verdict`) -- essas claims
+    #     JÁ foram avaliadas pelo Judge e aparecem em `answer_blocks`/
+    #     `answer_text` normalmente, nunca duplicadas aqui.
+    #
+    # Cada string é conteúdo de exibição da claim -- texto do
+    # participante (nunca fato, evidência, achado do Judge, achado
+    # canônico, ou conclusão do Dialeon) -- opcionalmente seguido de uma
+    # nota de fonte-apenas (`_render_source_only_note`,
+    # app/editor/compose.py), preservada exatamente como já era
+    # embutida em `answer_text` antes deste campo existir. NUNCA inclui
+    # o prefixo sintético `"- "` (isso é formatação de apresentação de
+    # `answer_text`, não conteúdo).
+    unevaluated_claims: tuple[str, ...] | None = None
     # Quando há veredito: SEMPRE começa com cópia VERBATIM de
     # JudgeVerdict.debate_limitations, na mesma ordem -- o Editor nunca
     # reescreve/resume/escolhe o CONTEÚDO dessas entradas (ver
@@ -190,6 +226,33 @@ class FinalAnswer(BaseModel):
                 f"status={self.status!r} nunca deve ter answer_blocks -- este status "
                 "é intencionalmente não-estruturado"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _unevaluated_claims_scoped_to_no_verdict(self) -> FinalAnswer:
+        """Repair (adversarial review -- Structured Unevaluated Claims) --
+        mesma disciplina de `_answer_blocks_forbidden_for_unstructured_statuses`:
+        um `unevaluated_claims` não-`None` só faz sentido quando o Judge
+        genuinamente não produziu veredito (`status="deterministic_no_verdict"`)
+        -- qualquer outro status já expõe as claims avaliadas via
+        `answer_blocks`/`answer_text` normalmente, nunca duplicadas aqui.
+
+        "No explicit empty list state" -- uma tupla vazia é rejeitada
+        explicitamente: ausência de claims correntes é sempre `None`
+        (ver `Editor._no_verdict_result`), nunca uma coleção vazia que
+        o frontend precisaria distinguir de "ainda não populado"."""
+        if self.unevaluated_claims is not None:
+            if self.status != "deterministic_no_verdict":
+                raise ValueError(
+                    f"status={self.status!r} nunca deve ter unevaluated_claims -- "
+                    "só deterministic_no_verdict pode ter claims correntes sem "
+                    "veredito do Judge"
+                )
+            if len(self.unevaluated_claims) == 0:
+                raise ValueError(
+                    "unevaluated_claims, quando não None, nunca pode ser vazio -- "
+                    "ausência de claims correntes é None, nunca uma coleção vazia"
+                )
         return self
 
     @model_validator(mode="after")

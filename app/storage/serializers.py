@@ -628,12 +628,43 @@ def _answer_blocks_from_json(data: list | None) -> tuple[AnswerBlock, ...] | Non
     return _ANSWER_BLOCKS_ADAPTER.validate_python(data) if data is not None else None
 
 
+# Repair (adversarial review -- fail-closed em JSON persistido malformado)
+# -- uma coerção `tuple(data)` ingênua aceita QUALQUER iterável: uma string
+# JSON escalar ("abc") vira ("a", "b", "c"), um dict vira uma tupla das
+# suas chaves -- ambos ganhariam autoridade semântica como se fossem
+# claims genuínas do modelo participante. Mesma disciplina EXATA de
+# `_ANSWER_BLOCKS_ADAPTER` acima: `TypeAdapter(tuple[str, ...])` valida a
+# FORMA (sequência de strings) antes de devolver algo pro domínio -- um
+# valor incompatível (escalar, objeto, elemento não-string) falha fechado
+# aqui (`ValidationError`), nunca é silenciosamente coagido/filtrado.
+_UNEVALUATED_CLAIMS_ADAPTER: TypeAdapter[tuple[str, ...]] = TypeAdapter(tuple[str, ...])
+
+
+def _unevaluated_claims_to_json(claims: tuple[str, ...] | None) -> list | None:
+    return (
+        _UNEVALUATED_CLAIMS_ADAPTER.dump_python(claims, mode="json")
+        if claims is not None
+        else None
+    )
+
+
+def _unevaluated_claims_from_json(data: list | None) -> tuple[str, ...] | None:
+    """Reconstrução validada -- um `data` malformado/incompatível com
+    `tuple[str, ...]` falha fechado aqui (`ValidationError`), nunca é
+    silenciosamente reparado/descartado. `None` (coluna nunca populada,
+    run anterior a este repair, status diferente de
+    deterministic_no_verdict, ou sem claims correntes) permanece `None`
+    -- nunca reconstruído a partir de `answer_text`."""
+    return _UNEVALUATED_CLAIMS_ADAPTER.validate_python(data) if data is not None else None
+
+
 def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerRow:
     return FinalAnswerRow(
         id=fa.id,
         council_run_id=council_run_id,
         answer_text=fa.answer_text,
         answer_blocks_json=_answer_blocks_to_json(fa.answer_blocks),
+        unevaluated_claims_json=_unevaluated_claims_to_json(fa.unevaluated_claims),
         limitations_json=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -651,6 +682,7 @@ def final_answer_from_row(row: FinalAnswerRow) -> FinalAnswer:
         id=row.id,
         answer_text=row.answer_text,
         answer_blocks=_answer_blocks_from_json(row.answer_blocks_json),
+        unevaluated_claims=_unevaluated_claims_from_json(row.unevaluated_claims_json),
         limitations=list(row.limitations_json),
         status=row.status,
         editor_model=row.editor_model,

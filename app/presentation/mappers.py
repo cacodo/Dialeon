@@ -294,6 +294,9 @@ def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
         answer_blocks=(
             [answer_block_public(b) for b in fa.answer_blocks] if fa.answer_blocks is not None else None
         ),
+        unevaluated_claims=(
+            list(fa.unevaluated_claims) if fa.unevaluated_claims is not None else None
+        ),
         limitations=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,

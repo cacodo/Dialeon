@@ -38,6 +38,7 @@ from app.source_analysis.models import RejectedSourceEntry
 from app.source_analysis.result import SourceAnalysisResult
 from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 from tests.editor.fixtures import (
+    canonical_claim,
     debate_result,
     judge_result,
     model_response,
@@ -637,6 +638,172 @@ async def test_no_verdict_with_claims_lists_them_as_unevaluated():
     assert result.attempts == []
     assert "afirmação não avaliada" in result.final_answer.answer_text
     assert "falha de comunicação" in result.final_answer.answer_text
+    # Repair (adversarial review -- Structured Unevaluated Claims).
+    assert result.final_answer.unevaluated_claims == ("afirmação não avaliada",)
+
+
+# ---------------------------------------------------------------------------
+# Repair (adversarial review -- Structured Unevaluated Claims) --
+# `Editor._no_verdict_result` deriva `unevaluated_claims`/`answer_text` a
+# partir da MESMA sequência ordenada, uma única vez -- nunca duas
+# derivações independentes.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_unevaluated_claims_matches_every_current_claim_exactly_once_in_order():
+    c1 = raw_claim("primeira afirmação", "resp-1", provider="openai")
+    c2 = raw_claim("segunda afirmação", "resp-2", provider="anthropic")
+    c3 = raw_claim("terceira afirmação", "resp-3", provider="gemini")
+    dr = debate_result(
+        [c1, c2, c3],
+        [model_response("openai"), model_response("anthropic"), model_response("gemini")],
+    )
+    jr = judge_result(None, verdict_unavailable_reason="judge_transport_failed")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    expected = ("primeira afirmação", "segunda afirmação", "terceira afirmação")
+    assert result.final_answer.unevaluated_claims == expected
+    # Nenhum prefixo sintético "- " no campo estruturado.
+    assert all(not text.startswith("- ") for text in result.final_answer.unevaluated_claims)
+    # Mesma ordem/conteúdo refletidos em answer_text (com o prefixo "- "
+    # acrescentado só ali, na hora de montar a prosa).
+    for text in expected:
+        assert f"- {text}" in result.final_answer.answer_text
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_unevaluated_claims_mixed_raw_and_canonical_match_get_current_claims():
+    """Requisito 2 -- se `get_current_claims()` devolve uma mistura de
+    claims brutas e canônicas (ex.: agrupamento parcial), o campo
+    estruturado reflete EXATAMENTE essa mesma mistura/ordem, nunca uma
+    reinterpretação própria."""
+    raw_ungrouped = raw_claim("claim bruta sem par", "resp-1", provider="openai")
+    merged_a = raw_claim("claim fundida A", "resp-2", provider="anthropic")
+    merged_b = raw_claim("claim fundida B", "resp-3", provider="gemini")
+    canonical = canonical_claim(
+        "claim canônica fundida",
+        merged_from=[merged_a.id, merged_b.id],
+        supports=merged_a.supporting_model_response_ids + merged_b.supporting_model_response_ids,
+    )
+    all_claims = [raw_ungrouped, merged_a, merged_b, canonical]
+    expected_current = get_current_claims(all_claims)
+    assert [c.text for c in expected_current] == ["claim bruta sem par", "claim canônica fundida"]
+
+    dr = debate_result(
+        all_claims,
+        [model_response("openai"), model_response("anthropic"), model_response("gemini")],
+    )
+    jr = judge_result(None, verdict_unavailable_reason="judge_transport_failed")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert result.final_answer.unevaluated_claims == tuple(c.text for c in expected_current)
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_superseded_claims_excluded_from_unevaluated_claims():
+    """Requisito 3 -- uma claim bruta já fundida numa canônica (portanto
+    "superada", ver get_current_claims/lineage) nunca aparece em
+    unevaluated_claims -- só as claims CORRENTES."""
+    superseded_a = raw_claim("claim superada A", "resp-1", provider="openai")
+    superseded_b = raw_claim("claim superada B", "resp-2", provider="anthropic")
+    canonical = canonical_claim(
+        "claim canônica corrente",
+        merged_from=[superseded_a.id, superseded_b.id],
+        supports=superseded_a.supporting_model_response_ids
+        + superseded_b.supporting_model_response_ids,
+    )
+    dr = debate_result(
+        [superseded_a, superseded_b, canonical],
+        [model_response("openai"), model_response("anthropic")],
+    )
+    jr = judge_result(None, verdict_unavailable_reason="judge_transport_failed")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    assert result.final_answer.unevaluated_claims == ("claim canônica corrente",)
+    assert "claim superada A" not in result.final_answer.unevaluated_claims
+    assert "claim superada B" not in result.final_answer.unevaluated_claims
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_source_only_note_preserved_in_both_representations():
+    """Requisito 4 -- uma nota fonte-apenas (`_render_source_only_note`)
+    continua aparecendo, byte-a-byte igual, tanto em `answer_text`
+    (comportamento legado) quanto dentro da string correspondente de
+    `unevaluated_claims` (nunca uma segunda derivação/redação)."""
+    c1 = raw_claim("afirmação apoiada pela fonte", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(None, verdict_unavailable_reason="judge_transport_failed")
+    outcome = ClaimReconciliationOutcome(
+        claim_id=c1.id,
+        judge_verdict_id=None,
+        source_claim_result_ids=("rel-a",),
+        source_state=SourceChannelState.SUPPORTS,
+        channel_relationship=ChannelRelationship.NOT_COMPARABLE,
+    )
+    reconciliation = SourceJudgeReconciliationResult(
+        status="judge_unavailable", claim_outcomes=[outcome]
+    )
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+        reconciliation=reconciliation,
+    )
+
+    expected_note = "A análise da fonte fornecida classificou esta afirmação como apoiada pela fonte fornecida."
+    expected_claim_text = f"afirmação apoiada pela fonte\n  {expected_note}"
+    assert result.final_answer.unevaluated_claims == (expected_claim_text,)
+    assert f"- {expected_claim_text}" in result.final_answer.answer_text
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_legacy_answer_text_byte_identical_with_structured_field_present():
+    """Requisito 5 -- `answer_text` permanece EXATAMENTE o texto que o
+    comportamento legado (pré-repair) já produzia, mesmo agora que
+    `unevaluated_claims` também é populado a partir da mesma derivação."""
+    c1 = raw_claim("afirmação legada", "resp-1", provider="openai")
+    dr = debate_result([c1], [model_response("openai")])
+    jr = judge_result(None, verdict_unavailable_reason="judge_transport_failed")
+    editor = Editor({})
+
+    result = await editor.compose(
+        dr, jr, _run_config(),
+        prior_input_tokens=dr.cumulative_input_tokens + jr.judge_input_tokens,
+        prior_output_tokens=dr.cumulative_output_tokens + jr.judge_output_tokens,
+        prior_cost_usd=dr.cumulative_cost_usd + jr.judge_cost_usd,
+    )
+
+    expected_text = (
+        "A avaliação final não pôde ser concluída: houve uma falha de comunicação "
+        "durante a avaliação final. As seguintes afirmações foram levantadas pelos "
+        "modelos participantes, mas não foram avaliadas:\n- afirmação legada"
+    )
+    assert result.final_answer.answer_text == expected_text
 
 
 @pytest.mark.asyncio
@@ -654,6 +821,10 @@ async def test_no_verdict_no_claims_generic_message():
 
     assert result.final_answer.status == "deterministic_no_verdict"
     assert "não foi possível" in result.final_answer.answer_text.lower()
+    # Repair (adversarial review -- Structured Unevaluated Claims,
+    # requisito 6) -- sem claims correntes, o campo estruturado é
+    # sempre None, nunca uma coleção vazia.
+    assert result.final_answer.unevaluated_claims is None
 
 
 @pytest.mark.asyncio

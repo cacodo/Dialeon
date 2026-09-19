@@ -477,6 +477,16 @@ class FinalAnswerPublic(BaseModel):
     # Consumidores que não sabem renderizar isso podem ignorar o campo
     # inteiramente e continuar usando só `answer_text`, inalterado.
     answer_blocks: list[AnswerBlockPublic] | None
+    # Repair (adversarial review -- Structured Unevaluated Claims) --
+    # `None` em quatro casos, todos honestos (ver
+    # FinalAnswer.unevaluated_claims, app/editor/result.py pra
+    # semântica completa): status diferente de
+    # `deterministic_no_verdict`; sem claims correntes; run persistido
+    # antes desta coluna existir; ou coluna nunca populada. Consumidores
+    # que não sabem renderizar isso podem ignorar o campo inteiramente e
+    # continuar usando só `answer_text`, inalterado -- mesma disciplina
+    # de compatibilidade de `answer_blocks` acima.
+    unevaluated_claims: list[str] | None = None
     limitations: list[str]
     # Etapa 17B -- "llm_planned" é o status de runs novos (LLM escolheu
     # EditorPlan, aplicação renderizou o texto); "llm_composed" segue

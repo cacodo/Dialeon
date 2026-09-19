@@ -329,6 +329,19 @@ export interface FinalAnswerPublic {
   // sempre cai de volta pra `answer_text` (ver splitAnswerParagraphs,
   // api/formatting.ts) nesses casos, nunca reconstrói estrutura.
   answer_blocks: AnswerBlockPublic[] | null
+  // Repair (adversarial review -- Structured Unevaluated Claims) --
+  // sequência ORDENADA e COMPLETA de strings de exibição (uma por claim
+  // corrente, sem veredito do Judge) -- só populado quando
+  // `status === 'deterministic_no_verdict'` e existiam claims correntes
+  // no momento. `null`/ausente (`undefined`) em runs históricos
+  // persistidos antes deste campo existir, em qualquer outro `status`,
+  // ou quando não havia claims correntes -- o consumidor sempre cai de
+  // volta pro `answer_text` legado nesses casos, nunca tenta
+  // reconstruir estrutura por conta própria. Campo OPCIONAL (`?`) de
+  // propósito -- tolera tanto `null` (contrato explícito do backend)
+  // quanto `undefined` (payload histórico/externo que nem chegou a
+  // conhecer este campo).
+  unevaluated_claims?: string[] | null
   limitations: string[]
   status: FinalAnswerStatus
   editor_model: string | null

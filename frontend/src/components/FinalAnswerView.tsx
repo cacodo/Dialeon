@@ -25,6 +25,21 @@
 // é usado E `status` é um dos dois que SEMPRE embutem esse mesmo
 // conteúdo em `answer_text` (`FALLBACK_TEXT_STATUSES_THAT_ALREADY_INCLUDE_LIMITATIONS`)
 // -- decisão baseada só em `status`, nunca por inspecionar o texto.
+//
+// Repair (adversarial review -- Structured Unevaluated Claims) --
+// `status="deterministic_no_verdict"` com `unevaluated_claims` populado
+// (backend-derivado, ver app/editor/compose.py) usa uma disclosure
+// NATIVA (`<details>`/`<summary>`) em vez de `splitAnswerParagraphs`
+// sobre `answer_text` -- NUNCA parsing de texto humano pra separar
+// "motivo" de "lista de claims" (o contrato de `answer_text` não expõe
+// fronteira estrutural nenhuma pra isso, ver relatório desta slice). O
+// motivo continua visível via a seção "Limitações" já existente
+// (`finalAnswer.limitations[0]`, sempre presente e sempre renderizada
+// pra este status, nunca suprimida -- ver `showDedicatedLimitations`
+// abaixo), nunca duplicado/reconstruído aqui. `null`/`undefined`/vazio
+// (histórico, ou sem claims correntes) cai pro MESMO fallback de texto
+// de sempre, inalterado -- mesma disciplina "tudo ou nada" de
+// `isSupportedAnswerBlocks`.
 
 import type {
   AnswerBlockPublic,
@@ -124,6 +139,35 @@ function ClaimItemView({ item }: { item: AnswerClaimItemPublic }) {
   )
 }
 
+// Repair (adversarial review -- Structured Unevaluated Claims) --
+// consome SÓ o campo estruturado já ordenado/completo que o backend
+// fornece -- nunca reordena/filtra/deduplica/resume/seleciona um
+// subconjunto por conta própria (a lista inteira, sempre). Toda string
+// é interpolada como filho de texto puro do React (nunca
+// `dangerouslySetInnerHTML`), mesma disciplina de `ClaimItemView`
+// acima -- conteúdo malicioso permanece texto visível inerte.
+// Inicialmente FECHADA (`<details>` nativo, sem atributo `open`) --
+// colapsar só ESCONDE da tela; o DOM continua contendo todos os itens.
+function UnevaluatedClaimsDisclosure({ claims }: { claims: string[] }) {
+  return (
+    <div className="final-answer__unevaluated-claims">
+      <p className="final-answer__unevaluated-claims-note">
+        O juiz não avaliou as afirmações abaixo. Elas podem se sobrepor entre si, podem incluir
+        material bruto ou apenas parcialmente agrupado, e não são fatos verificados nem
+        conclusões do Dialeon.
+      </p>
+      <details>
+        <summary>Mostrar todas as {claims.length} afirmações não avaliadas</summary>
+        <ul className="final-answer__unevaluated-claims-list">
+          {claims.map((claim, index) => (
+            <li key={index}>{claim}</li>
+          ))}
+        </ul>
+      </details>
+    </div>
+  )
+}
+
 function AnswerBlockView({ block }: { block: AnswerBlockPublic }) {
   if (block.kind === 'paragraph') {
     return <p>{block.text}</p>
@@ -153,6 +197,20 @@ export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
     ? finalAnswer.answer_blocks
     : null
 
+  // Repair (adversarial review -- Structured Unevaluated Claims) --
+  // `unevaluated_claims` é opcional no tipo (`?`) pra tolerar payloads
+  // históricos/externos onde o campo está ausente (`undefined`), não só
+  // `null` -- ambos os casos caem no mesmo fallback de texto de sempre.
+  // Coleção vazia nunca deveria acontecer (contrato do backend: não-nulo
+  // implica não-vazio), mas a checagem de `.length > 0` é defesa em
+  // profundidade -- nunca renderiza uma disclosure vazia/enganosa.
+  const unevaluatedClaims =
+    finalAnswer.status === 'deterministic_no_verdict' &&
+    finalAnswer.unevaluated_claims != null &&
+    finalAnswer.unevaluated_claims.length > 0
+      ? finalAnswer.unevaluated_claims
+      : null
+
   const showDedicatedLimitations =
     finalAnswer.limitations.length > 0 &&
     (structuredBlocks !== null ||
@@ -162,11 +220,15 @@ export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
     <section aria-labelledby="final-answer-heading" className="final-answer">
       <h2 id="final-answer-heading">Resposta</h2>
       <div className="final-answer__text">
-        {structuredBlocks !== null
-          ? structuredBlocks.map((block, index) => <AnswerBlockView key={index} block={block} />)
-          : splitAnswerParagraphs(finalAnswer.answer_text).map((paragraph, index) => (
-              <p key={index}>{paragraph}</p>
-            ))}
+        {structuredBlocks !== null ? (
+          structuredBlocks.map((block, index) => <AnswerBlockView key={index} block={block} />)
+        ) : unevaluatedClaims !== null ? (
+          <UnevaluatedClaimsDisclosure claims={unevaluatedClaims} />
+        ) : (
+          splitAnswerParagraphs(finalAnswer.answer_text).map((paragraph, index) => (
+            <p key={index}>{paragraph}</p>
+          ))
+        )}
       </div>
 
       {showDedicatedLimitations && (

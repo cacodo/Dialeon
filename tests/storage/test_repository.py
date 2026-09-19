@@ -683,6 +683,124 @@ async def test_final_answer_answer_blocks_roundtrip_preserves_structure(repo):
 
 
 @pytest.mark.asyncio
+async def test_final_answer_unevaluated_claims_none_roundtrips_as_none(repo):
+    """`full_council_run_result()` nunca popula `unevaluated_claims`
+    (fixture histórica, `status="llm_composed"`, campo só aplicável a
+    `deterministic_no_verdict`) -- confirma que a coluna NULLABLE
+    persiste/reconstrói `None` honestamente, nunca inventa estrutura."""
+    result = full_council_run_result()
+    assert result.editor_result.final_answer.unevaluated_claims is None
+    await repo.save_success(result)
+
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.editor_result.final_answer.unevaluated_claims is None
+
+
+@pytest.mark.asyncio
+async def test_final_answer_unevaluated_claims_roundtrip_preserves_order_and_content(repo):
+    """Repair (adversarial review -- Structured Unevaluated Claims,
+    requisito 9) -- um `unevaluated_claims` populado sobrevive save/load
+    byte-a-byte igual, incluindo a ORDEM exata e o tipo tupla."""
+    result = full_council_run_result()
+    final_answer = FinalAnswer(
+        answer_text=(
+            "A avaliação final não pôde ser concluída: falha de teste. As seguintes "
+            "afirmações foram levantadas pelos modelos participantes, mas não foram "
+            "avaliadas:\n- primeira claim\n- segunda claim\n- terceira claim"
+        ),
+        limitations=["Avaliação final não realizada: falha de teste."],
+        status="deterministic_no_verdict",
+        unevaluated_claims=("primeira claim", "segunda claim", "terceira claim"),
+    )
+    editor_result = result.editor_result.model_copy(
+        update={
+            "final_answer": final_answer,
+            "attempts": [],
+            "fallback_reason": "judge_verdict_unavailable",
+        }
+    )
+    result = result.model_copy(update={"editor_result": editor_result})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    loaded_claims = loaded.editor_result.final_answer.unevaluated_claims
+    assert loaded_claims == ("primeira claim", "segunda claim", "terceira claim")
+    assert isinstance(loaded_claims, tuple)
+
+
+@pytest.mark.asyncio
+async def test_malformed_scalar_unevaluated_claims_json_fails_closed_on_load(engine, repo):
+    """Repair (adversarial review -- fail-closed em JSON persistido
+    malformado) -- uma string JSON escalar ("abc") NUNCA deve ganhar
+    autoridade semântica como afirmações do modelo participante via
+    coerção ingênua `tuple("abc") == ("a", "b", "c")`. Mesma disciplina
+    de test_malformed_answer_blocks_json_fails_closed_on_load, aplicada
+    à coluna nova desta slice."""
+    result = full_council_run_result()
+    final_answer = FinalAnswer(
+        answer_text="A avaliação final não pôde ser concluída: falha de teste.",
+        limitations=["Avaliação final não realizada: falha de teste."],
+        status="deterministic_no_verdict",
+        unevaluated_claims=("primeira claim",),
+    )
+    editor_result = result.editor_result.model_copy(
+        update={
+            "final_answer": final_answer,
+            "attempts": [],
+            "fallback_reason": "judge_verdict_unavailable",
+        }
+    )
+    result = result.model_copy(update={"editor_result": editor_result})
+    await repo.save_success(result)
+    final_answer_id = result.editor_result.final_answer.id
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE final_answers SET unevaluated_claims_json = :json WHERE id = :id"),
+            {"json": json.dumps("abc"), "id": final_answer_id},
+        )
+
+    with pytest.raises(ValidationError):
+        await repo.get_run(result.id)
+
+
+@pytest.mark.asyncio
+async def test_malformed_object_unevaluated_claims_json_fails_closed_on_load(engine, repo):
+    """Mesmo achado que o teste acima, forma diferente -- um objeto JSON
+    ({"forged": "value"}) NUNCA deve ganhar autoridade semântica via
+    coerção ingênua `tuple({"forged": "value"}) == ("forged",)` (chaves
+    do dict viram claims forjadas)."""
+    result = full_council_run_result()
+    final_answer = FinalAnswer(
+        answer_text="A avaliação final não pôde ser concluída: falha de teste.",
+        limitations=["Avaliação final não realizada: falha de teste."],
+        status="deterministic_no_verdict",
+        unevaluated_claims=("primeira claim",),
+    )
+    editor_result = result.editor_result.model_copy(
+        update={
+            "final_answer": final_answer,
+            "attempts": [],
+            "fallback_reason": "judge_verdict_unavailable",
+        }
+    )
+    result = result.model_copy(update={"editor_result": editor_result})
+    await repo.save_success(result)
+    final_answer_id = result.editor_result.final_answer.id
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE final_answers SET unevaluated_claims_json = :json WHERE id = :id"),
+            {"json": json.dumps({"forged": "value"}), "id": final_answer_id},
+        )
+
+    with pytest.raises(ValidationError):
+        await repo.get_run(result.id)
+
+
+@pytest.mark.asyncio
 async def test_malformed_answer_blocks_json_fails_closed_on_load(engine, repo):
     """Achado 3 da revisão adversarial, adjacente -- `answer_blocks_json`
     persistido malformado (aqui: um heading que não está no vocabulário

@@ -1228,3 +1228,147 @@ async def test_answer_blocks_upgrade_is_idempotent_across_repeated_init_db(tmp_p
     assert "answer_blocks_json" in columns
     assert value is None
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Repair (adversarial review -- Structured Unevaluated Claims) --
+# unevaluated_claims_json (final_answers). Mesma disciplina EXATA de
+# answer_blocks_json acima (mesma coluna/tabela, um segundo campo
+# opcional aditivo).
+# ---------------------------------------------------------------------------
+
+
+async def _make_pre_unevaluated_claims_db(db_path: str) -> None:
+    """Cria o schema ATUAL e remove só a coluna `unevaluated_claims_json`
+    da tabela `final_answers` -- simula fielmente um banco criado antes
+    deste repair (todas as outras colunas/upgrades presentes e
+    inalterados, inclusive `answer_blocks_json`)."""
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("ALTER TABLE final_answers DROP COLUMN unevaluated_claims_json")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_unevaluated_claims_database_gets_column_added(tmp_path):
+    db_path = str(tmp_path / "pre_unevaluated_claims.db")
+    await _make_pre_unevaluated_claims_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    columns_before = {c[1] for c in conn.execute("PRAGMA table_info(final_answers)")}
+    assert "unevaluated_claims_json" not in columns_before
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns_after = {c[1] for c in conn.execute("PRAGMA table_info(final_answers)")}
+    assert "unevaluated_claims_json" in columns_after
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre_unevaluated_claims_final_answer_gets_null_never_reconstructed_from_answer_text(
+    tmp_path,
+):
+    """Nenhum backfill -- não existe forma honesta de reconstruir
+    `unevaluated_claims` a partir de `answer_text` já persistido (ver
+    docstring de `_upgrade_legacy_unevaluated_claims`,
+    app/storage/database.py). NULL é o único valor honesto."""
+    db_path = str(tmp_path / "pre_unevaluated_claims.db")
+    await _make_pre_unevaluated_claims_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    _seed_final_answer(conn, run_id="run1", final_answer_id="fa1")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    value = conn.execute(
+        "SELECT unevaluated_claims_json FROM final_answers WHERE id = 'fa1'"
+    ).fetchone()[0]
+    conn.close()
+    assert value is None
+
+
+@pytest.mark.asyncio
+async def test_unevaluated_claims_upgrade_does_not_touch_other_legacy_columns(tmp_path):
+    """Upgrades independentes -- adicionar `unevaluated_claims_json`
+    nunca deveria tocar `answer_text`/`limitations_json`/`status`/
+    `answer_blocks_json` já persistidos."""
+    db_path = str(tmp_path / "pre_unevaluated_claims.db")
+    await _make_pre_unevaluated_claims_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    _seed_final_answer(conn, run_id="run1", final_answer_id="fa1")
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    answer_text, status, answer_blocks_json = conn.execute(
+        "SELECT answer_text, status, answer_blocks_json FROM final_answers WHERE id = 'fa1'"
+    ).fetchone()
+    conn.close()
+    assert answer_text == "Resposta antiga."
+    assert status == "llm_composed"
+    assert answer_blocks_json is None
+
+
+@pytest.mark.asyncio
+async def test_fresh_database_does_not_run_pre_unevaluated_claims_upgrade_path(tmp_path):
+    """Um banco que nasce já com a coluna (via `create_all()`) nunca
+    exercita o branch de `ALTER TABLE` -- mesma disciplina das outras
+    verificações `test_fresh_database_does_not_run_*_upgrade_path`."""
+    db_path = str(tmp_path / "fresh_unevaluated_claims.db")
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+    await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns = {c[1] for c in conn.execute("PRAGMA table_info(final_answers)")}
+    conn.close()
+    assert "unevaluated_claims_json" in columns
+
+
+@pytest.mark.asyncio
+async def test_unevaluated_claims_upgrade_is_idempotent_across_repeated_init_db(tmp_path):
+    db_path = str(tmp_path / "pre_unevaluated_claims_idempotent.db")
+    await _make_pre_unevaluated_claims_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    _seed_council_run(conn, run_id="run1")
+    _seed_final_answer(conn, run_id="run1", final_answer_id="fa1")
+    conn.commit()
+    conn.close()
+
+    for _ in range(3):
+        engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+        await init_db(engine)
+        await engine.dispose()
+
+    conn = sqlite3.connect(db_path)
+    columns = {c[1] for c in conn.execute("PRAGMA table_info(final_answers)")}
+    (value,) = conn.execute(
+        "SELECT unevaluated_claims_json FROM final_answers WHERE id = 'fa1'"
+    ).fetchone()
+    count = conn.execute("SELECT COUNT(*) FROM final_answers").fetchone()[0]
+    conn.close()
+    assert "unevaluated_claims_json" in columns
+    assert value is None
+    assert count == 1
