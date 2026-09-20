@@ -822,7 +822,7 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
 
     // Perspectiva product-facing: provider visível, identidade
     // bruta/erro/proveniência ausentes.
-    expect(within(participantsSection).getByRole('button', { name: /perspectiva.*openai/i })).toBeInTheDocument()
+    expect(within(participantsSection).getByRole('button', { name: /perspectiva.*gpt/i })).toBeInTheDocument()
     expect(within(participantsSection).queryByText('gpt-5.5-2026-01-15')).not.toBeInTheDocument()
     expect(within(participantsSection).queryByText('gpt-5.5')).not.toBeInTheDocument()
     expect(within(participantsSection).queryByText(/abc123digest/i)).not.toBeInTheDocument()

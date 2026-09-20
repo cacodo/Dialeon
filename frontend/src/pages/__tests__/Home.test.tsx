@@ -96,8 +96,8 @@ describe('Home', () => {
     const toggle = await screen.findByRole('button', { name: /3 selecionados/i })
 
     await userEvent.click(toggle)
-    expect(screen.getByLabelText('Openai')).toBeChecked()
-    expect(screen.getByLabelText('Anthropic')).toBeChecked()
+    expect(screen.getByLabelText('GPT')).toBeChecked()
+    expect(screen.getByLabelText('Claude')).toBeChecked()
     expect(screen.getByLabelText('Gemini')).toBeChecked()
   })
 
@@ -173,7 +173,7 @@ describe('Home', () => {
 
     const toggle = await screen.findByRole('button', { name: /2 selecionados/i })
     await userEvent.click(toggle)
-    await userEvent.click(screen.getByLabelText('Anthropic'))
+    await userEvent.click(screen.getByLabelText('Claude'))
 
     expect(await screen.findByRole('button', { name: /1 selecionado\b/i })).toBeInTheDocument()
 
@@ -194,8 +194,8 @@ describe('Home', () => {
 
     const toggle = await screen.findByRole('button', { name: /2 selecionados/i })
     await userEvent.click(toggle)
-    await userEvent.click(screen.getByLabelText('Openai'))
-    await userEvent.click(screen.getByLabelText('Anthropic'))
+    await userEvent.click(screen.getByLabelText('GPT'))
+    await userEvent.click(screen.getByLabelText('Claude'))
 
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')

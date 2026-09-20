@@ -42,7 +42,7 @@ describe('ParticipantsResponses — disclosure de perspectiva', () => {
       <ParticipantsResponses responses={[makeResponse({ provider: 'openai' })]} round="initial" />,
     )
 
-    const toggle = screen.getByRole('button', { name: /perspectiva.*openai/i })
+    const toggle = screen.getByRole('button', { name: /perspectiva.*gpt/i })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('resposta')).not.toBeInTheDocument()
 
@@ -104,7 +104,7 @@ describe('ParticipantsResponses — disclosure de perspectiva', () => {
       />,
     )
 
-    const toggle = screen.getByRole('button', { name: /perspectiva.*openai/i })
+    const toggle = screen.getByRole('button', { name: /perspectiva.*gpt/i })
     expect(toggle).toBeInTheDocument()
     expect(screen.queryByText('gpt-5.5-2026-01-15')).not.toBeInTheDocument()
     expect(screen.queryByText('gpt-5.5')).not.toBeInTheDocument()
@@ -179,17 +179,17 @@ describe('ParticipantsResponses — acessibilidade: múltiplos disclosures com I
       />,
     )
 
-    const openaiToggle = screen.getByRole('button', { name: /openai/i })
-    const anthropicToggle = screen.getByRole('button', { name: /anthropic/i })
-    const openaiControlsId = openaiToggle.getAttribute('aria-controls')
-    const anthropicControlsId = anthropicToggle.getAttribute('aria-controls')
+    const gptToggle = screen.getByRole('button', { name: /gpt/i })
+    const claudeToggle = screen.getByRole('button', { name: /claude/i })
+    const openaiControlsId = gptToggle.getAttribute('aria-controls')
+    const anthropicControlsId = claudeToggle.getAttribute('aria-controls')
 
     expect(openaiControlsId).toBeTruthy()
     expect(anthropicControlsId).toBeTruthy()
     expect(openaiControlsId).not.toBe(anthropicControlsId)
 
-    await userEvent.click(openaiToggle)
-    await userEvent.click(anthropicToggle)
+    await userEvent.click(gptToggle)
+    await userEvent.click(claudeToggle)
 
     expect(document.getElementById(openaiControlsId!)).toBeInTheDocument()
     expect(document.getElementById(anthropicControlsId!)).toBeInTheDocument()
@@ -206,8 +206,8 @@ describe('ParticipantsResponses — acessibilidade: múltiplos disclosures com I
       />,
     )
 
-    expect(screen.getByRole('button', { name: 'Perspectiva — OpenAI' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Perspectiva — Anthropic' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Perspectiva — GPT' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Perspectiva — Claude' })).toBeInTheDocument()
   })
 
   it('mesmo provider duplicado na mesma rodada (cenário anômalo): nomes acessíveis continuam distinguíveis', () => {
@@ -221,8 +221,8 @@ describe('ParticipantsResponses — acessibilidade: múltiplos disclosures com I
       />,
     )
 
-    expect(screen.getByRole('button', { name: 'Perspectiva — OpenAI (1)' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Perspectiva — OpenAI (2)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Perspectiva — GPT (1)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Perspectiva — GPT (2)' })).toBeInTheDocument()
   })
 
   it('IDs de heading/seção nunca são derivados de texto humano com espaço', () => {
@@ -255,17 +255,17 @@ describe('ParticipantsResponses — repair pós-revisão adversarial: identidade
     expect(keyWarning).toBe(false)
     consoleError.mockRestore()
 
-    const openaiToggle = screen.getByRole('button', { name: /openai/i })
-    const anthropicToggle = screen.getByRole('button', { name: /anthropic/i })
+    const gptToggle = screen.getByRole('button', { name: /gpt/i })
+    const claudeToggle = screen.getByRole('button', { name: /claude/i })
 
-    await userEvent.click(openaiToggle)
+    await userEvent.click(gptToggle)
     expect(screen.getByText('Primeira.')).toBeInTheDocument()
     expect(screen.queryByText('Segunda.')).not.toBeInTheDocument()
 
-    await userEvent.click(anthropicToggle)
+    await userEvent.click(claudeToggle)
     expect(screen.getByText('Segunda.')).toBeInTheDocument()
 
-    await userEvent.click(openaiToggle)
+    await userEvent.click(gptToggle)
     expect(screen.queryByText('Primeira.')).not.toBeInTheDocument()
     // A segunda continua aberta, independente da primeira ter colapsado.
     expect(screen.getByText('Segunda.')).toBeInTheDocument()
@@ -282,18 +282,18 @@ describe('ParticipantsResponses — repair pós-revisão adversarial: identidade
       />,
     )
 
-    const openaiToggle = screen.getByRole('button', { name: /openai/i })
-    const anthropicToggle = screen.getByRole('button', { name: /anthropic/i })
+    const gptToggle = screen.getByRole('button', { name: /gpt/i })
+    const claudeToggle = screen.getByRole('button', { name: /claude/i })
 
-    const openaiControlsId = openaiToggle.getAttribute('aria-controls')
-    const anthropicControlsId = anthropicToggle.getAttribute('aria-controls')
+    const openaiControlsId = gptToggle.getAttribute('aria-controls')
+    const anthropicControlsId = claudeToggle.getAttribute('aria-controls')
 
     expect(openaiControlsId).toBeTruthy()
     expect(anthropicControlsId).toBeTruthy()
     expect(openaiControlsId).not.toBe(anthropicControlsId)
 
-    await userEvent.click(openaiToggle)
-    await userEvent.click(anthropicToggle)
+    await userEvent.click(gptToggle)
+    await userEvent.click(claudeToggle)
 
     expect(document.getElementById(openaiControlsId!)).toBeInTheDocument()
     expect(document.getElementById(anthropicControlsId!)).toBeInTheDocument()
@@ -307,7 +307,7 @@ describe('ParticipantsResponses — repair pós-revisão adversarial: identidade
       />,
     )
 
-    const toggle = screen.getByRole('button', { name: /openai/i })
+    const toggle = screen.getByRole('button', { name: /gpt/i })
     const controlsId = toggle.getAttribute('aria-controls')
 
     expect(controlsId).toBeTruthy()

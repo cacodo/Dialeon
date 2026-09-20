@@ -33,15 +33,20 @@ export function formatModelIdentitySource(source: ModelIdentitySource | null): s
   return MODEL_IDENTITY_SOURCE_LABELS[source] ?? source
 }
 
-// Participant Perspectives (UI Slice) -- nome de display do provider,
-// nunca o ID enviado/persistido (mesma disciplina de
-// ProviderSelector.tsx::displayName). Um mapa FECHADO só pros 3
+// Nome de display do provider pra apresentação ORDINÁRIA (seleção de
+// participantes, "Perspectiva — X"): a família/produto reconhecível pelo
+// usuário (Claude, GPT, Gemini), nunca o ID enviado/persistido -- os ids
+// canônicos (anthropic/openai/gemini) seguem intactos em payloads,
+// persistência e nas superfícies técnicas (Inspeção/Auditoria, lista de
+// apoiadores), que mostram o identificador bruto. "GPT", não "ChatGPT":
+// os modelos são chamados via adapter do provider, não o produto ChatGPT.
+// Fonte única -- nenhum componente reimplementa esta conversão. Um mapa FECHADO só pros 3
 // providers reais conhecidos hoje (ver app/providers/*.py:
 // provider_name) -- um provider novo/desconhecido cai no fallback
 // (capitalização simples), nunca quebra nem inventa um nome bonito.
 const PROVIDER_DISPLAY_NAME_LABELS: Record<string, string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
+  openai: 'GPT',
+  anthropic: 'Claude',
   gemini: 'Gemini',
 }
 

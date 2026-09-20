@@ -4,18 +4,13 @@
 
 import { useState } from 'react'
 
+import { formatProviderName } from '../api/formatting'
+
 interface ProviderSelectorProps {
   providers: string[]
   selected: string[]
   onChange: (selected: string[]) => void
   disabled?: boolean
-}
-
-function displayName(providerId: string): string {
-  // Formatação de nome pra display, sem alterar o ID enviado ao backend
-  // (Decision Delta secao 6: "nomes podem ser formatados para display
-  // sem alterar IDs enviados").
-  return providerId.charAt(0).toUpperCase() + providerId.slice(1)
 }
 
 export function ProviderSelector({ providers, selected, onChange, disabled }: ProviderSelectorProps) {
@@ -64,7 +59,7 @@ export function ProviderSelector({ providers, selected, onChange, disabled }: Pr
                 onChange={() => toggle(providerId)}
                 disabled={disabled}
               />
-              {displayName(providerId)}
+              {formatProviderName(providerId)}
             </label>
           ))}
         </fieldset>

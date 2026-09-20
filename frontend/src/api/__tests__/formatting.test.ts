@@ -218,9 +218,18 @@ describe('splitAnswerParagraphs', () => {
 
 describe('formatProviderName', () => {
   it('formata os 3 providers conhecidos com nome próprio de display', () => {
-    expect(formatProviderName('openai')).toBe('OpenAI')
-    expect(formatProviderName('anthropic')).toBe('Anthropic')
+    expect(formatProviderName('openai')).toBe('GPT')
+    expect(formatProviderName('anthropic')).toBe('Claude')
     expect(formatProviderName('gemini')).toBe('Gemini')
+  })
+
+  it('é só apresentação: "GPT" (nunca "ChatGPT") e nenhum display name vira/substitui o id canônico', () => {
+    const ids = ['openai', 'anthropic', 'gemini']
+    const names = ids.map(formatProviderName)
+
+    expect(names).toEqual(['GPT', 'Claude', 'Gemini'])
+    expect(names.join(' ')).not.toMatch(/chatgpt/i)
+    expect(ids).toEqual(['openai', 'anthropic', 'gemini']) // ids canônicos intactos
   })
 
   it('provider desconhecido cai num fallback honesto (capitalização simples), nunca inventa um nome', () => {
