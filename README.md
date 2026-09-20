@@ -10,10 +10,10 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Projeto em desenvolvimento ativo (versão atual do pacote: 0.9.0). A
-política de compatibilidade prevista para a linha 1.x está em
-[Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x);
-antes de uma versão 1.x ser lançada, ela ainda não é uma garantia.
+Versão do pacote nesta árvore: **1.0.0**. O número de versão no código
+não indica, por si só, que uma tag ou release já foi publicada. A política
+da linha 1.x está em
+[Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
 
 **Importante sobre o que isto NÃO é**: concordância entre modelos não é
 verdade, e a fonte fornecida pelo usuário não é validada como
@@ -27,6 +27,7 @@ abaixo.
 - [Escopo epistêmico](#escopo-epistêmico)
 - [Compatibilidade e estabilidade (linha 1.x)](#compatibilidade-e-estabilidade-linha-1x)
 - [Limitações conhecidas](#limitações-conhecidas)
+- [Notas da versão 1.0.0](CHANGELOG.md)
 - [Estrutura do repositório](#estrutura-do-repositório)
 - [Rodando o projeto](#rodando-o-projeto)
 - [Empacotamento de release](#empacotamento-de-release)
@@ -133,8 +134,8 @@ determinística da aplicação, ao montar a resposta final.
 
 ## Compatibilidade e estabilidade (linha 1.x)
 
-Política **pretendida para a linha 1.x** (o Dialeon ainda não está na
-1.0; até lá, ela descreve a intenção, não uma garantia já dada).
+Política de compatibilidade da **linha 1.x**, aplicável a partir da versão
+1.0.0 do pacote. A publicação de uma tag/release é um passo separado.
 
 **Estável durante 1.x:** o significado dos endpoints HTTP documentados,
 dos campos de request e dos campos centrais de resposta e de auditoria já

@@ -5,3 +5,4 @@
 # simplesmente não adiciona nada -- checkout de fonte/dev normal (sem
 # build de frontend) continua produzindo um sdist válido, só sem o bundle.
 graft app/frontend_dist
+include CHANGELOG.md
