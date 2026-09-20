@@ -385,3 +385,45 @@ def test_settings_is_a_model_wide_immutable_deployment_snapshot():
     uma lista de campos protegidos individualmente -- direto na config
     do modelo, nunca inferido do comportamento de campos específicos."""
     assert Settings.model_config.get("frozen") is True
+
+
+# ---------------------------------------------------------------------------
+# Default do orçamento agregado de tokens (SOFT cap) -- 150.000
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_default_total_token_budget_is_150000_and_cost_default_is_unchanged(monkeypatch):
+    """Isolado de qualquer override local: nem `.env` (`_env_file=None`) nem
+    variável de ambiente do processo (removida aqui)."""
+    monkeypatch.delenv("DEFAULT_MAX_TOTAL_TOKENS", raising=False)
+    monkeypatch.delenv("DEFAULT_MAX_COST_USD", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.default_max_total_tokens == 150_000
+    assert settings.default_max_cost_usd == 1.00
+
+
+def test_default_total_token_budget_reaches_a_new_run_config(monkeypatch):
+    from app.orchestrator.config import RunConfig
+
+    monkeypatch.delenv("DEFAULT_MAX_TOTAL_TOKENS", raising=False)
+    monkeypatch.delenv("DEFAULT_MAX_COST_USD", raising=False)
+
+    run_config = RunConfig.from_settings(
+        Settings(_env_file=None), question="pergunta", enabled_providers=["openai"], source_text=None
+    )
+
+    assert run_config.max_total_tokens == 150_000
+    assert run_config.max_cost_usd == 1.00
+
+
+def test_environment_override_of_total_token_budget_still_wins(monkeypatch):
+    monkeypatch.setenv("DEFAULT_MAX_TOTAL_TOKENS", "200000")
+
+    assert Settings(_env_file=None).default_max_total_tokens == 200_000
+
+
+def test_explicit_lower_total_token_budgets_remain_valid():
+    assert _settings(default_max_total_tokens=50_000).default_max_total_tokens == 50_000
+    assert _settings(default_max_total_tokens=1).default_max_total_tokens == 1

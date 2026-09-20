@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     # `gt=0` sozinho -- zero/negativo aqui sobrevivia ao bootstrap
     # inteiro e só falhava na primeira `RunConfig.from_settings()` (por
     # request), não na composição do deployment.
-    default_max_total_tokens: int = Field(default=50_000, gt=0)
+    default_max_total_tokens: int = Field(default=150_000, gt=0)
     # Etapa 17A.1 -- 1024 provou-se insuficiente em Runs reais de
     # produção: respostas de participante (Gemini) truncadas visivelmente
     # incompletas a ~1020 tokens, e o próprio Judge batendo o teto
