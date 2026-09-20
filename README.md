@@ -10,8 +10,10 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Projeto em desenvolvimento ativo. As interfaces (CLI, API HTTP,
-contrato de dados) ainda podem mudar entre execuções.
+Projeto em desenvolvimento ativo (versão atual do pacote: 0.9.0). A
+política de compatibilidade prevista para a linha 1.x está em
+[Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x);
+antes de uma versão 1.x ser lançada, ela ainda não é uma garantia.
 
 **Importante sobre o que isto NÃO é**: concordância entre modelos não é
 verdade, e a fonte fornecida pelo usuário não é validada como
@@ -23,6 +25,8 @@ abaixo.
 - [O que já está implementado](#o-que-já-está-implementado)
 - [Como o pipeline funciona](#como-o-pipeline-funciona)
 - [Escopo epistêmico](#escopo-epistêmico)
+- [Compatibilidade e estabilidade (linha 1.x)](#compatibilidade-e-estabilidade-linha-1x)
+- [Limitações conhecidas](#limitações-conhecidas)
 - [Estrutura do repositório](#estrutura-do-repositório)
 - [Rodando o projeto](#rodando-o-projeto)
 - [Empacotamento de release](#empacotamento-de-release)
@@ -126,6 +130,61 @@ determinística da aplicação, ao montar a resposta final.
   (ex.: "o Judge e a fonte apontam na mesma direção"), nunca decide qual
   dos dois está certo, e nunca é um terceiro veredito de verdade.
 - Consenso entre modelos nunca é tratado como confirmação de veracidade.
+
+## Compatibilidade e estabilidade (linha 1.x)
+
+Política **pretendida para a linha 1.x** (o Dialeon ainda não está na
+1.0; até lá, ela descreve a intenção, não uma garantia já dada).
+
+**Estável durante 1.x:** o significado dos endpoints HTTP documentados,
+dos campos de request e dos campos centrais de resposta e de auditoria já
+existentes; os códigos de status/erro HTTP (`error.code`); os comandos,
+opções, formatos de `--json` e códigos de saída documentados da CLI; os
+nomes das variáveis de ambiente documentadas; o entrypoint instalado
+`dialeon` e o entrypoint Uvicorn `app.api.app:create_app`; e a leitura de
+runs históricas válidas e suportadas (a partir da era v0.9).
+
+**Evolução compatível durante 1.x:** novos endpoints, novos campos
+**opcionais** de resposta, informação adicional de auditoria e novos
+comandos/opções de CLI que não alterem o comportamento existente.
+**Clientes devem ignorar chaves de resposta desconhecidas** (o OpenAPI
+gerado não publica objetos de resposta como fechados). **Requests
+continuam estritos**: campos desconhecidos no corpo de um request são
+rejeitados. Enums fechados de resposta (ex.: `status`, `verdict`) têm
+significados estáveis, mas um valor novo pode quebrar clientes que os
+tratam de forma exaustiva -- não é evolução automaticamente compatível
+como um campo opcional novo.
+
+**Não fazem parte da API estável:** o texto exato de mensagens da CLI e de
+erros; o schema SQLite bruto e as classes ORM; os módulos internos `app.*`,
+adapters de provider e detalhes internos do domínio; componentes
+React/TypeScript, CSS, DOM e navegação do frontend; prompts internos e
+payloads exatos enviados aos providers; e a reprodução idêntica de saídas de
+modelo.
+
+Nomes de contrato de operação como `judge_v1`/`judge_v2` são **proveniência
+de auditoria**: mantêm sua interpretação histórica, mas execuções futuras
+podem usar versões mais novas -- não congelam o algoritmo de execução.
+
+A versão anunciada em `info.version` do OpenAPI é a versão do produto (a
+de `pyproject.toml`); não existe uma versão de API HTTP independente.
+
+## Limitações conhecidas
+
+- O Judge avalia as claims e o histórico de revisão (lineage) que recebe; ele
+  não estabelece verdade externa e não revisa o debate bruto como um oráculo
+  de verdade.
+- O texto de fonte fornecido pelo usuário não é verificado automaticamente.
+- Limites de tokens/custo são portões operacionais e podem ser **soft**: o uso
+  só é conhecido depois que uma chamada termina, então uma execução pode
+  terminar acima do limite.
+- Um processo interrompido pode não deixar um registro terminal persistido, e
+  o trabalho parcial não é necessariamente persistido de forma incremental.
+- `minimal_reasoning` é uma intenção expressa pela operação (hoje: extração
+  de claims e Judge); atualmente só o adapter da Anthropic a mapeia para
+  desabilitação explícita de thinking -- nos demais providers ela não tem efeito.
+- A validação real do Judge com 50 claims foi bem-sucedida, mas é evidência
+  para aquele workload, não uma garantia universal de cardinalidade.
 
 ## Estrutura do repositório
 

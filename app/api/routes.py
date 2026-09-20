@@ -12,6 +12,12 @@ from fastapi import APIRouter, Query, Request, status
 
 from app.bootstrap import AppComponents
 from app.api.exceptions import RunNotFoundError
+from app.api.openapi import (
+    INSUFFICIENT_QUORUM_RESPONSE,
+    INTERNAL_ERROR_RESPONSE,
+    INVALID_REQUEST_RESPONSE,
+    RUN_NOT_FOUND_RESPONSE,
+)
 from app.presentation.mappers import (
     completed_run_audit,
     completed_run_response,
@@ -31,7 +37,9 @@ from app.presentation.schemas import (
 from app.orchestrator.config import RunConfig
 from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 
-router = APIRouter()
+# Todas as rotas podem devolver o catch-all 500 (`internal_error`) -- ver
+# `error_handlers.py`. Os demais erros são declarados por rota.
+router = APIRouter(responses={500: INTERNAL_ERROR_RESPONSE})
 
 
 def _components(request: Request) -> AppComponents:
@@ -51,7 +59,12 @@ async def get_providers(request: Request) -> ProvidersResponse:
     return ProvidersResponse(providers=sorted(components.providers))
 
 
-@router.post("/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/runs",
+    response_model=RunResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={409: INSUFFICIENT_QUORUM_RESPONSE, 422: INVALID_REQUEST_RESPONSE},
+)
 async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
     """Etapa 14: a validação de `enabled_providers` desconhecidos não
     mora mais aqui -- `CouncilExecutionService.run()` já a faz, antes de
@@ -88,7 +101,7 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
     )
 
 
-@router.get("/runs", response_model=RunListResponse)
+@router.get("/runs", response_model=RunListResponse, responses={422: INVALID_REQUEST_RESPONSE})
 async def list_runs(
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
@@ -101,7 +114,7 @@ async def list_runs(
     )
 
 
-@router.get("/runs/{run_id}", response_model=RunResponse)
+@router.get("/runs/{run_id}", response_model=RunResponse, responses={404: RUN_NOT_FOUND_RESPONSE})
 async def get_run(run_id: str, request: Request) -> RunResponse:
     components = _components(request)
     record = await components.repository.get_run(run_id)
@@ -122,7 +135,11 @@ async def get_run(run_id: str, request: Request) -> RunResponse:
     return failed_run_response(record)
 
 
-@router.get("/runs/{run_id}/audit", response_model=RunAuditResponse)
+@router.get(
+    "/runs/{run_id}/audit",
+    response_model=RunAuditResponse,
+    responses={404: RUN_NOT_FOUND_RESPONSE},
+)
 async def get_run_audit(run_id: str, request: Request) -> RunAuditResponse:
     components = _components(request)
     record = await components.repository.get_run(run_id)

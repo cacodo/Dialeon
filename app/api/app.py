@@ -20,8 +20,10 @@ from fastapi import FastAPI
 from app.bootstrap import AppComponents, build_app_components
 from app.api.error_handlers import register_exception_handlers
 from app.api.frontend_serving import mount_frontend
+from app.api.openapi import install_public_contract_policy
 from app.api.routes import router
 from app.config import Settings
+from app.version import get_product_version
 
 ComponentsFactory = Callable[[Settings], Awaitable[AppComponents]]
 
@@ -50,7 +52,10 @@ def create_app(
         finally:
             await components.engine.dispose()
 
-    app = FastAPI(title="LLM Council API", lifespan=lifespan)
+    # `info.version` acompanha a versão do PRODUTO (pyproject.toml) -- não
+    # existe versão de API HTTP independente (ver app/version.py).
+    app = FastAPI(title="LLM Council API", version=get_product_version(), lifespan=lifespan)
+    install_public_contract_policy(app)
     register_exception_handlers(app)
     app.include_router(router)
     mount_frontend(app, dist_dir=frontend_dist)
