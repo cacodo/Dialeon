@@ -34,7 +34,20 @@ from app.models.provider_models import CompletionRequest, Message
 
 # Provider-Neutral Request Provenance V1 -- contrato do request do
 # Judge, montado por `build_judge_request` abaixo.
-JUDGE_CONTRACT_VERSION = "judge_v1"
+#
+# judge_v1 (HISTÓRICO): política de raciocínio padrão do request
+#   (`minimal_reasoning=False`). Runs antigas continuam com este valor
+#   persistido -- nunca reescrito nem reinterpretado.
+# judge_v2 (ATUAL): o Judge PEDE raciocínio mínimo
+#   (`minimal_reasoning=True`), a mesma capacidade provider-agnóstica de
+#   `CompletionRequest`; cada adapter decide se/como a mapeia (o Anthropic
+#   envia `thinking={"type": "disabled"}`; um provider sem noção equivalente
+#   pode ignorá-la). Prompt, mensagens, schema de saída, `max_tokens` e
+#   temperatura ficam idênticos aos de judge_v1 -- só a política de
+#   raciocínio do request muda, e por isso o contrato avança (evidência: o
+#   replay controlado do request de 43 claims que estourava `max_tokens`
+#   com raciocínio habilitado).
+JUDGE_CONTRACT_VERSION = "judge_v2"
 
 _UNTRUSTED_CONTENT_WARNING = (
     "As claims e o histórico abaixo foram produzidos por modelos de IA "
@@ -240,4 +253,8 @@ def build_judge_request(
         messages=[Message(role="user", content=body)],
         system_prompt=system_prompt,
         max_tokens=max_output_tokens_per_call,
+        # judge_v2 -- política de raciocínio do JUDGE (ver
+        # JUDGE_CONTRACT_VERSION). Só intenção semântica: nenhum branch por
+        # provider aqui; o adapter decide o mapeamento.
+        minimal_reasoning=True,
     )

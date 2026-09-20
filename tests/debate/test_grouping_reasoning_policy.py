@@ -362,15 +362,17 @@ def test_extraction_request_and_contract_are_unchanged():
     assert CLAIM_EXTRACTION_CONTRACT_VERSION == "claim_extraction_v2"
 
 
-def test_judge_request_and_contract_are_unchanged():
+def test_judge_request_now_asks_for_minimal_reasoning_under_judge_v2():
     c1 = raw_claim("A", "resp-1", provider="openai")
     dr = debate_result([c1], [model_response("openai")])
 
     request = build_judge_request("Pergunta?", dr, [c1], 8192)
 
-    assert request.minimal_reasoning is False
+    # judge_v2: o Judge (e só ele, ver tests/judge/test_judge_reasoning_policy.py)
+    # pede raciocínio mínimo; teto de saída inalterado
+    assert request.minimal_reasoning is True
     assert request.max_tokens == 8192
-    assert JUDGE_CONTRACT_VERSION == "judge_v1"
+    assert JUDGE_CONTRACT_VERSION == "judge_v2"
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,8 @@ class CompletionRequest(BaseModel):
     # provider não tiver noção equivalente -- nunca um branch por
     # identidade de provider fora da camada de adapters (ver
     # AnthropicProvider._call_api, único mapeamento concreto desta etapa).
+    # Chamadores atuais que o pedem: extração de claims e o Judge (judge_v2);
+    # o agrupamento que também o pedia não é mais executado.
     # `False` (default) preserva o comportamento de toda chamada
     # existente antes deste campo existir, byte-a-byte.
     minimal_reasoning: bool = False

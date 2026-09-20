@@ -238,12 +238,12 @@ def test_source_analysis_contract_version_and_golden_digest():
 
 
 # ---------------------------------------------------------------------------
-# 7. judge_v1
+# 7. judge_v2 (judge_v1 histórico: minimal_reasoning=False)
 # ---------------------------------------------------------------------------
 
 
 def test_judge_contract_version_and_golden_digest():
-    assert JUDGE_CONTRACT_VERSION == "judge_v1"
+    assert JUDGE_CONTRACT_VERSION == "judge_v2"
 
     c1 = raw_claim("Brasília é a capital.", "resp-1", provider="openai", id="claim-fixed-7")
     mr = model_response("openai", id="mr-fixed-7")
@@ -255,7 +255,14 @@ def test_judge_contract_version_and_golden_digest():
         max_output_tokens_per_call=1024,
     )
 
+    assert request.minimal_reasoning is True
     assert compute_request_digest(request) == (
+        "completion-request-sha256-v2:"
+        "60ba3649118233add406f3f290f46aea4f3338ffe9afe70394c67fadf7270a8f"
+    )
+    # judge_v1 (HISTÓRICO): o MESMO request com `minimal_reasoning=False`
+    # reproduz o golden histórico -- só a política de raciocínio difere.
+    assert compute_request_digest(request.model_copy(update={"minimal_reasoning": False})) == (
         "completion-request-sha256-v2:"
         "feac2b539e5c4d30af81fac9cf5d25ea2f7f924c875ec318bfb341ad21fb2497"
     )

@@ -1274,7 +1274,7 @@ async def test_single_timed_out_judge_attempt_never_retries_or_sleeps_and_keeps_
 @pytest.mark.asyncio
 async def test_judge_request_content_and_digest_are_identical_with_and_without_the_policy():
     """A política de transporte NUNCA entra no `CompletionRequest` -- o
-    request enviado e o digest `judge_v1` gravado são idênticos com e sem
+    request enviado e o digest `judge_v2` gravado são idênticos com e sem
     override (semântica do request inalterada)."""
     from app.models.request_provenance import compute_request_digest
 
@@ -1297,4 +1297,4 @@ async def test_judge_request_content_and_digest_are_identical_with_and_without_t
         plain_result.attempts[0].request_provenance
         == overridden_result.attempts[0].request_provenance
     )
-    assert plain_result.attempts[0].request_provenance.contract_version == JUDGE_CONTRACT_VERSION == "judge_v1"
+    assert plain_result.attempts[0].request_provenance.contract_version == JUDGE_CONTRACT_VERSION == "judge_v2"

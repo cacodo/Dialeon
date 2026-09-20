@@ -162,8 +162,12 @@ def _canonical_completion_request_payload(request: CompletionRequest) -> dict:
     (v1->v2), mas por um motivo INDEPENDENTE desta mudança de formato: o
     agrupamento intra-round passou a pedir `minimal_reasoning=True`
     (mudança de política de request da operação; prompt/schema/validação
-    inalterados). Reconciliação, Judge e as demais operações seguem nas
-    versões originais e com `minimal_reasoning=False`."""
+    inalterados). Depois, `JUDGE_CONTRACT_VERSION` avançou (judge_v1 ->
+    judge_v2) pelo mesmo tipo de motivo: o Judge passou a pedir
+    `minimal_reasoning=True` (prompt/schema/validação inalterados;
+    judge_v1 é histórico, com `minimal_reasoning=False`). Reconciliação e
+    as demais operações seguem nas versões originais e com
+    `minimal_reasoning=False`."""
     return {
         "system_prompt": request.system_prompt,
         "messages": [

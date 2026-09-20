@@ -216,8 +216,9 @@ async def test_default_request_never_sends_thinking_parameter():
     """Repair (Run02 claim-extraction exhaustion) -- `minimal_reasoning`
     default (`False`, toda chamada existente antes deste campo existir)
     NUNCA envia `thinking` ao SDK -- comportamento byte-idêntico ao de
-    antes deste repair pra participante/crítica/agrupamento/
-    reconciliação/Judge/Editor/SourceAnalyzer."""
+    antes deste repair pra participante/crítica/SourceAnalyzer/Editor (e pra
+    qualquer request que não peça raciocínio mínimo; o Judge o pede
+    explicitamente desde judge_v2 -- ver tests/judge/test_judge_reasoning_policy.py)."""
     provider = _provider()
     provider._client.messages.create = AsyncMock(
         return_value=_FakeResponse([_FakeTextBlock("ok")])
