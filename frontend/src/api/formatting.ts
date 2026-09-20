@@ -6,6 +6,8 @@
 
 import { MAX_QUESTION_CHARACTERS, MAX_SOURCE_TEXT_CHARACTERS, formatCharacterLimit } from '../lib/inputLimits'
 import type {
+  AnswerBlockPublic,
+  AnswerVerdictLabel,
   ChannelRelationship,
   ClaimVerdict,
   DebateOutcome,
@@ -364,6 +366,59 @@ export function formatChannelRelationship(relationship: ChannelRelationship): st
  * (`answer_text: string`). Quebras de linha simples DENTRO de um bloco
  * são preservadas verbatim pelo chamador via `white-space: pre-wrap`.
  */
+// Resumo DETERMINÍSTICO da resposta estruturada -- só contagens sobre o
+// vocabulário FECHADO de rótulos de veredito (app-autorados). Nunca infere
+// "conclusão principal", nunca ranqueia/seleciona claim, nunca reescreve.
+// Ordem fixa do vocabulário; zeros omitidos. Qualquer rótulo fora do
+// vocabulário conhecido (payload inesperado) ou ausência de claims => `null`
+// (o resumo é omitido em vez de adivinhar).
+const VERDICT_SUMMARY_TERMS: Record<AnswerVerdictLabel, readonly [string, string]> = {
+  'sustentada pelo debate': ['sustentada', 'sustentadas'],
+  'parcialmente sustentada, com ressalvas': ['parcialmente sustentada', 'parcialmente sustentadas'],
+  'rejeitada pelo juiz com base no debate disponível': [
+    'rejeitada pelo juiz',
+    'rejeitadas pelo juiz',
+  ],
+  'com posições conflitantes, não resolvida': [
+    'com posições conflitantes',
+    'com posições conflitantes',
+  ],
+  'sem informação suficiente para decidir': ['sem informação suficiente', 'sem informação suficiente'],
+}
+
+export function summarizeAnswerVerdicts(blocks: AnswerBlockPublic[]): string | null {
+  const counts = new Map<AnswerVerdictLabel, number>()
+  let total = 0
+  for (const block of blocks) {
+    if (block.kind !== 'claim_section') continue
+    for (const item of block.items) {
+      if (!(item.verdict_label in VERDICT_SUMMARY_TERMS)) return null
+      counts.set(item.verdict_label, (counts.get(item.verdict_label) ?? 0) + 1)
+      total += 1
+    }
+  }
+  if (total === 0) return null
+  const parts = (Object.keys(VERDICT_SUMMARY_TERMS) as AnswerVerdictLabel[])
+    .filter((label) => (counts.get(label) ?? 0) > 0)
+    .map((label) => {
+      const n = counts.get(label) as number
+      return `${n} ${VERDICT_SUMMARY_TERMS[label][n === 1 ? 0 : 1]}`
+    })
+  return `${total} ${total === 1 ? 'afirmação avaliada' : 'afirmações avaliadas'}: ${parts.join(', ')}.`
+}
+
+export function summarizeUnevaluatedClaims(count: number): string {
+  return `Sem veredito do Judge — ${count} ${count === 1 ? 'afirmação' : 'afirmações'} sem avaliação.`
+}
+
+// Tempo decorrido LOCAL (relógio do navegador) da espera por uma execução.
+export function formatElapsed(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  if (seconds < 60) return `${seconds} s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes} min ${String(seconds % 60).padStart(2, '0')} s`
+}
+
 export function splitAnswerParagraphs(answerText: string): string[] {
   return answerText
     .split(/\n{2,}/)

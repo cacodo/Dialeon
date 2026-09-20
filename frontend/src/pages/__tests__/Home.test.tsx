@@ -226,6 +226,8 @@ describe('Home', () => {
     await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
 
     expect(await screen.findByRole('status')).toHaveTextContent('Investigando…')
+    expect(screen.getByText(/tempo decorrido/i)).toBeInTheDocument()
+    expect(screen.getByText(/pode levar vários minutos/i)).toBeInTheDocument()
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
     expect(screen.queryByText(/extraindo claims/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/debatendo/i)).not.toBeInTheDocument()

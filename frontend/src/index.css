@@ -706,6 +706,91 @@ main {
   font-size: var(--font-size-sm);
 }
 
+/* Cabeçalho da resposta: título + ação de copiar. Empilha em telas estreitas
+   (flex-wrap) -- o botão nunca espreme o título. */
+.final-answer__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.final-answer__header h2 {
+  margin: 0;
+}
+
+/* Resumo determinístico -- uma linha calma acima do conteúdo, só texto
+   (nenhuma cor de estado, nenhum selo de "veredito geral"). */
+.final-answer__summary {
+  margin: 0 0 var(--space-4);
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.copy-answer {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.copy-answer__button {
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.copy-answer__button:hover:not(:disabled) {
+  color: var(--color-fg);
+  border-color: var(--color-border-strong);
+}
+
+.copy-answer__feedback {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* Material secundário de cada claim (explicação do Judge + nota de fonte)
+   atrás de <details> nativo -- só um gatilho discreto; o foco visível vem do
+   `:focus-visible` global. */
+.final-answer__claim-why summary {
+  cursor: pointer;
+  display: inline-block;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  padding: var(--space-1) 0;
+}
+
+.final-answer__claim-why summary:hover {
+  color: var(--brand-700);
+}
+
+.final-answer__claim-why[open] summary {
+  color: var(--color-fg);
+}
+
+/* Espera por uma investigação -- calma, sem barra de progresso. */
+.pending-investigation {
+  padding: var(--space-3) 0;
+}
+
+.pending-investigation__title {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+}
+
+.pending-investigation__elapsed,
+.pending-investigation__note {
+  margin: 0 0 var(--space-1);
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
 .final-answer__unevaluated-claims-note {
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);

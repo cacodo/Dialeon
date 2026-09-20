@@ -47,7 +47,13 @@ import type {
   FinalAnswerPublic,
   FinalAnswerStatus,
 } from '../api/types'
-import { formatFinalAnswerStatus, splitAnswerParagraphs } from '../api/formatting'
+import {
+  formatFinalAnswerStatus,
+  splitAnswerParagraphs,
+  summarizeAnswerVerdicts,
+  summarizeUnevaluatedClaims,
+} from '../api/formatting'
+import { CopyAnswerButton } from './CopyAnswerButton'
 
 interface FinalAnswerViewProps {
   finalAnswer: FinalAnswerPublic
@@ -128,13 +134,21 @@ function ClaimItemView({ item }: { item: AnswerClaimItemPublic }) {
         <span className="final-answer__claim-verdict-label">Avaliação</span>
         <span className="final-answer__claim-verdict-value">{item.verdict_label}</span>
       </p>
-      <p className="final-answer__claim-explanation">{item.explanation}</p>
-      {item.source_relationship_note && (
-        <p className="final-answer__claim-source-note">
-          <span className="final-answer__claim-source-note-label">Fonte</span>
-          <span className="final-answer__claim-source-note-text">{item.source_relationship_note}</span>
-        </p>
-      )}
+      {/* Material SECUNDÁRIO do item atrás de disclosure nativo, fechada por
+          padrão (o texto continua no DOM): explicação do Judge e nota de
+          fonte. Claim e veredito NUNCA ficam escondidos. */}
+      <details className="final-answer__claim-why">
+        <summary>Por quê?</summary>
+        <p className="final-answer__claim-explanation">{item.explanation}</p>
+        {item.source_relationship_note && (
+          <p className="final-answer__claim-source-note">
+            <span className="final-answer__claim-source-note-label">Fonte</span>
+            <span className="final-answer__claim-source-note-text">
+              {item.source_relationship_note}
+            </span>
+          </p>
+        )}
+      </details>
     </li>
   )
 }
@@ -215,9 +229,23 @@ export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
     (structuredBlocks !== null ||
       !FALLBACK_TEXT_STATUSES_THAT_ALREADY_INCLUDE_LIMITATIONS.has(finalAnswer.status))
 
+  // Resumo determinístico -- ver `summarizeAnswerVerdicts`. Só existe quando os
+  // dados estruturados permitem produzi-lo com verdade; resposta histórica
+  // sem blocos (fallback de texto) e qualquer dado inesperado => sem resumo.
+  const summary =
+    structuredBlocks !== null
+      ? summarizeAnswerVerdicts(structuredBlocks)
+      : unevaluatedClaims !== null
+        ? summarizeUnevaluatedClaims(unevaluatedClaims.length)
+        : null
+
   return (
     <section aria-labelledby="final-answer-heading" className="final-answer">
-      <h2 id="final-answer-heading">Resposta</h2>
+      <div className="final-answer__header">
+        <h2 id="final-answer-heading">Resposta</h2>
+        <CopyAnswerButton text={finalAnswer.answer_text} />
+      </div>
+      {summary !== null && <p className="final-answer__summary">{summary}</p>}
       <div className="final-answer__text">
         {structuredBlocks !== null ? (
           structuredBlocks.map((block, index) => <AnswerBlockView key={index} block={block} />)

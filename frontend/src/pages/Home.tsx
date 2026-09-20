@@ -9,6 +9,7 @@ import type { RunResponse } from '../api/types'
 import { formatErrorCode, formatInvalidRequest } from '../api/formatting'
 import { parseReuseInput } from '../lib/reuseInput'
 import { RunComposer } from '../components/RunComposer'
+import { PendingInvestigation } from '../components/PendingInvestigation'
 import { FinalAnswerView } from '../components/FinalAnswerView'
 import { AccountingView } from '../components/AccountingView'
 
@@ -94,7 +95,7 @@ export function Home() {
       />
 
       <div aria-live="polite" className="home__result">
-        {submission.phase === 'submitting' && <p role="status">Investigando…</p>}
+        {submission.phase === 'submitting' && <PendingInvestigation />}
 
         {submission.phase === 'completed' && (
           <>

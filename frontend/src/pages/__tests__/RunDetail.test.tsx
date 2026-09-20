@@ -194,6 +194,8 @@ describe('RunDetail', () => {
     expect(summary).not.toBeNull()
     // Contagem, não lista bruta de IDs de provider.
     expect(within(summary as HTMLElement).getByText(/1 participante no debate/i)).toBeInTheDocument()
+    // Nome de exibição (GPT) para o usuário; o id canônico não aparece aqui.
+    expect(within(summary as HTMLElement).getByText(/\(GPT\)/)).toBeInTheDocument()
     expect(within(summary as HTMLElement).queryByText('openai')).not.toBeInTheDocument()
     // Política de execução (detalhe técnico) não aparece no resumo
     // imediato -- só dentro da auditoria técnica, atrás de "Inspecionar

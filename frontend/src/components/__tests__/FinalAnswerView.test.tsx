@@ -7,11 +7,11 @@
 // cobertura de heading/lista genuínos, conteúdo NÃO CONFIÁVEL inerte, e
 // fallback pra `splitAnswerParagraphs` quando `answer_blocks` é `null`.
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FinalAnswerView } from '../FinalAnswerView'
-import type { AnswerBlockPublic, FinalAnswerPublic } from '../../api/types'
+import type { AnswerBlockPublic, AnswerVerdictLabel, FinalAnswerPublic } from '../../api/types'
 
 function makeFinalAnswer(overrides: Partial<FinalAnswerPublic> = {}): FinalAnswerPublic {
   return {
@@ -504,5 +504,251 @@ describe('FinalAnswerView -- unevaluated_claims (Structured Unevaluated Claims +
     expect(
       screen.getByText('Mostrar todas as 3 afirmações não avaliadas'),
     ).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Chat-first answer surface: resumo determinístico, achados escaneáveis,
+// "Por quê?" recolhido, Copiar resposta.
+// ---------------------------------------------------------------------------
+
+type Verdict = AnswerVerdictLabel
+
+function item(claim_text: string, verdict_label: Verdict, note: string | null = null) {
+  return {
+    claim_text,
+    verdict_label,
+    explanation: `Explicação de: ${claim_text}`,
+    source_relationship_note: note,
+  }
+}
+
+function sectionsBlocks(
+  a: ReturnType<typeof item>[],
+  b: ReturnType<typeof item>[] = [],
+): AnswerBlockPublic[] {
+  const blocks: AnswerBlockPublic[] = [{ kind: 'paragraph', text: 'Resultado da avaliação do debate:' }]
+  if (a.length > 0) {
+    blocks.push({ kind: 'claim_section', heading: 'Conclusões sustentadas pelo debate:', items: a })
+  }
+  if (b.length > 0) {
+    blocks.push({ kind: 'claim_section', heading: 'Pontos não estabelecidos pelo debate:', items: b })
+  }
+  return blocks
+}
+
+describe('FinalAnswerView -- resumo determinístico', () => {
+  const summaryText = (container: HTMLElement) =>
+    container.querySelector('.final-answer__summary')?.textContent ?? null
+
+  it('conta os vereditos na ordem fixa do vocabulário, omitindo zeros', () => {
+    const blocks = sectionsBlocks(
+      [
+        item('A1', 'sustentada pelo debate'),
+        item('A2', 'sustentada pelo debate'),
+        item('A3', 'parcialmente sustentada, com ressalvas'),
+      ],
+      [
+        item('B1', 'sem informação suficiente para decidir'),
+        item('B2', 'rejeitada pelo juiz com base no debate disponível'),
+        item('B3', 'com posições conflitantes, não resolvida'),
+      ],
+    )
+    const { container } = render(<FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: blocks })} />)
+
+    expect(summaryText(container)).toBe(
+      '6 afirmações avaliadas: 2 sustentadas, 1 parcialmente sustentada, 1 rejeitada pelo juiz, 1 com posições conflitantes, 1 sem informação suficiente.',
+    )
+  })
+
+  it('usa o singular para uma única afirmação', () => {
+    const { container } = render(
+      <FinalAnswerView
+        finalAnswer={makeFinalAnswer({ answer_blocks: sectionsBlocks([item('A', 'sustentada pelo debate')]) })}
+      />,
+    )
+
+    expect(summaryText(container)).toBe('1 afirmação avaliada: 1 sustentada.')
+  })
+
+  it('é só contagem: nunca escolhe "conclusão principal", nem ranqueia, nem inventa confiança', () => {
+    const { container } = render(
+      <FinalAnswerView
+        finalAnswer={makeFinalAnswer({
+          answer_blocks: sectionsBlocks([item('A', 'sustentada pelo debate'), item('B', 'sustentada pelo debate')]),
+          judge_confidence: 0.93,
+        })}
+      />,
+    )
+
+    expect(summaryText(container)).not.toMatch(/principal|mais importante|confiança|93|%/i)
+  })
+
+  it('rótulo fora do vocabulário conhecido => resumo omitido (nunca adivinha)', () => {
+    const blocks = sectionsBlocks([item('A', 'sustentada pelo debate')])
+    ;(blocks[1] as { items: { verdict_label: string }[] }).items.push({
+      claim_text: 'X',
+      verdict_label: 'rótulo novo inesperado',
+      explanation: 'e',
+      source_relationship_note: null,
+    } as never)
+    const { container } = render(<FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: blocks })} />)
+
+    expect(container.querySelector('.final-answer__summary')).toBeNull()
+  })
+
+  it('sem veredito: resume a contagem de afirmações sem avaliação, sem alegar nada sobre elas', () => {
+    const { container } = render(
+      <FinalAnswerView
+        finalAnswer={makeFinalAnswer({
+          status: 'deterministic_no_verdict',
+          answer_blocks: null,
+          unevaluated_claims: ['Um.', 'Dois.', 'Três.'],
+        })}
+      />,
+    )
+
+    expect(summaryText(container)).toBe('Sem veredito do Judge — 3 afirmações sem avaliação.')
+  })
+
+  it('resposta histórica sem answer_blocks e sem lista estruturada não ganha resumo', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={makeFinalAnswer()} />)
+
+    expect(container.querySelector('.final-answer__summary')).toBeNull()
+    expect(screen.getByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
+  })
+})
+
+describe('FinalAnswerView -- achados escaneáveis', () => {
+  const blocks = sectionsBlocks(
+    [
+      item('Primeira claim.', 'sustentada pelo debate', 'Relação com a fonte: mesma direção.'),
+      item('Segunda claim.', 'parcialmente sustentada, com ressalvas'),
+    ],
+    [item('Terceira claim.', 'sem informação suficiente para decidir')],
+  )
+
+  it('mantém ordem e texto exatos das claims e sempre mostra claim + veredito', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: blocks })} />)
+
+    const texts = [...container.querySelectorAll('.final-answer__claim-text')].map((n) => n.textContent)
+    expect(texts).toEqual(['Primeira claim.', 'Segunda claim.', 'Terceira claim.'])
+    const verdicts = [...container.querySelectorAll('.final-answer__claim-verdict-value')].map((n) => n.textContent)
+    expect(verdicts).toEqual([
+      'sustentada pelo debate',
+      'parcialmente sustentada, com ressalvas',
+      'sem informação suficiente para decidir',
+    ])
+  })
+
+  it('explicação e nota de fonte ficam num <details> nativo recolhido; abrir revela o texto exato', async () => {
+    const { container } = render(<FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: blocks })} />)
+    const details = container.querySelectorAll('details.final-answer__claim-why')
+    expect(details).toHaveLength(3)
+    details.forEach((d) => expect(d).not.toHaveAttribute('open'))
+    expect(screen.getAllByText('Por quê?')).toHaveLength(3)
+
+    await userEvent.click(screen.getAllByText('Por quê?')[0])
+
+    expect(details[0]).toHaveAttribute('open')
+    expect(details[1]).not.toHaveAttribute('open')
+    expect(within(details[0] as HTMLElement).getByText('Explicação de: Primeira claim.')).toBeVisible()
+    expect(within(details[0] as HTMLElement).getByText(/mesma direção/)).toBeVisible()
+  })
+
+  it('a explicação fica oculta antes de abrir, mas claim, veredito e limitações continuam visíveis', () => {
+    render(
+      <FinalAnswerView
+        finalAnswer={makeFinalAnswer({ answer_blocks: blocks, limitations: ['Limitação global do debate.'] })}
+      />,
+    )
+
+    expect(screen.getByText('Explicação de: Primeira claim.')).not.toBeVisible()
+    expect(screen.getByText('Primeira claim.')).toBeVisible()
+    expect(screen.getAllByText('sustentada pelo debate')[0]).toBeVisible()
+    expect(screen.getByText('Limitação global do debate.')).toBeVisible()
+    expect(screen.getByRole('heading', { level: 3, name: 'Limitações' })).toBeInTheDocument()
+  })
+
+  it('conteúdo não confiável na explicação continua texto inerte (sem marcação nova)', () => {
+    const evil = sectionsBlocks([
+      {
+        claim_text: '<img src=x onerror=alert(1)> **negrito** [link](http://x)',
+        verdict_label: 'sustentada pelo debate',
+        explanation: '<script>alert(1)</script> # heading',
+        source_relationship_note: null,
+      },
+    ])
+    const { container } = render(<FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: evil })} />)
+
+    expect(container.querySelector('img, script, a, strong')).toBeNull()
+    expect(container.querySelector('.final-answer__claim-text')?.textContent).toBe(
+      '<img src=x onerror=alert(1)> **negrito** [link](http://x)',
+    )
+    expect(container.querySelector('.final-answer__claim-explanation')?.textContent).toBe(
+      '<script>alert(1)</script> # heading',
+    )
+  })
+})
+
+describe('FinalAnswerView -- Copiar resposta', () => {
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+
+  afterEach(() => {
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+  })
+
+  function setClipboard(value: unknown) {
+    Object.defineProperty(navigator, 'clipboard', { value, configurable: true })
+  }
+
+  const answer = () =>
+    makeFinalAnswer({
+      answer_text: 'TEXTO CANÔNICO\n\ncom limitações embutidas e <b>tags</b> literais.',
+      answer_blocks: sectionsBlocks([item('Outra coisa renderizada.', 'sustentada pelo debate')]),
+    })
+
+  it('copia EXATAMENTE o answer_text canônico (não os blocos renderizados) e anuncia sucesso', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    setClipboard({ writeText })
+    render(<FinalAnswerView finalAnswer={answer()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
+
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText).toHaveBeenCalledWith('TEXTO CANÔNICO\n\ncom limitações embutidas e <b>tags</b> literais.')
+    expect(await screen.findByText('Resposta copiada.')).toBeInTheDocument()
+    expect(screen.getByText('Resposta copiada.').closest('[role="status"]')).not.toBeNull()
+  })
+
+  it('falha do clipboard mostra feedback e nunca quebra a resposta', async () => {
+    setClipboard({ writeText: vi.fn().mockRejectedValue(new Error('negado')) })
+    render(<FinalAnswerView finalAnswer={answer()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
+
+    expect(await screen.findByText(/não foi possível copiar automaticamente/i)).toBeInTheDocument()
+    expect(screen.getByText('Outra coisa renderizada.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
+  })
+
+  it('sem API de clipboard (contexto inseguro) também cai no feedback de falha', async () => {
+    setClipboard(undefined)
+    render(<FinalAnswerView finalAnswer={answer()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
+
+    expect(await screen.findByText(/não foi possível copiar automaticamente/i)).toBeInTheDocument()
+  })
+
+  it('também existe (copiando answer_text) para resposta histórica sem answer_blocks', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    setClipboard({ writeText })
+    render(<FinalAnswerView finalAnswer={makeFinalAnswer()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
+
+    expect(writeText).toHaveBeenCalledWith('Brasília é a capital do Brasil.')
   })
 })

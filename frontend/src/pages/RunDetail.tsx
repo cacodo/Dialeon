@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
 import type { RunResponse } from '../api/types'
-import { formatDateTime, formatErrorCode } from '../api/formatting'
+import { formatDateTime, formatErrorCode, formatProviderName } from '../api/formatting'
 import { FinalAnswerView } from '../components/FinalAnswerView'
 import { AccountingView } from '../components/AccountingView'
 import { InspectionPanel } from '../components/InspectionPanel'
@@ -15,8 +15,12 @@ import { isValidPage } from '../lib/safePage'
 import { buildReuseState } from '../lib/reuseInput'
 import { characterCount, formatCharacterLimit } from '../lib/inputLimits'
 
-function participantCountLabel(count: number): string {
-  return `${count} participante${count === 1 ? '' : 's'} no debate`
+// Contagem + nomes de exibição (Claude/GPT/Gemini) -- os ids canônicos ficam
+// só na Auditoria técnica.
+function participantCountLabel(providers: string[]): string {
+  const count = providers.length
+  const names = providers.map(formatProviderName).join(', ')
+  return `${count} participante${count === 1 ? '' : 's'} no debate (${names})`
 }
 
 // Origem de navegação (History → RunDetail) -- narrow, sem framework de
@@ -196,7 +200,7 @@ export function RunDetail() {
           <section aria-labelledby="execution-summary-heading">
             <h2 id="execution-summary-heading">Resumo da execução</h2>
             <p>Concluída em {formatDateTime(run.completed_at)}</p>
-            <p>{participantCountLabel(run.config.enabled_providers.length)}.</p>
+            <p>{participantCountLabel(run.config.enabled_providers)}.</p>
             <AccountingView accounting={run.accounting} compact />
           </section>
         </>
