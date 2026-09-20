@@ -46,6 +46,7 @@ import type {
   AnswerClaimItemPublic,
   FinalAnswerPublic,
   FinalAnswerStatus,
+  PrimaryAnswerPublic,
 } from '../api/types'
 import {
   formatFinalAnswerStatus,
@@ -205,7 +206,18 @@ function AnswerBlockView({ block }: { block: AnswerBlockPublic }) {
   return null
 }
 
-export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
+// Avaliação COMPLETA determinística (o registro investigativo e o fallback).
+// `nested`: renderizada DENTRO da disclosure da resposta principal -- sem o
+// título "Resposta" (o <summary> da disclosure é o rótulo) e com a própria
+// ação de copiar, que copia o `answer_text` completo (nunca a resposta
+// principal).
+function CompleteAnswerView({
+  finalAnswer,
+  nested = false,
+}: {
+  finalAnswer: FinalAnswerPublic
+  nested?: boolean
+}) {
   const structuredBlocks = isSupportedAnswerBlocks(finalAnswer.answer_blocks)
     ? finalAnswer.answer_blocks
     : null
@@ -240,10 +252,18 @@ export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
         : null
 
   return (
-    <section aria-labelledby="final-answer-heading" className="final-answer">
+    <section
+      {...(nested
+        ? { 'aria-label': 'Avaliação completa' }
+        : { 'aria-labelledby': 'final-answer-heading' })}
+      className={`final-answer${nested ? ' final-answer--nested' : ''}`}
+    >
       <div className="final-answer__header">
-        <h2 id="final-answer-heading">Resposta</h2>
-        <CopyAnswerButton text={finalAnswer.answer_text} />
+        {nested ? null : <h2 id="final-answer-heading">Resposta</h2>}
+        <CopyAnswerButton
+          text={finalAnswer.answer_text}
+          label={nested ? 'Copiar avaliação completa' : undefined}
+        />
       </div>
       {summary !== null && <p className="final-answer__summary">{summary}</p>}
       <div className="final-answer__text">
@@ -272,4 +292,72 @@ export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
       <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
     </section>
   )
+}
+
+// Resposta PRINCIPAL -- seleção tipada por ids (validada pela aplicação) e
+// renderizada deterministicamente no backend. É o objeto visual dominante
+// quando existe; a avaliação completa continua a um clique. Todo conteúdo
+// vindo do backend é texto (claim_text é não confiável): nenhum Markdown/HTML.
+function PrimaryAnswerView({
+  finalAnswer,
+  primary,
+}: {
+  finalAnswer: FinalAnswerPublic
+  primary: PrimaryAnswerPublic
+}) {
+  return (
+    <section
+      aria-labelledby="final-answer-heading"
+      className="final-answer final-answer--primary"
+    >
+      <div className="final-answer__header">
+        <h2 id="final-answer-heading">Resposta</h2>
+        <CopyAnswerButton text={primary.rendered_text} />
+      </div>
+      <p className="final-answer__lead-in">{primary.lead_in}</p>
+      <div className="final-answer__text">
+        {primary.sections.map((section) => (
+          <div className="final-answer__primary-section" key={section.role}>
+            <h3>{section.heading}</h3>
+            <ul className="final-answer__primary-list">
+              {section.items.map((item) => (
+                <li key={item.claim_id} className="final-answer__primary-item">
+                  <span className="final-answer__primary-claim">{item.claim_text}</span>{' '}
+                  <span className="final-answer__primary-verdict">({item.verdict_label})</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+      {primary.limitations.length > 0 && (
+        <div className="final-answer__limitations">
+          <h3>Limitações registradas</h3>
+          <ul>
+            {primary.limitations.map((limitation, index) => (
+              <li key={index}>{limitation}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="final-answer__scope-note">{primary.scope_note}</p>
+      <details className="final-answer__complete">
+        <summary>
+          Ver avaliação completa ({primary.assessed_claim_count}{' '}
+          {primary.assessed_claim_count === 1 ? 'afirmação avaliada' : 'afirmações avaliadas'})
+        </summary>
+        <CompleteAnswerView finalAnswer={finalAnswer} nested />
+      </details>
+      <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
+    </section>
+  )
+}
+
+export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
+  // Com resposta principal válida ela domina; sem ela, o comportamento de
+  // sempre (avaliação completa) é o fallback -- inclusive histórico.
+  if (finalAnswer.primary_answer != null) {
+    return <PrimaryAnswerView finalAnswer={finalAnswer} primary={finalAnswer.primary_answer} />
+  }
+  return <CompleteAnswerView finalAnswer={finalAnswer} />
 }

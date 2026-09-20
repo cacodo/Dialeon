@@ -217,8 +217,22 @@ from app.debate.claims import get_current_claims
 from app.debate.result import DebateResult
 from app.editor.answer_blocks import AnswerBlock, AnswerClaimItem, AnswerClaimSectionBlock, AnswerParagraphBlock
 from app.editor.attempt import EditorAttempt
-from app.editor.context import EDITOR_CONTRACT_VERSION, build_editor_request
+from app.editor.context import (
+    EDITOR_CONTRACT_VERSION,
+    PRIMARY_ANSWER_CONTRACT_VERSION,
+    build_editor_request,
+    build_primary_answer_plan_request,
+)
 from app.editor.errors import MalformedEditorOutputError
+from app.editor.primary_answer import (
+    InvalidPrimaryAnswerPlanError,
+    PrimaryAnswer,
+    PrimaryAnswerPlan,
+    eligible_assessed_claims,
+    has_selectable_support,
+    render_primary_answer,
+    validate_plan,
+)
 from app.editor.result import EditorResult, FinalAnswer
 from app.editor.schemas import EditorPlan
 from app.judge.result import JudgeResult
@@ -681,17 +695,43 @@ class Editor:
         coverage_note = _extraction_coverage_note(debate_result)
         if coverage_note is not None:
             answer_text += f"\n\n{coverage_note}"
+        limitations = _limitations_with_coverage_note(
+            list(verdict.debate_limitations), coverage_note
+        )
+
+        # Primary Answer -- melhoria OPCIONAL sobre uma investigação válida:
+        # qualquer falha aqui preserva a avaliação completa determinística
+        # (`answer_text`/`answer_blocks`) e o run continua bem-sucedido.
+        primary_answer, primary_attempts, primary_reason = await self._plan_primary_answer(
+            editor_llm=editor_llm,
+            run_config=run_config,
+            debate_result=debate_result,
+            verdict=verdict,
+            current_claims=current_claims,
+            limitations=tuple(limitations),
+            input_before=input_before + editor_input,
+            output_before=output_before + editor_output,
+            cost_before=cost_before + editor_cost,
+        )
+        if primary_attempts:
+            primary_input, primary_output, primary_cost, _ = sum_usage_and_cost(primary_attempts)
+            cumulative_budget_exceeded = compute_budget_exceeded(
+                input_before + editor_input + primary_input,
+                output_before + editor_output + primary_output,
+                cost_before + editor_cost + primary_cost,
+                run_config,
+            )
+
         final_answer = FinalAnswer(
             answer_text=answer_text,
             answer_blocks=answer_blocks,
-            limitations=_limitations_with_coverage_note(
-                list(verdict.debate_limitations), coverage_note
-            ),
+            limitations=limitations,
             status="llm_planned",
             editor_model=accepted_response.model,
             editor_model_identity_source=accepted_response.model_identity_source,
             based_on_verdict_id=verdict.id,
             judge_confidence=verdict.confidence,
+            primary_answer=primary_answer,
         )
 
         return EditorResult(
@@ -700,7 +740,101 @@ class Editor:
             fallback_reason=None,
             editor_provider=run_config.editor_provider,
             cumulative_budget_exceeded=cumulative_budget_exceeded,
+            primary_answer_attempts=primary_attempts,
+            primary_answer_fallback_reason=primary_reason,
         )
+
+    async def _plan_primary_answer(
+        self,
+        *,
+        editor_llm: LLMProvider,
+        run_config: RunConfig,
+        debate_result: DebateResult,
+        verdict: JudgeVerdict,
+        current_claims: list[Claim],
+        limitations: tuple[str, ...],
+        input_before: int,
+        output_before: int,
+        cost_before: int | float,
+    ) -> tuple[PrimaryAnswer | None, list[EditorAttempt], str | None]:
+        """Planeja (só ids) + valida + renderiza a resposta principal.
+        Devolve `(primary_answer, attempts, fallback_reason)`. NUNCA levanta
+        por falha do modelo/validação -- toda falha vira `fallback_reason`,
+        com as tentativas reais preservadas pro accounting/auditoria.
+
+        Sem nenhuma claim avaliada como sustentada/parcialmente sustentada
+        não há conclusão a selecionar: nenhuma chamada é feita (nunca se
+        inventa uma recomendação sem suporte avaliado)."""
+        eligible = eligible_assessed_claims(verdict, current_claims)
+        if not has_selectable_support(eligible):
+            return None, [], "no_selectable_assessed_support"
+        if compute_budget_exceeded(input_before, output_before, cost_before, run_config):
+            return None, [], "budget_exhausted_before_primary_answer"
+
+        request = build_primary_answer_plan_request(
+            run_config.question,
+            verdict,
+            current_claims,
+            list(limitations),
+            run_config.max_output_tokens_per_call,
+        )
+        request_provenance = build_request_provenance(PRIMARY_ANSWER_CONTRACT_VERSION, request)
+
+        attempts: list[EditorAttempt] = []
+        selection = None
+        for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
+            if attempt_number > 1:
+                so_far_input, so_far_output, so_far_cost, _ = sum_usage_and_cost(attempts)
+                if compute_budget_exceeded(
+                    input_before + so_far_input,
+                    output_before + so_far_output,
+                    cost_before + so_far_cost,
+                    run_config,
+                ):
+                    break
+            provider_response = await editor_llm.complete(request)
+
+            if provider_response.status == "error":
+                attempts.append(
+                    _transport_error_attempt(attempt_number, provider_response, request_provenance)
+                )
+                return None, attempts, "primary_answer_transport_failed"
+
+            try:
+                plan = _parse_primary_answer_plan(provider_response.text)
+                selection = validate_plan(
+                    plan,
+                    verdict=verdict,
+                    current_claims=current_claims,
+                    all_claims=debate_result.claims,
+                )
+            except (MalformedEditorOutputError, InvalidPrimaryAnswerPlanError) as exc:
+                attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        provider_response,
+                        "malformed"
+                        if isinstance(exc, MalformedEditorOutputError)
+                        else "inconsistent_references",
+                        str(exc),
+                        request_provenance,
+                    )
+                )
+                continue
+
+            attempts.append(_accepted_attempt(attempt_number, provider_response, request_provenance))
+            break
+
+        if selection is None:
+            return None, attempts, "primary_answer_output_invalid"
+
+        try:
+            primary_answer = render_primary_answer(
+                selection, based_on_verdict_id=verdict.id, limitations=limitations
+            )
+        except (ValueError, ValidationError):
+            return None, attempts, "primary_answer_render_failed"
+        return primary_answer, attempts, None
 
     def _no_verdict_result(
         self,
@@ -1314,6 +1448,19 @@ def _render_final_answer_text(
     return answer_text
 
 
+def _parse_primary_answer_plan(raw_text: str | None) -> PrimaryAnswerPlan:
+    """JSON + schema fechado (`PrimaryAnswerPlan`, só ids). A validação
+    SEMÂNTICA contra o veredito real é `validate_plan`."""
+    try:
+        data = json.loads(strip_single_json_code_fence(raw_text or ""))
+    except json.JSONDecodeError as exc:
+        raise MalformedEditorOutputError(f"JSON inválido: {exc}") from exc
+    try:
+        return PrimaryAnswerPlan.model_validate(data)
+    except ValidationError as exc:
+        raise MalformedEditorOutputError(f"JSON não bate com o schema esperado: {exc}") from exc
+
+
 def _parse_and_validate(raw_text: str) -> EditorPlan:
     """Etapa 17B -- validação inteira se resume a "é JSON e bate com o
     schema fechado (`EditorPlan`, extra=forbid, dois Literal)". Não há
@@ -1345,7 +1492,7 @@ def _transport_error_attempt(
 def _parse_rejected_attempt(
     attempt_number: int,
     provider_response: ProviderResponse,
-    parse_status: Literal["malformed"],
+    parse_status: Literal["malformed", "inconsistent_references"],
     message: str,
     request_provenance: RequestProvenance | None = None,
 ) -> EditorAttempt:

@@ -99,6 +99,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_default_model_authority_snapshot)
         await conn.run_sync(_upgrade_legacy_answer_blocks)
         await conn.run_sync(_upgrade_legacy_unevaluated_claims)
+        await conn.run_sync(_upgrade_legacy_primary_answer)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -433,6 +434,31 @@ def _upgrade_legacy_unevaluated_claims(sync_conn) -> None:  # noqa: ANN001
     sync_conn.execute(
         text(f"ALTER TABLE {table_name} ADD COLUMN unevaluated_claims_json TEXT")
     )
+
+
+def _upgrade_legacy_primary_answer(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- Primary Answer (resposta principal por
+    seleção tipada). TRÊS colunas ADITIVAS e nullable, mesma disciplina de
+    `_upgrade_legacy_answer_blocks`: só `ALTER TABLE` quando a coluna não
+    existe, nunca reescreve/recalcula linha existente, sem backfill (não
+    existe resposta principal para runs anteriores, e nenhuma é fabricada):
+
+    - `final_answers.primary_answer_json`;
+    - `editor_attempts.purpose` (NULL = plano de estilo, como sempre foi);
+    - `council_runs.editor_primary_answer_fallback_reason`."""
+    inspector = sa_inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+    for table_name, column, ddl in (
+        ("final_answers", "primary_answer_json", "TEXT"),
+        ("editor_attempts", "purpose", "TEXT"),
+        ("council_runs", "editor_primary_answer_fallback_reason", "TEXT"),
+    ):
+        if table_name not in tables:
+            continue  # tabela nova (já nasce com a coluna via create_all())
+        existing = {col["name"] for col in inspector.get_columns(table_name)}
+        if column in existing:
+            continue
+        sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} {ddl}"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

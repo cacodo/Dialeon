@@ -14,7 +14,13 @@ const FEEDBACK: Record<CopyStatus, string> = {
   failed: 'Não foi possível copiar automaticamente. Selecione o texto da resposta e copie manualmente.',
 }
 
-export function CopyAnswerButton({ text }: { text: string }) {
+export function CopyAnswerButton({
+  text,
+  label = 'Copiar resposta',
+}: {
+  text: string
+  label?: string
+}) {
   const [status, setStatus] = useState<CopyStatus>('idle')
 
   async function handleCopy() {
@@ -30,7 +36,7 @@ export function CopyAnswerButton({ text }: { text: string }) {
   return (
     <div className="copy-answer">
       <button type="button" className="copy-answer__button" onClick={handleCopy}>
-        Copiar resposta
+        {label}
       </button>
       <span role="status" className="copy-answer__feedback">
         {FEEDBACK[status]}

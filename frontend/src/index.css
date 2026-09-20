@@ -774,6 +774,70 @@ main {
   color: var(--color-fg);
 }
 
+/* Resposta principal: lista curta de seleção; o verdict_label acompanha SEMPRE
+   a claim (texto entre parênteses, sem cor de estado). */
+.final-answer__lead-in {
+  margin: 0 0 var(--space-3);
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.final-answer__primary-section {
+  margin-bottom: var(--space-4);
+}
+
+.final-answer__primary-section h3 {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-fg-muted);
+  margin: 0 0 var(--space-2);
+}
+
+.final-answer__primary-list {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.final-answer__primary-item {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.final-answer__primary-claim {
+  font-weight: 600;
+}
+
+.final-answer__primary-verdict {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.final-answer__scope-note {
+  margin: var(--space-3) 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* Avaliação completa aninhada na disclosure da resposta principal. */
+.final-answer__complete {
+  margin: var(--space-3) 0;
+}
+
+.final-answer__complete > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--space-1) 0;
+}
+
+.final-answer--nested {
+  margin-top: var(--space-2);
+  box-shadow: none;
+  animation: none;
+}
+
 /* Espera por uma investigação -- calma, sem barra de progresso. */
 .pending-investigation {
   padding: var(--space-3) 0;

@@ -334,14 +334,12 @@ def test_historical_judge_v1_provenance_remains_valid_and_distinct_from_v2():
 
 @pytest.mark.skipif(not DB.exists(), reason="evidência local: banco com a run 2bd3b8b4 não existe neste checkout")
 @pytest.mark.asyncio
-async def test_local_evidence_43_claim_request_reproduces_the_historical_and_diagnostic_digests():
+async def test_local_evidence_43_claim_request_reproduces_the_historical_and_diagnostic_digests(tmp_path):
     """Reconstrói (somente leitura, sem provider) o request REAL de 43 claims:
     o builder atual (judge_v2) dá o digest do replay controlado
     `9faa0823...`; com `minimal_reasoning=False` dá o digest histórico
     `908afd0a...` -- e a proveniência judge_v1 PERSISTIDA não foi reescrita."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.storage.repository import CouncilRepository
+    from tests.local_evidence import load_local_run
 
     ro = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     try:
@@ -353,11 +351,7 @@ async def test_local_evidence_43_claim_request_reproduces_the_historical_and_dia
     if row is None:
         pytest.skip("evidência local: run 2bd3b8b4 ausente do banco deste checkout")
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///file:{DB}?mode=ro&uri=true")
-    try:
-        record = await CouncilRepository(async_sessionmaker(engine, expire_on_commit=False)).get_run(LIVE_RUN_ID)
-    finally:
-        await engine.dispose()
+    record = await load_local_run(DB, LIVE_RUN_ID, tmp_path)
     result = record.council_run_result
     current = get_current_claims(result.debate_result.claims)
     request = build_judge_request(

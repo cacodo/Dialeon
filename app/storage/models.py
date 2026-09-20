@@ -89,6 +89,11 @@ class CouncilRunRow(Base):
     editor_provider: Mapped[str]
     editor_fallback_reason: Mapped[str | None]
     editor_cumulative_budget_exceeded: Mapped[bool]
+    # Primary Answer -- por que NÃO há resposta principal num run com veredito
+    # (ver EditorResult.primary_answer_fallback_reason). NULLABLE sem DEFAULT:
+    # `NULL` é honesto para todo run persistido antes desta coluna existir e
+    # para "produzida / não se aplica" (ver `_upgrade_legacy_primary_answer`).
+    editor_primary_answer_fallback_reason: Mapped[str | None]
     # Idem -- ver FinalAnswerRow.council_run_id (1:1 no sentido inverso).
 
     # Etapa 16 -- TODAS nullable, diferente de debate/judge/editor acima:
@@ -622,6 +627,11 @@ class EditorAttemptRow(Base):
     # ModelResponseRow.request_provenance_json acima pra semântica
     # completa e disciplina de nulidade.
     request_provenance_json: Mapped[dict | None] = mapped_column(JSON)
+    # Primary Answer -- `NULL`/'style_plan' = tentativa do plano de estilo
+    # (`editor_v1`, o único tipo antes desta coluna); 'primary_answer_plan' =
+    # tentativa do planejamento da resposta principal. Mesma tabela = mesmo
+    # accounting/proveniência, nenhum segundo sistema.
+    purpose: Mapped[str | None]
     created_at: Mapped[datetime]
 
 
@@ -651,6 +661,10 @@ class FinalAnswerRow(Base):
     # `answer_text` (ver FinalAnswer.unevaluated_claims,
     # app/editor/result.py).
     unevaluated_claims_json: Mapped[list | None] = mapped_column(JSON)
+    # Primary Answer -- representação opcional, com nome próprio; NULL para
+    # todo run anterior, sem veredito, ou sem plano válido. Nunca
+    # reconstruída retroativamente (ver `_upgrade_legacy_primary_answer`).
+    primary_answer_json: Mapped[dict | None] = mapped_column(JSON)
     limitations_json: Mapped[list] = mapped_column(JSON)
     status: Mapped[str]
     editor_model: Mapped[str | None]

@@ -135,8 +135,16 @@ def human_run_result(run: CompletedRunResponse) -> str:
         f"{_fmt_model_identity_source(run.final_answer.editor_model_identity_source)}",
         f"confiança_do_juiz: {_fmt(run.final_answer.judge_confidence)}",
         "",
-        terminal_safe_text(run.final_answer.answer_text),
     ]
+    # Resposta principal (aditiva): quando existe, vem primeiro; a avaliação
+    # completa (`answer_text`) continua SEMPRE impressa logo depois. Mesmo
+    # tratamento de segurança de terminal: texto de claim é não confiável.
+    if run.final_answer.primary_answer is not None:
+        lines.append("resposta principal:")
+        lines.append(terminal_safe_text(run.final_answer.primary_answer.rendered_text))
+        lines.append("")
+        lines.append("avaliação completa:")
+    lines.append(terminal_safe_text(run.final_answer.answer_text))
     if run.final_answer.limitations:
         lines.append("")
         lines.append("limitações:")
@@ -356,6 +364,16 @@ def human_run_audit(audit: Any) -> str:
             f"judge_verdict: {'presente' if audit.judge_verdict is not None else 'ausente'}",
             f"judge_attempts: {len(audit.judge_attempts)}",
             f"editor_attempts: {len(audit.editor_attempts)}",
+            (
+                "resposta_principal: presente"
+                if audit.final_answer.primary_answer is not None
+                else "resposta_principal: ausente"
+                + (
+                    f" ({audit.editor_outcome.primary_answer_fallback_reason})"
+                    if audit.editor_outcome.primary_answer_fallback_reason
+                    else ""
+                )
+            ),
             f"resposta_final_status: {audit.final_answer.status}",
             f"custo_estimado_usd: {audit.accounting.estimated_cost_usd:.6f}",
             f"contabilidade_completa: {'não' if audit.accounting.has_unknown_accounting_components else 'sim'}",

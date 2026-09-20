@@ -466,6 +466,43 @@ AnswerBlockPublic = Annotated[
 ]
 
 
+class PrimaryAnswerItemPublic(BaseModel):
+    model_config = _CONFIG
+
+    claim_id: str
+    claim_text: str
+    verdict_label: AnswerVerdictLabel
+
+
+class PrimaryAnswerSectionPublic(BaseModel):
+    model_config = _CONFIG
+
+    role: Literal["central_conclusion", "supporting_reasons", "tradeoffs", "conditions", "uncertainties"]
+    heading: str
+    items: list[PrimaryAnswerItemPublic]
+
+
+class PrimaryAnswerPublic(BaseModel):
+    """Resposta principal (seleção tipada por ids + renderização
+    determinística). ADITIVA e opcional em `FinalAnswerPublic`: nunca
+    substitui `answer_text`/`answer_blocks`. `rendered_text` é EXATAMENTE o
+    texto que o usuário vê e que "Copiar resposta" copia; `claim_text` é
+    verbatim (conteúdo não confiável -> texto, nunca marcação)."""
+
+    model_config = _CONFIG
+
+    contract_version: str
+    based_on_verdict_id: str
+    lead_in: str
+    sections: list[PrimaryAnswerSectionPublic]
+    limitations: list[str]
+    assessed_claim_count: int
+    selected_claim_count: int
+    omitted_not_established_count: int
+    scope_note: str
+    rendered_text: str
+
+
 class FinalAnswerPublic(BaseModel):
     model_config = _CONFIG
 
@@ -487,6 +524,9 @@ class FinalAnswerPublic(BaseModel):
     # continuar usando só `answer_text`, inalterado -- mesma disciplina
     # de compatibilidade de `answer_blocks` acima.
     unevaluated_claims: list[str] | None = None
+    # Aditivo/opcional: `None` para runs históricos, sem veredito, ou sem plano
+    # válido -- a avaliação completa acima segue sempre presente.
+    primary_answer: PrimaryAnswerPublic | None = None
     limitations: list[str]
     # Etapa 17B -- "llm_planned" é o status de runs novos (LLM escolheu
     # EditorPlan, aplicação renderizou o texto); "llm_composed" segue
@@ -785,6 +825,8 @@ class EditorOutcome(BaseModel):
 
     fallback_reason: str | None
     cumulative_budget_exceeded: bool
+    # Aditivo: por que não há resposta principal num run com veredito.
+    primary_answer_fallback_reason: str | None = None
 
 
 class SourceAnalysisOutcome(BaseModel):
@@ -872,6 +914,9 @@ class CompletedRunAudit(BaseModel):
     judge_verdict: JudgeVerdictPublic | None
     judge_attempts: list[JudgeAttemptPublic]
     editor_attempts: list[EditorAttemptPublic]
+    # Aditivo: tentativas do planejamento da resposta principal (mesmo formato
+    # de `editor_attempts`, que segue significando só o plano de estilo).
+    primary_answer_attempts: list[EditorAttemptPublic] = []
     final_answer: FinalAnswerPublic
     accounting: AccountingSummary
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.

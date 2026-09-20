@@ -89,3 +89,38 @@ def source_analysis_result(claim_results: list, **overrides) -> SourceAnalysisRe
     )
     fields.update(overrides)
     return SourceAnalysisResult(**fields)
+
+
+# ---------------------------------------------------------------------------
+# Primary Answer -- provider roteirizado ciente da chamada de planejamento
+# ---------------------------------------------------------------------------
+
+from tests.debate.fakes import ScriptedProvider, text_response  # noqa: E402
+
+
+def is_primary_answer_request(request) -> bool:
+    return "apenas escolhe ids" in (request.system_prompt or "")
+
+
+class PrimaryAwareScriptedProvider(ScriptedProvider):
+    """`ScriptedProvider` que separa a chamada de PLANEJAMENTO da resposta
+    principal da chamada de plano de estilo (`editor_v1`): a lista `responses`
+    continua sendo SÓ a do plano de estilo (testes existentes inalterados) e
+    `primary_responses` roteiriza a outra. Sem roteiro, o default é uma saída
+    inválida de custo zero conhecido (o Primary Answer cai no fallback e o
+    accounting dos testes existentes não muda)."""
+
+    def __init__(self, name, responses, primary_responses=None, **kwargs):
+        super().__init__(name, responses, **kwargs)
+        self.primary_requests: list = []
+        self._primary_responses = list(primary_responses) if primary_responses is not None else None
+
+    async def complete(self, request, *, execution_policy=None):
+        if is_primary_answer_request(request):
+            self.primary_requests.append(request)
+            if self._primary_responses:
+                return self._primary_responses.pop(0)
+            return text_response(
+                self.provider_name, "{}", input_tokens=0, output_tokens=0, cost_usd=0.0
+            )
+        return await super().complete(request, execution_policy=execution_policy)

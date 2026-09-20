@@ -602,4 +602,47 @@ describe('RunDetail', () => {
       expect(screen.queryByText(/fonte fornecida/i)).not.toBeInTheDocument()
     })
   })
+
+  describe('Resposta principal', () => {
+    const primary = {
+      contract_version: 'primary_answer_plan_v1',
+      based_on_verdict_id: 'v-1',
+      lead_in: 'Resposta principal, restrita ao que o debate e o Judge avaliaram (não é verificação externa):',
+      sections: [
+        {
+          role: 'central_conclusion' as const,
+          heading: 'Conclusão central:',
+          items: [
+            { claim_id: 'c1', claim_text: 'Brasília é a capital.', verdict_label: 'sustentada pelo debate' as const },
+          ],
+        },
+      ],
+      limitations: [],
+      assessed_claim_count: 1,
+      selected_claim_count: 1,
+      omitted_not_established_count: 0,
+      scope_note: 'Seleção apresentacional: 1 de 1 afirmações avaliadas pelo Judge. A avaliação completa lista todas.',
+      rendered_text: 'TEXTO CANÔNICO',
+    }
+
+    it('domina a página, mantém a avaliação completa e o caminho de inspeção', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue({
+        ...completedRun,
+        final_answer: { ...completedRun.final_answer, primary_answer: primary },
+      })
+      renderDetail('run-1')
+
+      expect(await screen.findByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+      expect(screen.getByText(/Ver avaliação completa/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /inspecionar execução/i })).toBeInTheDocument()
+    })
+
+    it('sem resposta principal (registro histórico) mostra a avaliação completa de sempre', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+      renderDetail('run-1')
+
+      expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeVisible()
+      expect(screen.queryByText(/Ver avaliação completa/)).not.toBeInTheDocument()
+    })
+  })
 })

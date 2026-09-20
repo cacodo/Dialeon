@@ -36,7 +36,8 @@ from app.reconciliation.models import (
 from app.reconciliation.reconcile import reconcile_source_and_judge
 from app.source_analysis.models import RejectedSourceEntry
 from app.source_analysis.result import SourceAnalysisResult
-from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
+from tests.debate.fakes import text_response, transport_error_response
+from tests.editor.fixtures import PrimaryAwareScriptedProvider as ScriptedProvider
 from tests.editor.fixtures import (
     canonical_claim,
     debate_result,

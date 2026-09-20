@@ -29,6 +29,7 @@ from app.orchestrator.config import QuorumPolicy, RunConfig
 from app.source_analysis.analyzer import SourceAnalyzer
 from tests.council.fakes import FakeDebateEngine
 from tests.debate.fakes import ScriptedProvider, text_response
+from tests.editor.fixtures import PrimaryAwareScriptedProvider
 from tests.judge.fixtures import debate_result, model_response, raw_claim
 from tests.judge.fixtures import initial_result as _initial_result_fixture
 
@@ -100,7 +101,7 @@ async def test_a_source_analysis_pushes_cost_over_limit_judge_makes_zero_calls()
 
     sa_provider = ScriptedProvider("anthropic", [_empty_source_payload(cost_usd=0.20)])
     judge_provider = ScriptedProvider("anthropic", [])  # nunca deve ser chamado
-    editor_provider = ScriptedProvider("anthropic", [])  # idem
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [])  # idem
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -128,7 +129,7 @@ async def test_b_source_analysis_pushes_tokens_over_limit_judge_makes_zero_calls
         [_empty_source_payload(cost_usd=0.001, input_tokens=200, output_tokens=0)],
     )
     judge_provider = ScriptedProvider("anthropic", [])
-    editor_provider = ScriptedProvider("anthropic", [])
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [])
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -168,7 +169,7 @@ async def test_c_source_analysis_within_budget_judge_runs_normally():
     # substituído por EditorPlan (opening_style/closing_style) -- ver
     # app/editor/schemas.py.
     editor_payload = json.dumps({"opening_style": "direct", "closing_style": "concise"})
-    editor_provider = ScriptedProvider("anthropic", [text_response("anthropic", editor_payload)])
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [text_response("anthropic", editor_payload)])
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -208,7 +209,7 @@ async def test_d_failed_source_analysis_attempt_with_known_cost_still_counts():
     malformed = text_response("anthropic", "isto não é JSON", cost_usd=0.20)
     sa_provider = ScriptedProvider("anthropic", [malformed, malformed])  # retry consome 2x
     judge_provider = ScriptedProvider("anthropic", [])
-    editor_provider = ScriptedProvider("anthropic", [])
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [])
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -244,7 +245,7 @@ async def test_d2_retry_blocked_when_first_attempt_alone_exhausts_budget():
     # se o retry fosse tentado (bug), o teste falharia com AssertionError
     # interna do ScriptedProvider por esgotar o roteiro.
     judge_provider = ScriptedProvider("anthropic", [])
-    editor_provider = ScriptedProvider("anthropic", [])
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [])
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -285,7 +286,7 @@ async def test_e_source_analysis_plus_judge_push_editor_over_budget():
     judge_provider = ScriptedProvider(
         "anthropic", [text_response("anthropic", judge_payload, cost_usd=0.15)]
     )
-    editor_provider = ScriptedProvider("anthropic", [])  # nunca deve ser chamado
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [])  # nunca deve ser chamado
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -332,7 +333,7 @@ async def test_f_k_source_analysis_counted_exactly_once_in_aggregate_totals():
     # substituído por EditorPlan (opening_style/closing_style) -- ver
     # app/editor/schemas.py.
     editor_payload = json.dumps({"opening_style": "direct", "closing_style": "concise"})
-    editor_provider = ScriptedProvider(
+    editor_provider = PrimaryAwareScriptedProvider(
         "anthropic", [text_response("anthropic", editor_payload, input_tokens=5, output_tokens=1, cost_usd=0.04)]
     )
 
@@ -367,7 +368,7 @@ async def test_g_top_level_cumulative_budget_exceeded_true_from_source_analysis_
 
     sa_provider = ScriptedProvider("anthropic", [_empty_source_payload(cost_usd=0.20)])
     judge_provider = ScriptedProvider("anthropic", [])
-    editor_provider = ScriptedProvider("anthropic", [])
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [])
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -405,7 +406,7 @@ async def test_h_no_source_supplied_preserves_pre_stage16_behavior():
     # substituído por EditorPlan (opening_style/closing_style) -- ver
     # app/editor/schemas.py.
     editor_payload = json.dumps({"opening_style": "direct", "closing_style": "concise"})
-    editor_provider = ScriptedProvider("anthropic", [text_response("anthropic", editor_payload)])
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [text_response("anthropic", editor_payload)])
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),
@@ -450,7 +451,7 @@ async def test_i_j_judge_and_editor_requests_never_contain_source_content():
     # substituído por EditorPlan (opening_style/closing_style) -- ver
     # app/editor/schemas.py.
     editor_payload = json.dumps({"opening_style": "direct", "closing_style": "concise"})
-    editor_provider = ScriptedProvider("anthropic", [text_response("anthropic", editor_payload, cost_usd=0.01)])
+    editor_provider = PrimaryAwareScriptedProvider("anthropic", [text_response("anthropic", editor_payload, cost_usd=0.01)])
 
     runner = CouncilRunner(
         debate_engine=FakeDebateEngine(result=dr),

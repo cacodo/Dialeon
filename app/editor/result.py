@@ -31,6 +31,7 @@ from app.editor.answer_blocks import (
     AnswerParagraphBlock,
 )
 from app.editor.attempt import EditorAttempt
+from app.editor.primary_answer import PrimaryAnswer
 from app.models.provider_models import ModelIdentitySource
 from app.orchestrator.budget import sum_usage_and_cost
 
@@ -113,6 +114,13 @@ class FinalAnswer(BaseModel):
     # o prefixo sintético `"- "` (isso é formatação de apresentação de
     # `answer_text`, não conteúdo).
     unevaluated_claims: tuple[str, ...] | None = None
+    # Primary Answer (seleção tipada por ids, renderizada deterministicamente
+    # -- ver app/editor/primary_answer.py). Campo ADITIVO e OPCIONAL, com nome
+    # próprio: NUNCA redefine `answer_text`/`answer_blocks` (a avaliação
+    # completa, que continua o registro investigativo e o fallback). `None`
+    # para runs históricos, para o caminho sem veredito e para qualquer run
+    # em que o plano não foi produzido/validado -- nunca fabricado.
+    primary_answer: PrimaryAnswer | None = None
     # Quando há veredito: SEMPRE começa com cópia VERBATIM de
     # JudgeVerdict.debate_limitations, na mesma ordem -- o Editor nunca
     # reescreve/resume/escolhe o CONTEÚDO dessas entradas (ver
@@ -200,6 +208,20 @@ class FinalAnswer(BaseModel):
                     "status='deterministic_no_verdict' não deve ter editor_model/"
                     "based_on_verdict_id/judge_confidence"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _primary_answer_requires_an_assessed_verdict(self) -> FinalAnswer:
+        """Primary Answer só existe sobre um veredito real do Judge, e cita o
+        MESMO veredito em que a resposta final se baseia -- nunca sobre claims
+        sem avaliação (`deterministic_no_verdict`) nem sobre prosa histórica
+        (`llm_composed`)."""
+        if self.primary_answer is None:
+            return self
+        if self.status not in ("llm_planned", "deterministic_from_verdict"):
+            raise ValueError(f"status={self.status!r} nunca deve ter primary_answer")
+        if self.primary_answer.based_on_verdict_id != self.based_on_verdict_id:
+            raise ValueError("primary_answer.based_on_verdict_id diverge de based_on_verdict_id")
         return self
 
     @model_validator(mode="after")
@@ -362,21 +384,49 @@ class EditorResult(BaseModel):
     # validação em app/editor/compose.py). Não implica que foi checado.
     editor_provider: str = Field(min_length=1)
     cumulative_budget_exceeded: bool
+    # Primary Answer -- tentativas da chamada de PLANEJAMENTO da resposta
+    # principal (contrato `primary_answer_plan_v1`), em lista SEPARADA de
+    # `attempts` (que segue significando só o plano de estilo `editor_v1`,
+    # com seus invariantes). O accounting é o MESMO mecanismo: os totais
+    # `editor_*` abaixo somam as duas listas -- nunca um segundo sistema.
+    primary_answer_attempts: list[EditorAttempt] = Field(default_factory=list)
+    # Por que NÃO há Primary Answer num run com veredito. `None` quando ele foi
+    # produzido, ou quando não se aplica (sem veredito; fallback do plano de
+    # estilo). Um Primary Answer ausente NUNCA torna o run uma falha: a
+    # avaliação completa determinística segue sendo a resposta.
+    primary_answer_fallback_reason: (
+        Literal[
+            "no_selectable_assessed_support",
+            "budget_exhausted_before_primary_answer",
+            "primary_answer_transport_failed",
+            "primary_answer_output_invalid",
+            "primary_answer_render_failed",
+        ]
+        | None
+    ) = None
+
+    @property
+    def _all_editor_attempts(self) -> list[EditorAttempt]:
+        return [*self.attempts, *self.primary_answer_attempts]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def editor_input_tokens(self) -> int:
-        return sum((a.usage.input_tokens or 0) for a in self.attempts if a.usage is not None)
+        return sum(
+            (a.usage.input_tokens or 0) for a in self._all_editor_attempts if a.usage is not None
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def editor_output_tokens(self) -> int:
-        return sum((a.usage.output_tokens or 0) for a in self.attempts if a.usage is not None)
+        return sum(
+            (a.usage.output_tokens or 0) for a in self._all_editor_attempts if a.usage is not None
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def editor_cost_usd(self) -> float:
-        return sum((a.cost_usd or 0.0) for a in self.attempts)
+        return sum((a.cost_usd or 0.0) for a in self._all_editor_attempts)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -387,7 +437,7 @@ class EditorResult(BaseModel):
         17A, B3). Reusa `sum_usage_and_cost` -- mesma regra completa já
         usada em `SourceAnalysisResult`, nunca uma segunda definição
         divergente."""
-        return sum_usage_and_cost(self.attempts)[3]
+        return sum_usage_and_cost(self._all_editor_attempts)[3]
 
     @model_validator(mode="after")
     def _status_reason_and_attempts_are_coherent(self) -> EditorResult:
@@ -438,8 +488,40 @@ class EditorResult(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _primary_answer_is_coherent(self) -> EditorResult:
+        primary = self.final_answer.primary_answer
+        reason = self.primary_answer_fallback_reason
+        attempts = self.primary_answer_attempts
+        if self.final_answer.status == "deterministic_no_verdict" and (attempts or reason):
+            raise ValueError("sem veredito, o Primary Answer nunca é considerado")
+        if primary is not None:
+            if reason is not None:
+                raise ValueError("primary_answer presente não deve ter primary_answer_fallback_reason")
+            if not attempts or attempts[-1].parse_status != "accepted":
+                raise ValueError(
+                    "primary_answer exige tentativas terminando em uma tentativa aceita"
+                )
+            return self
+        if reason in (None, "no_selectable_assessed_support", "budget_exhausted_before_primary_answer"):
+            if reason is not None and attempts:
+                raise ValueError(f"primary_answer_fallback_reason={reason!r} não deveria ter tentativas")
+            if reason is None and attempts:
+                raise ValueError("tentativas de Primary Answer sem resposta exigem um motivo")
+        elif not attempts:
+            raise ValueError(f"primary_answer_fallback_reason={reason!r} exige as tentativas reais")
+        elif reason == "primary_answer_transport_failed" and attempts[-1].transport_status != "error":
+            raise ValueError("motivo de transporte exige a última tentativa com erro de transporte")
+        elif reason == "primary_answer_output_invalid" and (
+            attempts[-1].transport_status != "success" or attempts[-1].parse_status == "accepted"
+        ):
+            raise ValueError("motivo de saída inválida exige a última tentativa rejeitada")
+        elif reason == "primary_answer_render_failed" and attempts[-1].parse_status != "accepted":
+            raise ValueError("falha de renderização exige a última tentativa aceita")
+        return self
+
+    @model_validator(mode="after")
     def _all_attempts_use_declared_provider(self) -> EditorResult:
-        for attempt in self.attempts:
+        for attempt in self._all_editor_attempts:
             if attempt.provider != self.editor_provider:
                 raise ValueError(
                     f"EditorAttempt.provider={attempt.provider!r} diverge de "

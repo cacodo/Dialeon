@@ -174,6 +174,10 @@ def _run_config_from_json(data: dict) -> RunConfig:
     return RunConfig(**data)
 
 
+# `EditorAttemptRow.purpose` das tentativas de planejamento da resposta principal.
+_PRIMARY_ANSWER_PURPOSE = "primary_answer_plan"
+
+
 class CouncilRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._session_factory = session_factory
@@ -337,6 +341,7 @@ class CouncilRepository:
                     editor_provider=editor.editor_provider,
                     editor_fallback_reason=editor.fallback_reason,
                     editor_cumulative_budget_exceeded=editor.cumulative_budget_exceeded,
+                    editor_primary_answer_fallback_reason=editor.primary_answer_fallback_reason,
                     source_analyzer_provider=(
                         source_analysis.source_analyzer_provider
                         if source_analysis is not None
@@ -427,6 +432,12 @@ class CouncilRepository:
 
             for attempt in editor.attempts:
                 session.add(editor_attempt_to_row(attempt, council_run_id=result.id))
+            for attempt in editor.primary_answer_attempts:
+                session.add(
+                    editor_attempt_to_row(
+                        attempt, council_run_id=result.id, purpose=_PRIMARY_ANSWER_PURPOSE
+                    )
+                )
 
             # Cross-Channel Reconciliation V1 -- `result.reconciliation` é
             # garantidamente concreto aqui (checado/validado no topo
@@ -873,10 +884,21 @@ class CouncilRepository:
             .scalars()
             .all()
         )
+        # `purpose` NULL = plano de estilo (todo registro anterior à coluna).
         editor_result = EditorResult(
             final_answer=final_answer,
-            attempts=[editor_attempt_from_row(a) for a in editor_attempt_rows],
+            attempts=[
+                editor_attempt_from_row(a)
+                for a in editor_attempt_rows
+                if a.purpose != _PRIMARY_ANSWER_PURPOSE
+            ],
+            primary_answer_attempts=[
+                editor_attempt_from_row(a)
+                for a in editor_attempt_rows
+                if a.purpose == _PRIMARY_ANSWER_PURPOSE
+            ],
             fallback_reason=row.editor_fallback_reason,
+            primary_answer_fallback_reason=row.editor_primary_answer_fallback_reason,
             editor_provider=row.editor_provider,
             cumulative_budget_exceeded=row.editor_cumulative_budget_exceeded,
         )

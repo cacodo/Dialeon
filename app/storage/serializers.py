@@ -30,6 +30,7 @@ from app.debate.numeric_verification import ArithmeticAssertion, DeterministicVe
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.editor.answer_blocks import AnswerBlock
 from app.editor.attempt import EditorAttempt
+from app.editor.primary_answer import PrimaryAnswer
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
 from app.models.domain import (
@@ -540,11 +541,14 @@ def judge_attempt_from_row(row: JudgeAttemptRow) -> JudgeAttempt:
     )
 
 
-def editor_attempt_to_row(attempt: EditorAttempt, *, council_run_id: str) -> EditorAttemptRow:
+def editor_attempt_to_row(
+    attempt: EditorAttempt, *, council_run_id: str, purpose: str | None = None
+) -> EditorAttemptRow:
     usage_present, input_tokens, output_tokens = _usage_to_columns(attempt.usage)
     return EditorAttemptRow(
         id=attempt.id,
         council_run_id=council_run_id,
+        purpose=purpose,
         attempt_number=attempt.attempt_number,
         provider=attempt.provider,
         requested_model=attempt.requested_model,
@@ -658,6 +662,18 @@ def _unevaluated_claims_from_json(data: list | None) -> tuple[str, ...] | None:
     return _UNEVALUATED_CLAIMS_ADAPTER.validate_python(data) if data is not None else None
 
 
+def _primary_answer_to_json(primary: PrimaryAnswer | None) -> dict | None:
+    return primary.model_dump(mode="json") if primary is not None else None
+
+
+def _primary_answer_from_json(data: dict | None) -> PrimaryAnswer | None:
+    """Reconstrução validada e FAIL-CLOSED: um blob malformado, com texto
+    renderizado divergente ou combinação papel/veredito impossível levanta
+    `ValidationError` -- nunca é reparado nem descartado em silêncio. `None`
+    (coluna nunca populada) permanece `None`, sem reconstrução."""
+    return PrimaryAnswer.model_validate(data) if data is not None else None
+
+
 def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerRow:
     return FinalAnswerRow(
         id=fa.id,
@@ -665,6 +681,7 @@ def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerR
         answer_text=fa.answer_text,
         answer_blocks_json=_answer_blocks_to_json(fa.answer_blocks),
         unevaluated_claims_json=_unevaluated_claims_to_json(fa.unevaluated_claims),
+        primary_answer_json=_primary_answer_to_json(fa.primary_answer),
         limitations_json=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -683,6 +700,7 @@ def final_answer_from_row(row: FinalAnswerRow) -> FinalAnswer:
         answer_text=row.answer_text,
         answer_blocks=_answer_blocks_from_json(row.answer_blocks_json),
         unevaluated_claims=_unevaluated_claims_from_json(row.unevaluated_claims_json),
+        primary_answer=_primary_answer_from_json(row.primary_answer_json),
         limitations=list(row.limitations_json),
         status=row.status,
         editor_model=row.editor_model,

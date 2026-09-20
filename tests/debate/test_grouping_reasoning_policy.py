@@ -216,7 +216,7 @@ def test_digest_format_is_unchanged_completion_request_sha256_v2():
     reason="evidência local: banco com a run 2bd3b8b4 não existe neste checkout",
 )
 @pytest.mark.asyncio
-async def test_local_evidence_reconstructed_36_claim_workload_digests():
+async def test_local_evidence_reconstructed_36_claim_workload_digests(tmp_path):
     """Reconstrói o workload R1 REAL (36 claims, mesma ordem de produção) a
     partir do banco persistido (somente leitura, nenhum provider) e verifica:
     digest v4 == `4461c012...`; com os prompts históricos o MESMO request
@@ -224,9 +224,7 @@ async def test_local_evidence_reconstructed_36_claim_workload_digests():
     com o flag desligado, o digest histórico persistido `197a8431...` (prova
     independente de que só o prompt/flag mudaram); e que a proveniência
     histórica persistida (`claim_grouping_v1`) NÃO foi reescrita."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.storage.repository import CouncilRepository
+    from tests.local_evidence import load_local_run
 
     db = REPO_ROOT / "llm_council.db"
     ro = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -239,12 +237,7 @@ async def test_local_evidence_reconstructed_36_claim_workload_digests():
         pytest.skip("evidência local: run 2bd3b8b4 ausente do banco deste checkout")
     persisted = json.loads(row[0])
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///file:{db}?mode=ro&uri=true")
-    try:
-        repo = CouncilRepository(async_sessionmaker(engine, expire_on_commit=False))
-        record = await repo.get_run(LIVE_RUN_ID)
-    finally:
-        await engine.dispose()
+    record = await load_local_run(db, LIVE_RUN_ID, tmp_path)
     result = record.council_run_result
     raw_r1 = [
         c

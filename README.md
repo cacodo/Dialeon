@@ -69,6 +69,15 @@ abaixo.
   reconciliação e pode incluir na resposta final as relações/excertos
   de Source Analysis por ele referenciados — sem que isso signifique
   que a reconciliação escolhe qual dos dois canais está certo.
+- Resposta principal (aditiva e opcional): uma segunda chamada do Editor
+  apenas SELECIONA, por id, claims já avaliadas pelo Judge e as organiza em
+  papéis finitos (conclusão central, razões, contrapontos, condições,
+  incertezas). A aplicação valida o plano (ids atuais e avaliados, sem
+  duplicata, papel compatível com o veredito) e o renderiza
+  deterministicamente; o modelo nunca escreve texto. É uma seleção
+  apresentacional, não verificação externa: a avaliação completa
+  determinística segue sempre disponível e é o fallback quando o plano
+  falha ou não se aplica (por exemplo, sem veredito).
 - Persistência via SQLite (SQLAlchemy assíncrono), com ciclo de vida de
   execução (`running` / `completed` / `failed` / `insufficient_quorum`).
   Uma execução `completed` é persistida em detalhe suficiente pra

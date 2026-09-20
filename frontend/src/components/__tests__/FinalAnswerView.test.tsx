@@ -752,3 +752,162 @@ describe('FinalAnswerView -- Copiar resposta', () => {
     expect(writeText).toHaveBeenCalledWith('Brasília é a capital do Brasil.')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Resposta PRINCIPAL (seleção tipada por ids, renderizada no backend)
+// ---------------------------------------------------------------------------
+
+import type { PrimaryAnswerPublic } from '../../api/types'
+
+function makePrimary(overrides: Partial<PrimaryAnswerPublic> = {}): PrimaryAnswerPublic {
+  return {
+    contract_version: 'primary_answer_plan_v1',
+    based_on_verdict_id: 'v-1',
+    lead_in: 'Resposta principal, restrita ao que o debate e o Judge avaliaram (não é verificação externa):',
+    sections: [
+      {
+        role: 'central_conclusion',
+        heading: 'Conclusão central:',
+        items: [
+          { claim_id: 'c1', claim_text: 'Um SaaS é a melhor escolha.', verdict_label: 'sustentada pelo debate' },
+        ],
+      },
+      {
+        role: 'uncertainties',
+        heading: 'Incertezas e pontos não estabelecidos:',
+        items: [
+          {
+            claim_id: 'c2',
+            claim_text: 'O fornecedor pode falir.',
+            verdict_label: 'sem informação suficiente para decidir',
+          },
+        ],
+      },
+    ],
+    limitations: ['Sem dados empíricos.'],
+    assessed_claim_count: 3,
+    selected_claim_count: 2,
+    omitted_not_established_count: 0,
+    scope_note: 'Seleção apresentacional: 2 de 3 afirmações avaliadas pelo Judge. A avaliação completa lista todas.',
+    rendered_text: 'TEXTO CANÔNICO DA RESPOSTA PRINCIPAL\n\n- Um SaaS é a melhor escolha. (sustentada pelo debate)',
+    ...overrides,
+  }
+}
+
+describe('FinalAnswerView -- resposta principal', () => {
+  const completeBlocks = sectionsBlocks(
+    [item('Claim da avaliação completa.', 'sustentada pelo debate')],
+    [item('Claim não estabelecida.', 'sem informação suficiente para decidir')],
+  )
+  const withPrimary = (primary: PrimaryAnswerPublic | null = makePrimary()) =>
+    makeFinalAnswer({
+      answer_text: 'AVALIAÇÃO COMPLETA CANÔNICA',
+      answer_blocks: completeBlocks,
+      limitations: ['Sem dados empíricos.'],
+      primary_answer: primary,
+    })
+
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  afterEach(() => {
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+  })
+
+  it('a resposta principal domina: título "Resposta", seções, rótulo do veredito junto da claim e escopo', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withPrimary()} />)
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+    expect(screen.getByRole('heading', { level: 3, name: 'Incertezas e pontos não estabelecidos:' })).toBeVisible()
+    expect(screen.getByText('Um SaaS é a melhor escolha.')).toBeVisible()
+    expect(screen.getByText('(sustentada pelo debate)')).toBeVisible()
+    expect(screen.getByText('(sem informação suficiente para decidir)')).toBeVisible()
+    expect(screen.getByText(/Seleção apresentacional: 2 de 3/)).toBeVisible()
+    expect(screen.getByText(/não é verificação externa/)).toBeVisible()
+    // limitações continuam visíveis (a cópia dentro da avaliação completa fica recolhida)
+    const limitations = container.querySelector('.final-answer--primary > .final-answer__limitations')
+    expect(limitations).not.toBeNull()
+    expect(within(limitations as HTMLElement).getByText('Sem dados empíricos.')).toBeVisible()
+  })
+
+  it('não despeja o muro de claims sob a resposta principal: a avaliação completa fica recolhida', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withPrimary()} />)
+
+    const details = container.querySelector('details.final-answer__complete') as HTMLDetailsElement
+    expect(details).not.toBeNull()
+    expect(details.open).toBe(false)
+    expect(screen.getByText('Claim da avaliação completa.')).not.toBeVisible()
+    expect(screen.getByText(/Ver avaliação completa \(3 afirmações avaliadas\)/)).toBeVisible()
+  })
+
+  it('a investigação completa continua alcançável: abrir revela a avaliação completa intacta', async () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withPrimary()} />)
+
+    await userEvent.click(screen.getByText(/Ver avaliação completa/))
+
+    expect((container.querySelector('details.final-answer__complete') as HTMLDetailsElement).open).toBe(true)
+    expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+    expect(screen.getByText('Claim não estabelecida.')).toBeVisible()
+    expect(screen.getAllByText('Por quê?').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Copiar avaliação completa' })).toBeInTheDocument()
+  })
+
+  it('sem resposta principal (null/ausente/histórico) o comportamento de fallback é o de sempre', () => {
+    for (const primary of [null, undefined]) {
+      const { container, unmount } = render(
+        <FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: completeBlocks, primary_answer: primary })} />,
+      )
+      expect(container.querySelector('.final-answer__complete')).toBeNull()
+      expect(container.querySelector('.final-answer--primary')).toBeNull()
+      expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Copiar resposta' })).toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('"Copiar resposta" copia EXATAMENTE o texto canônico da resposta principal; a avaliação completa tem seu próprio botão', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    render(<FinalAnswerView finalAnswer={withPrimary()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
+    expect(writeText).toHaveBeenLastCalledWith(makePrimary().rendered_text)
+    expect(await screen.findByText('Resposta copiada.')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar avaliação completa' }))
+    expect(writeText).toHaveBeenLastCalledWith('AVALIAÇÃO COMPLETA CANÔNICA')
+  })
+
+  it('conteúdo não confiável na resposta principal continua texto inerte (sem Markdown/HTML/links)', () => {
+    const evil = makePrimary({
+      sections: [
+        {
+          role: 'central_conclusion',
+          heading: 'Conclusão central:',
+          items: [
+            {
+              claim_id: 'c1',
+              claim_text: '<img src=x onerror=alert(1)> **negrito** [link](http://x) # título\n- item',
+              verdict_label: 'sustentada pelo debate',
+            },
+          ],
+        },
+      ],
+      limitations: ['<script>alert(1)</script>'],
+    })
+    const { container } = render(<FinalAnswerView finalAnswer={withPrimary(evil)} />)
+
+    expect(container.querySelector('img, script, a, strong')).toBeNull()
+    expect(container.querySelector('.final-answer__primary-claim')?.textContent).toBe(
+      '<img src=x onerror=alert(1)> **negrito** [link](http://x) # título\n- item',
+    )
+    const primaryHeadings = screen
+      .getAllByRole('heading', { level: 3 })
+      .filter((h) => !h.closest('details'))
+      .map((h) => h.textContent)
+    expect(primaryHeadings).toEqual([
+      'Conclusão central:',
+      'Limitações registradas',
+    ])
+  })
+})

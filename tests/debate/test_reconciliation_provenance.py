@@ -129,14 +129,12 @@ def test_historical_v1_prompt_reproduces_the_v1_fixture_digest_only_the_prompt_c
     reason="evidência local: banco com a run 2bd3b8b4 não existe neste checkout",
 )
 @pytest.mark.asyncio
-async def test_local_evidence_historical_run02_reconciliation_workload_digests():
+async def test_local_evidence_historical_run02_reconciliation_workload_digests(tmp_path):
     """Reconstrói o workload REAL de reconciliação da run 2bd3b8b4 (43 claims
     atuais: 26 R1 + 17 R2; somente leitura, nenhum provider): o prompt v1
     histórico reproduz o digest v1 PERSISTIDO, e o builder v2 dá o digest
     determinístico v2. A proveniência v1 persistida NÃO é reescrita."""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.storage.repository import CouncilRepository
+    from tests.local_evidence import load_local_run
 
     db = REPO / "llm_council.db"
     ro = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -148,11 +146,7 @@ async def test_local_evidence_historical_run02_reconciliation_workload_digests()
         pytest.skip("evidência local: run 2bd3b8b4 ausente do banco deste checkout")
     persisted = json.loads(row[0])
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///file:{db}?mode=ro&uri=true")
-    try:
-        record = await CouncilRepository(async_sessionmaker(engine, expire_on_commit=False)).get_run(LIVE_RUN_ID)
-    finally:
-        await engine.dispose()
+    record = await load_local_run(db, LIVE_RUN_ID, tmp_path)
     result = record.council_run_result
     current = get_current_claims(result.debate_result.claims)
     r1 = [c for c in current if c.round_introduced == 1]

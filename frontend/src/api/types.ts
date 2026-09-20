@@ -331,6 +331,44 @@ export interface AnswerClaimSectionBlockPublic {
 
 export type AnswerBlockPublic = AnswerParagraphBlockPublic | AnswerClaimSectionBlockPublic
 
+export type PrimaryAnswerRole =
+  | 'central_conclusion'
+  | 'supporting_reasons'
+  | 'tradeoffs'
+  | 'conditions'
+  | 'uncertainties'
+
+export interface PrimaryAnswerItemPublic {
+  claim_id: string
+  claim_text: string
+  verdict_label: AnswerVerdictLabel
+}
+
+export interface PrimaryAnswerSectionPublic {
+  role: PrimaryAnswerRole
+  heading: string
+  items: PrimaryAnswerItemPublic[]
+}
+
+// Resposta principal (seleção tipada por ids + renderização determinística
+// no backend). ADITIVA e opcional: nunca substitui `answer_text`/
+// `answer_blocks` (a avaliação completa). `rendered_text` é EXATAMENTE o texto
+// canônico da resposta principal (o que "Copiar resposta" copia); os campos
+// estruturados servem só pra renderizar a MESMA informação com semântica de
+// lista/heading. `claim_text` é conteúdo NÃO CONFIÁVEL -> sempre texto.
+export interface PrimaryAnswerPublic {
+  contract_version: string
+  based_on_verdict_id: string
+  lead_in: string
+  sections: PrimaryAnswerSectionPublic[]
+  limitations: string[]
+  assessed_claim_count: number
+  selected_claim_count: number
+  omitted_not_established_count: number
+  scope_note: string
+  rendered_text: string
+}
+
 export interface FinalAnswerPublic {
   answer_text: string
   // `null` pra runs persistidos antes da UI Slice 3, pro caminho sem
@@ -351,6 +389,9 @@ export interface FinalAnswerPublic {
   // quanto `undefined` (payload histórico/externo que nem chegou a
   // conhecer este campo).
   unevaluated_claims?: string[] | null
+  // Ausente/null em runs históricos, sem veredito, ou sem plano válido -- a
+  // avaliação completa acima é sempre o fallback.
+  primary_answer?: PrimaryAnswerPublic | null
   limitations: string[]
   status: FinalAnswerStatus
   editor_model: string | null

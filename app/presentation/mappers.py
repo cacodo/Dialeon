@@ -23,6 +23,9 @@ from app.presentation.schemas import (
     ArithmeticAssertionPublic,
     ClaimAssessmentPublic,
     ClaimProcessingAttemptPublic,
+    PrimaryAnswerItemPublic,
+    PrimaryAnswerPublic,
+    PrimaryAnswerSectionPublic,
     ClaimPublic,
     ClaimReconciliationOutcomePublic,
     ClaimSupportPublic,
@@ -62,6 +65,7 @@ from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult
 from app.editor.answer_blocks import AnswerBlock, AnswerClaimSectionBlock, AnswerParagraphBlock
 from app.editor.attempt import EditorAttempt
+from app.editor.primary_answer import PrimaryAnswer
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
 from app.models.domain import Claim, JudgeVerdict, ModelResponse
@@ -288,6 +292,37 @@ def answer_block_public(block: AnswerBlock) -> AnswerBlockPublic:
     )
 
 
+def primary_answer_public(primary: PrimaryAnswer | None) -> PrimaryAnswerPublic | None:
+    if primary is None:
+        return None
+    return PrimaryAnswerPublic(
+        contract_version=primary.contract_version,
+        based_on_verdict_id=primary.based_on_verdict_id,
+        lead_in=primary.lead_in,
+        sections=[
+            PrimaryAnswerSectionPublic(
+                role=section.role,
+                heading=section.heading,
+                items=[
+                    PrimaryAnswerItemPublic(
+                        claim_id=item.claim_id,
+                        claim_text=item.claim_text,
+                        verdict_label=item.verdict_label,
+                    )
+                    for item in section.items
+                ],
+            )
+            for section in primary.sections
+        ],
+        limitations=list(primary.limitations),
+        assessed_claim_count=primary.assessed_claim_count,
+        selected_claim_count=primary.selected_claim_count,
+        omitted_not_established_count=primary.omitted_not_established_count,
+        scope_note=primary.scope_note,
+        rendered_text=primary.rendered_text,
+    )
+
+
 def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
     return FinalAnswerPublic(
         answer_text=fa.answer_text,
@@ -297,6 +332,7 @@ def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
         unevaluated_claims=(
             list(fa.unevaluated_claims) if fa.unevaluated_claims is not None else None
         ),
+        primary_answer=primary_answer_public(fa.primary_answer),
         limitations=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -579,6 +615,7 @@ def completed_run_audit(
         editor_outcome=EditorOutcome(
             fallback_reason=editor.fallback_reason,
             cumulative_budget_exceeded=editor.cumulative_budget_exceeded,
+            primary_answer_fallback_reason=editor.primary_answer_fallback_reason,
         ),
         source_analysis=source_analysis_outcome_public(result.source_analysis_result),
         initial_round=initial_round_audit(debate.initial_result),
@@ -594,6 +631,7 @@ def completed_run_audit(
         judge_verdict=judge_verdict_public(judge.verdict),
         judge_attempts=[judge_attempt_public(a) for a in judge.attempts],
         editor_attempts=[editor_attempt_public(a) for a in editor.attempts],
+        primary_answer_attempts=[editor_attempt_public(a) for a in editor.primary_answer_attempts],
         final_answer=final_answer_public(editor.final_answer),
         accounting=accounting_summary(result),
         provider_execution_policy=provider_execution_policy,
