@@ -354,7 +354,8 @@ async def test_cmd_list_shows_running_and_failed_labels(capsys):
     assert exit_code == commands.EXIT_OK
     out = capsys.readouterr().out
     assert "run-cli-list-running" in out
-    assert "em andamento" in out
+    assert "sem desfecho registrado" in out
+    assert "em andamento" not in out
 
 
 @pytest.mark.asyncio
@@ -513,6 +514,26 @@ async def test_cmd_get_completed_run_without_policy_renders_unknown_human(capsys
 
 
 @pytest.mark.asyncio
+async def test_cmd_list_json_keeps_machine_readable_running_status_and_null_ended_at(capsys):
+    """A mudança de rótulo é SÓ do texto humano: o JSON continua com
+    `status="running"` e `ended_at=null` (semântica de máquina inalterada)."""
+    components = await _components()
+    await components.repository.save_accepted(
+        "run-cli-list-json-running",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=components.provider_execution_policy,
+    )
+
+    exit_code = await commands.cmd_list(components, limit=50, offset=0, as_json=True)
+
+    assert exit_code == commands.EXIT_OK
+    (run,) = json.loads(capsys.readouterr().out)["runs"]
+    assert run["status"] == "running"
+    assert run["ended_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_cmd_get_running_run_json(capsys):
     components = await _components()
     await components.repository.save_accepted(
@@ -544,8 +565,10 @@ async def test_cmd_get_running_run_human_output(capsys):
 
     assert exit_code == commands.EXIT_OK
     out = capsys.readouterr().out
-    assert "em andamento" in out
+    assert "status: sem desfecho registrado" in out
+    assert "em andamento" not in out.split("--")[0]  # nunca no rótulo de status
     assert "run-cli-running-2" in out
+    assert "concluída" not in out and "falhou" not in out  # nenhum desfecho fabricado
 
 
 @pytest.mark.asyncio
@@ -816,7 +839,10 @@ async def test_cmd_audit_running_run_human_output(capsys):
     )
 
     assert exit_code == commands.EXIT_OK
-    assert "em andamento" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "status: sem desfecho registrado" in out
+    assert "status: em andamento" not in out
+    assert "juiz" not in out.lower() and "claims:" not in out  # nenhum detalhe de auditoria fabricado
 
 
 @pytest.mark.asyncio

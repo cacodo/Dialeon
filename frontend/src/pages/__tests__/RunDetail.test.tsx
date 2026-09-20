@@ -325,7 +325,12 @@ describe('RunDetail', () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(runningRun)
     renderDetail('run-3')
 
-    expect(await screen.findByText(/em andamento/i)).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Sem desfecho registrado' }),
+    ).toBeInTheDocument()
+    // nunca afirma progresso observável; explica as duas possibilidades
+    expect(screen.queryByText(/em andamento/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/pode ainda estar ativa ou ter sido interrompida/i)).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: /inspecionar execução/i }),
     ).not.toBeInTheDocument()

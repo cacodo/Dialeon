@@ -166,7 +166,10 @@ def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
 _RUN_SUMMARY_STATUS_LABELS: dict[str, str] = {
     "completed": "concluída",
     "insufficient_quorum": "quórum insuficiente",
-    "running": "em andamento",
+    # `status="running"` persistido prova só "aceita e sem desfecho terminal
+    # registrado" -- nunca que a execução está progredindo agora (mesma
+    # semântica neutra do histórico do frontend).
+    "running": "sem desfecho registrado",
     "failed": "falhou",
 }
 
@@ -177,7 +180,7 @@ def human_run_summary_list(runs: list) -> str:
     lines = []
     for run in runs:
         status = _RUN_SUMMARY_STATUS_LABELS.get(run.status, run.status)
-        lines.append(f"{run.id}  {status:20s}  {run.started_at.isoformat()}")
+        lines.append(f"{run.id}  {status:24s}  {run.started_at.isoformat()}")
     return "\n".join(lines)
 
 
@@ -189,11 +192,11 @@ def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
     if run.status == "running":
         return "\n".join(
             [
-                "status: em andamento",
+                "status: sem desfecho registrado",
                 f"run_id: {run.id}",
                 f"iniciada em: {run.started_at.isoformat()}",
-                "Nenhum desfecho terminal foi registrado ainda -- a execução pode "
-                "estar em andamento, ou o processo pode ter sido interrompido antes "
+                "Nenhum desfecho terminal foi registrado -- a execução pode ainda "
+                "estar ativa, ou o processo pode ter sido interrompido antes "
                 "de terminar; os dois casos são indistinguíveis a partir deste registro.",
                 _human_provider_execution_policy_line(run.provider_execution_policy),
             ]

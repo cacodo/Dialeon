@@ -149,13 +149,19 @@ export function RunDetail() {
       )}
 
       {run.status === 'running' && (
-        // T02.4 -- honestamente incompleto: em andamento, ou o processo
-        // morreu antes de terminar (indistinguíveis por design, ver
-        // AcceptedRunRow). Nunca inventa um desfecho que não existe.
+        // T02.4 -- "running" persistido prova só "aceita, sem desfecho
+        // terminal registrado": a execução pode ainda estar ativa ou ter
+        // sido interrompida (indistinguíveis por design, ver
+        // AcceptedRunRow). Nunca afirma progresso nem inventa desfecho --
+        // mesmo rótulo neutro do History.
         <section aria-labelledby="running-heading">
-          <h2 id="running-heading">Em andamento</h2>
+          <h2 id="running-heading">Sem desfecho registrado</h2>
           <p>Iniciada em {formatDateTime(run.started_at)}.</p>
-          <p>Nenhum desfecho terminal foi registrado ainda para esta execução.</p>
+          <p>
+            Nenhum desfecho terminal foi registrado para esta execução. Ela pode ainda estar
+            ativa ou ter sido interrompida; os dois casos são indistinguíveis a partir deste
+            registro.
+          </p>
           <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
         </section>
       )}
