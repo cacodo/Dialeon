@@ -3,10 +3,11 @@
 // Conversation é mantido entre submissões.
 
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
 import type { RunResponse } from '../api/types'
-import { formatErrorCode } from '../api/formatting'
+import { formatErrorCode, formatInvalidRequest } from '../api/formatting'
+import { parseReuseInput } from '../lib/reuseInput'
 import { RunComposer } from '../components/RunComposer'
 import { FinalAnswerView } from '../components/FinalAnswerView'
 import { AccountingView } from '../components/AccountingView'
@@ -19,6 +20,10 @@ type SubmissionState =
   | { phase: 'error'; message: string }
 
 export function Home() {
+  // Reuso de entrada vindo de "Reutilizar pergunta" (RunDetail) -- só os
+  // três campos do usuário; a submissão continua uma Run independente comum.
+  const location = useLocation()
+  const [initialInput] = useState(() => parseReuseInput(location.state))
   const [providers, setProviders] = useState<string[]>([])
   const [providersLoading, setProvidersLoading] = useState(true)
   const [providersError, setProvidersError] = useState<string | null>(null)
@@ -67,6 +72,8 @@ export function Home() {
           runId: runId ?? '',
           message: error.message,
         })
+      } else if (error instanceof ApiError && error.code === 'invalid_request') {
+        setSubmission({ phase: 'error', message: formatInvalidRequest(error.details) })
       } else if (error instanceof ApiError) {
         setSubmission({ phase: 'error', message: formatErrorCode(error.code) })
       } else {
@@ -82,6 +89,7 @@ export function Home() {
         providersLoading={providersLoading}
         providersError={providersError}
         submitting={submission.phase === 'submitting'}
+        initialInput={initialInput}
         onSubmit={handleSubmit}
       />
 

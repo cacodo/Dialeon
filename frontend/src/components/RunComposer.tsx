@@ -12,12 +12,22 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ProviderSelector } from './ProviderSelector'
+import {
+  MAX_QUESTION_CHARACTERS,
+  MAX_SOURCE_TEXT_CHARACTERS,
+  characterCount,
+  formatCharacterLimit,
+} from '../lib/inputLimits'
+import type { ReuseInput } from '../lib/reuseInput'
 
 interface RunComposerProps {
   providers: string[]
   providersLoading: boolean
   providersError: string | null
   submitting: boolean
+  // Reuso de ENTRADA do usuário (pergunta/fonte/participantes) -- ver
+  // lib/reuseInput.ts. Nunca contexto de Run anterior.
+  initialInput?: ReuseInput | null
   onSubmit: (question: string, enabledProviders: string[], sourceText: string | null) => void
 }
 
@@ -26,27 +36,44 @@ export function RunComposer({
   providersLoading,
   providersError,
   submitting,
+  initialInput = null,
   onSubmit,
 }: RunComposerProps) {
-  const [question, setQuestion] = useState('')
+  const [question, setQuestion] = useState(initialInput?.question ?? '')
   const [selected, setSelected] = useState<string[]>([])
   const hasInitializedSelection = useRef(false)
   // Etapa 16 -- divulgação progressiva: o campo de fonte só aparece
   // depois de um clique explícito, pra não sugerir que toda pergunta
   // precisa de uma fonte (a resposta continua answer-first mesmo sem
   // nenhuma fonte fornecida).
-  const [sourceExpanded, setSourceExpanded] = useState(false)
-  const [sourceText, setSourceText] = useState('')
+  const [sourceExpanded, setSourceExpanded] = useState(initialInput?.sourceText != null)
+  const [sourceText, setSourceText] = useState(initialInput?.sourceText ?? '')
 
   useEffect(() => {
     if (providers.length > 0 && !hasInitializedSelection.current) {
-      setSelected(providers)
+      // Reuso: só os participantes ainda disponíveis; se nenhum restar,
+      // cai no default de sempre (todos).
+      const reused = (initialInput?.enabledProviders ?? []).filter((p) => providers.includes(p))
+      setSelected(reused.length > 0 ? reused : providers)
       hasInitializedSelection.current = true
     }
-  }, [providers])
+  }, [providers, initialInput])
+
+  // Limites estáticos (espelham o backend -- ver lib/inputLimits.ts). O
+  // backend segue a autoridade; isto só evita um round-trip inútil. A fonte
+  // é contada já sem espaço nas pontas, exatamente como é enviada.
+  const questionCount = characterCount(question)
+  const sourceCount = characterCount(sourceText.trim())
+  const questionTooLong = questionCount > MAX_QUESTION_CHARACTERS
+  const sourceTooLong = sourceCount > MAX_SOURCE_TEXT_CHARACTERS
 
   const canSubmit =
-    question.trim().length > 0 && selected.length > 0 && !submitting && !providersLoading
+    question.trim().length > 0 &&
+    selected.length > 0 &&
+    !questionTooLong &&
+    !sourceTooLong &&
+    !submitting &&
+    !providersLoading
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -86,7 +113,22 @@ export function RunComposer({
           placeholder="Escreva sua pergunta…"
           rows={4}
           disabled={submitting}
+          aria-invalid={questionTooLong}
+          aria-describedby="question-limit"
         />
+        <p
+          id="question-limit"
+          className={`run-composer__limit${questionTooLong ? ' run-composer__limit--exceeded' : ''}`}
+        >
+          {formatCharacterLimit(questionCount)} / {formatCharacterLimit(MAX_QUESTION_CHARACTERS)}{' '}
+          caracteres
+        </p>
+        {questionTooLong && (
+          <p role="alert" className="run-composer__error">
+            A pergunta passa do limite de {formatCharacterLimit(MAX_QUESTION_CHARACTERS)} caracteres
+            ({formatCharacterLimit(questionCount)}). Reduza o texto para investigar.
+          </p>
+        )}
       </div>
 
       {/* Barra de configuração secundária -- fonte opcional e seleção de
@@ -133,13 +175,31 @@ export function RunComposer({
               placeholder="Cole um trecho de texto para comparar com as claims do debate…"
               rows={4}
               disabled={submitting}
+              aria-invalid={sourceTooLong}
+              aria-describedby="source-limit"
             />
+            <p
+              id="source-limit"
+              className={`run-composer__limit${sourceTooLong ? ' run-composer__limit--exceeded' : ''}`}
+            >
+              {formatCharacterLimit(sourceCount)} / {formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)}{' '}
+              caracteres
+            </p>
             <p className="run-composer__source-hint">
               A fonte é comparada com as afirmações do debate como um canal independente do
               julgamento -- não altera a avaliação do juiz, mas o relacionamento entre os dois
               pode aparecer na resposta final.
             </p>
           </div>
+        )}
+
+        {sourceTooLong && (
+          // Fora do painel colapsável: o erro nunca fica escondido se a fonte
+          // estiver recolhida.
+          <p role="alert" className="run-composer__error">
+            A fonte passa do limite de {formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)} caracteres (
+            {formatCharacterLimit(sourceCount)}). Abra “Fonte (opcional)” e reduza o texto.
+          </p>
         )}
 
         {providersError && (

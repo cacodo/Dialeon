@@ -2,7 +2,7 @@
 // audit só sob ação explícita, via InspectionPanel (lazy). Falha do
 // audit nunca apaga o detail já carregado -- são estados independentes.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
 import type { RunResponse } from '../api/types'
@@ -12,6 +12,8 @@ import { AccountingView } from '../components/AccountingView'
 import { InspectionPanel } from '../components/InspectionPanel'
 import { ProviderExecutionPolicyView } from '../components/ProviderExecutionPolicyView'
 import { isValidPage } from '../lib/safePage'
+import { buildReuseState } from '../lib/reuseInput'
+import { characterCount, formatCharacterLimit } from '../lib/inputLimits'
 
 function participantCountLabel(count: number): string {
   return `${count} participante${count === 1 ? '' : 's'} no debate`
@@ -42,11 +44,48 @@ type DetailState =
   | { phase: 'error'; message: string }
   | { phase: 'loaded'; run: RunResponse }
 
+// Atualização MANUAL de uma Run sem desfecho terminal registrado -- só um
+// reload explícito do registro persistido pela API existente. Nunca polling,
+// nunca progresso inventado, nunca uma alegação de que a execução está viva.
+type RefreshState =
+  | { phase: 'idle' }
+  | { phase: 'refreshing' }
+  | { phase: 'still_without_outcome' }
+  | { phase: 'error'; message: string }
+
 export function RunDetail() {
   const { runId } = useParams<{ runId: string }>()
   const location = useLocation()
   const backHref = historyBackHref(location.state)
   const [state, setState] = useState<DetailState>({ phase: 'loading' })
+  const [refresh, setRefresh] = useState<RefreshState>({ phase: 'idle' })
+  // Ignora o resultado de um refresh que terminou depois de a rota mudar/
+  // desmontar (mesma disciplina de `cancelled` do carregamento inicial).
+  const activeRunId = useRef<string | undefined>(runId)
+  useEffect(() => {
+    activeRunId.current = runId
+    return () => {
+      activeRunId.current = undefined
+    }
+  }, [runId])
+
+  async function handleRefresh() {
+    if (!runId) return
+    const requested = runId
+    setRefresh({ phase: 'refreshing' })
+    try {
+      const run = await apiClient.getRun(requested)
+      if (activeRunId.current !== requested) return
+      setState({ phase: 'loaded', run })
+      setRefresh(run.status === 'running' ? { phase: 'still_without_outcome' } : { phase: 'idle' })
+    } catch (error) {
+      if (activeRunId.current !== requested) return
+      setRefresh({
+        phase: 'error',
+        message: error instanceof ApiError ? formatErrorCode(error.code) : 'Erro inesperado.',
+      })
+    }
+  }
 
   useEffect(() => {
     if (!runId) return
@@ -115,6 +154,33 @@ export function RunDetail() {
       <h1 className="run-detail__question-label">Pergunta</h1>
       <p className="run-detail__question-text">{run.config.question}</p>
 
+      {run.config.source_text != null && run.config.source_text !== '' && (
+        // Entrada do USUÁRIO, fiel byte a byte, recolhida por padrão (pode ter
+        // até 20.000 caracteres). Nunca apresentada como evidência verificada.
+        <details className="run-detail__source">
+          <summary>
+            Fonte fornecida ({formatCharacterLimit(characterCount(run.config.source_text))}{' '}
+            caracteres)
+          </summary>
+          <p className="run-detail__source-note">
+            Texto que você forneceu para esta execução. Ele é comparado com as afirmações do
+            debate; não é verificado como verdadeiro.
+          </p>
+          <pre className="run-detail__source-text">{run.config.source_text}</pre>
+        </details>
+      )}
+
+      <p className="run-detail__reuse">
+        <Link to="/" state={buildReuseState(run.config)}>
+          Reutilizar pergunta
+        </Link>
+        <span className="run-detail__reuse-hint">
+          {' '}
+          Abre uma nova investigação com a pergunta, a fonte e os participantes desta execução.
+          Nada do resultado anterior é enviado.
+        </span>
+      </p>
+
       {run.status === 'completed' && (
         <>
           <FinalAnswerView finalAnswer={run.final_answer} />
@@ -162,6 +228,20 @@ export function RunDetail() {
             ativa ou ter sido interrompida; os dois casos são indistinguíveis a partir deste
             registro.
           </p>
+          <p>
+            <button
+              type="button"
+              className="run-detail__refresh"
+              onClick={handleRefresh}
+              disabled={refresh.phase === 'refreshing'}
+            >
+              {refresh.phase === 'refreshing' ? 'Atualizando…' : 'Atualizar registro'}
+            </button>
+          </p>
+          {refresh.phase === 'still_without_outcome' && (
+            <p role="status">Continua sem desfecho registrado.</p>
+          )}
+          {refresh.phase === 'error' && <p role="alert">{refresh.message}</p>}
           <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
         </section>
       )}

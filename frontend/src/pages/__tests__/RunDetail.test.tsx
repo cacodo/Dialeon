@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { RunDetail } from '../RunDetail'
 import { apiClient, ApiError } from '../../api/client'
 
@@ -446,6 +446,158 @@ describe('RunDetail', () => {
 
       await screen.findByText('Brasília é a capital do Brasil.')
       expect(screen.getByRole('link', { name: /histórico/i })).toHaveAttribute('href', '/runs')
+    })
+  })
+
+  describe('Atualização manual de Run sem desfecho registrado', () => {
+    it('oferece "Atualizar registro" só quando a Run está sem desfecho, e nunca afirma que está viva', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(runningRun)
+      renderDetail('run-3')
+
+      expect(await screen.findByRole('heading', { name: 'Sem desfecho registrado' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Atualizar registro' })).toBeInTheDocument()
+      expect(screen.queryByText(/em andamento|progresso|executando agora/i)).not.toBeInTheDocument()
+    })
+
+    it('não oferece atualização em Runs terminais', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+      renderDetail('run-1')
+
+      await screen.findByText('Brasília é a capital do Brasil.')
+      expect(screen.queryByRole('button', { name: /atualizar registro/i })).not.toBeInTheDocument()
+    })
+
+    it('atualizar faz um NOVO GET e, se a Run ficou terminal, renderiza o detalhe terminal normal', async () => {
+      vi.mocked(apiClient.getRun)
+        .mockResolvedValueOnce(runningRun)
+        .mockResolvedValueOnce({ ...completedRun, id: 'run-3' })
+      renderDetail('run-3')
+      await screen.findByRole('heading', { name: 'Sem desfecho registrado' })
+      expect(apiClient.getRun).toHaveBeenCalledTimes(1)
+
+      await userEvent.click(screen.getByRole('button', { name: 'Atualizar registro' }))
+
+      expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
+      expect(apiClient.getRun).toHaveBeenCalledTimes(2)
+      expect(apiClient.getRun).toHaveBeenLastCalledWith('run-3')
+      expect(screen.queryByRole('heading', { name: 'Sem desfecho registrado' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /atualizar registro/i })).not.toBeInTheDocument()
+    })
+
+    it('se continua sem desfecho, diz isso de forma neutra (sem alegar atividade)', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(runningRun)
+      renderDetail('run-3')
+      await screen.findByRole('heading', { name: 'Sem desfecho registrado' })
+
+      await userEvent.click(screen.getByRole('button', { name: 'Atualizar registro' }))
+
+      expect(await screen.findByText('Continua sem desfecho registrado.')).toBeInTheDocument()
+      expect(screen.queryByText(/em andamento|ativa agora|progress/i)).not.toBeInTheDocument()
+    })
+
+    it('falha ao atualizar mostra um erro seguro e mantém a visão sem desfecho', async () => {
+      vi.mocked(apiClient.getRun)
+        .mockResolvedValueOnce(runningRun)
+        .mockRejectedValueOnce(new ApiError(500, 'internal_error', 'boom', null))
+      renderDetail('run-3')
+      await screen.findByRole('heading', { name: 'Sem desfecho registrado' })
+
+      await userEvent.click(screen.getByRole('button', { name: 'Atualizar registro' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/algo deu errado/i)
+      expect(screen.getByRole('heading', { name: 'Sem desfecho registrado' })).toBeInTheDocument()
+    })
+
+    it('nunca faz polling: sem clique, só o GET inicial acontece', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        vi.mocked(apiClient.getRun).mockResolvedValue(runningRun)
+        renderDetail('run-3')
+        await screen.findByRole('heading', { name: 'Sem desfecho registrado' })
+
+        await vi.advanceTimersByTimeAsync(120_000)
+
+        expect(apiClient.getRun).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
+  describe('Reutilizar pergunta (reuso de ENTRADA, nunca continuidade)', () => {
+    it('o link leva à home com SÓ pergunta/fonte/participantes -- nenhum artefato de modelo, id ou lineage', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue({
+        ...completedRun,
+        config: { ...completedRun.config, source_text: 'Texto de fonte do usuário.' },
+      })
+      const onHomeState = vi.fn()
+      function Probe() {
+        onHomeState(useLocation().state)
+        return <p>home</p>
+      }
+      render(
+        <MemoryRouter initialEntries={['/runs/run-1']}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetail />} />
+            <Route path="/" element={<Probe />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+
+      await userEvent.click(await screen.findByRole('link', { name: 'Reutilizar pergunta' }))
+
+      expect(onHomeState).toHaveBeenLastCalledWith({
+        reuseInput: {
+          question: completedRun.config.question,
+          sourceText: 'Texto de fonte do usuário.',
+          enabledProviders: completedRun.config.enabled_providers,
+        },
+      })
+      expect(JSON.stringify(onHomeState.mock.calls.at(-1)?.[0])).not.toMatch(/run-1|Brasília|claim|verdict|parent/i)
+    })
+
+    it('está disponível também em Runs sem desfecho e falhas, e explica que nada do resultado anterior é enviado', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(failedRun)
+      renderDetail('run-4')
+
+      expect(await screen.findByRole('link', { name: 'Reutilizar pergunta' })).toBeInTheDocument()
+      expect(screen.getByText(/nada do resultado anterior é enviado/i)).toBeInTheDocument()
+      expect(screen.queryByText(/continuar (a )?conversa/i)).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Fonte fornecida pelo usuário', () => {
+    const SOURCE = 'Linha 1 da fonte.\n\n  Linha 3 com espaços e <b>tags</b> literais.'
+
+    it('fica recolhida por padrão e o usuário pode revelar o texto EXATO', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue({
+        ...completedRun,
+        config: { ...completedRun.config, source_text: SOURCE },
+      })
+      const { container } = renderDetail('run-1')
+      const details = await waitFor(() => {
+        const el = container.querySelector('details.run-detail__source')
+        expect(el).not.toBeNull()
+        return el as HTMLDetailsElement
+      })
+
+      expect(details.open).toBe(false)
+      expect(screen.getByText(/fonte fornecida/i)).toBeInTheDocument()
+      expect(screen.getByText(/não é verificado como verdadeiro/i)).toBeInTheDocument()
+
+      await userEvent.click(screen.getByText(/fonte fornecida/i))
+
+      expect(details.open).toBe(true)
+      expect(container.querySelector('pre.run-detail__source-text')?.textContent).toBe(SOURCE)
+    })
+
+    it('sem source_text não existe nenhuma seção de fonte', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+      const { container } = renderDetail('run-1')
+
+      await screen.findByText('Brasília é a capital do Brasil.')
+      expect(container.querySelector('.run-detail__source')).toBeNull()
+      expect(screen.queryByText(/fonte fornecida/i)).not.toBeInTheDocument()
     })
   })
 })

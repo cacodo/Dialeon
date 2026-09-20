@@ -452,6 +452,19 @@ main {
   color: var(--color-danger);
 }
 
+/* Contador de caracteres -- discreto; só ganha ênfase (cor + peso, nunca só
+   cor) quando excede o limite. */
+.run-composer__limit {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  margin: var(--space-1) 0 0;
+}
+
+.run-composer__limit--exceeded {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
 /* Participantes reusa inteiramente a afordância compartilhada
    (`.run-composer__control-toggle` / `.run-composer__control-panel`) --
    as únicas regras próprias que sobram aqui são as que não têm
@@ -480,6 +493,46 @@ main {
   font-size: var(--font-size-md);
   line-height: var(--line-height-base);
   margin: 0 0 var(--space-4);
+}
+
+/* Fonte fornecida pelo usuário -- recolhida por padrão; o texto (até 20.000
+   caracteres) rola dentro de uma caixa própria e nunca domina a página. */
+.run-detail__source {
+  margin: 0 0 var(--space-4);
+}
+
+.run-detail__source summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--space-1) 0;
+}
+
+.run-detail__source-note {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.run-detail__source-text {
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 6px);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
+.run-detail__reuse {
+  margin: 0 0 var(--space-4);
+}
+
+.run-detail__reuse-hint {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
 }
 
 /* Resposta -- superfície de leitura primária (UI Slice 2): mais elevação

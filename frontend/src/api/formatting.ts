@@ -4,6 +4,7 @@
 // legível, sem nunca inventar semântica que o backend não registrou
 // (EXPLAIN FROM PROVENANCE, DO NOT INVENT POST-HOC REASONING).
 
+import { MAX_QUESTION_CHARACTERS, MAX_SOURCE_TEXT_CHARACTERS, formatCharacterLimit } from '../lib/inputLimits'
 import type {
   ChannelRelationship,
   ClaimVerdict,
@@ -220,6 +221,38 @@ const ERROR_CODE_LABELS: Record<ErrorCode | 'unknown', string> = {
 
 export function formatErrorCode(code: ErrorCode | 'unknown'): string {
   return ERROR_CODE_LABELS[code] ?? ERROR_CODE_LABELS.unknown
+}
+
+// `invalid_request` do servidor -> mensagem útil e ESPECÍFICA POR CAMPO, sem
+// expor a estrutura crua de validação (loc/type/msg do framework). Só o NOME
+// do campo (último elemento de `loc`) é usado; qualquer forma inesperada cai
+// no rótulo genérico existente.
+export function formatInvalidRequest(details: Record<string, unknown> | null): string {
+  const errors = details?.errors
+  const fields = new Set<string>()
+  if (Array.isArray(errors)) {
+    for (const entry of errors) {
+      const loc = (entry as { loc?: unknown } | null)?.loc
+      if (Array.isArray(loc) && typeof loc[loc.length - 1] === 'string') {
+        fields.add(loc[loc.length - 1] as string)
+      }
+    }
+  }
+  const messages: string[] = []
+  if (fields.has('question')) {
+    messages.push(
+      `A pergunta não é válida: não pode estar em branco nem passar de ${formatCharacterLimit(MAX_QUESTION_CHARACTERS)} caracteres.`,
+    )
+  }
+  if (fields.has('source_text')) {
+    messages.push(
+      `A fonte não é válida: não pode passar de ${formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)} caracteres.`,
+    )
+  }
+  if (fields.has('enabled_providers')) {
+    messages.push('Escolha ao menos um participante, sem repetições.')
+  }
+  return messages.length > 0 ? messages.join(' ') : ERROR_CODE_LABELS.invalid_request
 }
 
 export function formatDateTime(iso: string): string {
