@@ -182,14 +182,14 @@ def test_claim_grouping_contract_version_and_golden_digest():
 
 
 # ---------------------------------------------------------------------------
-# 5. cross_round_claim_reconciliation_v1
+# 5. cross_round_claim_reconciliation_v2 (v1 histórico: golden `84a708fd...`)
 # ---------------------------------------------------------------------------
 
 
 def test_cross_round_reconciliation_contract_version_and_golden_digest():
     assert (
         CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION
-        == "cross_round_claim_reconciliation_v1"
+        == "cross_round_claim_reconciliation_v2"
     )
 
     round1 = [
@@ -214,7 +214,7 @@ def test_cross_round_reconciliation_contract_version_and_golden_digest():
 
     assert compute_request_digest(request) == (
         "completion-request-sha256-v2:"
-        "84a708fdab3129f357a67b3563b4b366d5e44f517c56869fe11b866b4e6b6dcb"
+        "66bff54b8f39ddcf0779a92a50afd095abcc4eb37ee95549358c006072fc0d9f"
     )
 
 

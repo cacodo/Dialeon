@@ -24,10 +24,10 @@ _IO_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True)
 # `claim_extraction.py:extract_claims`). Única fonte de verdade deste
 # número -- o prompt de extração (`_build_extraction_request`) referencia
 # esta MESMA constante, nunca um "12" literal duplicado que poderia
-# divergir do schema. Nunca aplicado a `ClaimGroupingOutput` (agrupamento/
-# reconciliação): aquele schema exige cobertura de TODAS as claims brutas
-# dadas como entrada, um contrato estruturalmente diferente que não tem
-# teto de cardinalidade -- ver docstring de `ClaimGroupingOutput`.
+# divergir do schema. Nunca aplicado aos schemas de agrupamento
+# (`ClaimGroupingPartitionOutput`, partição exata de TODAS as claims) nem de
+# reconciliação (`CrossRoundEquivalenceProposalOutput`, propostas esparsas):
+# contratos estruturalmente diferentes, sem teto de cardinalidade.
 MAX_EXTRACTED_CLAIMS = 12
 
 
@@ -77,18 +77,6 @@ class ClaimExtractionOutput(BaseModel):
     claims: list[ExtractedClaimDraft] = Field(default_factory=list, max_length=MAX_EXTRACTED_CLAIMS)
 
 
-class ClaimGroupProposal(BaseModel):
-    """Um grupo de claims brutas que a LLM considera semanticamente
-    equivalentes. `member_claim_ids` exige no mínimo 2: um "grupo" de 1
-    membro não funde nada — claims que não têm equivalente ficam em
-    `ClaimGroupingOutput.ungrouped_claim_ids`, não aqui."""
-
-    model_config = _IO_CONFIG
-
-    member_claim_ids: list[str] = Field(min_length=2)
-    canonical_text: str = Field(min_length=1)
-
-
 class ClaimGroupingPartitionOutput(BaseModel):
     """claim_grouping_v4 -- saída do agrupamento intra-round: UMA partição
     exata das claims de entrada em `clusters` (lista de listas de ids).
@@ -117,14 +105,31 @@ class ClaimGroupingPartitionOutput(BaseModel):
     clusters: list[Annotated[list[str], Field(min_length=1)]]
 
 
-class ClaimGroupingOutput(BaseModel):
-    """Resultado de uma chamada de agrupamento. A aplicação valida, depois
-    de parsear isto, que a união de `groups` + `ungrouped_claim_ids` é
-    EXATAMENTE igual ao conjunto de claims brutas dadas como entrada — sem
-    sobra, sem falta, sem duplicata entre grupos (ver
-    app/debate/claim_extraction.py:_validate_grouping_references)."""
+class CrossRoundEquivalenceProposalOutput(BaseModel):
+    """cross_round_claim_reconciliation_v2 -- saída da reconciliação
+    cross-round: PROPOSTAS ESPARSAS e POSITIVAS de equivalência entre
+    rodadas, nunca uma partição completa e nunca uma reescrita de claims.
 
-    model_config = _IO_CONFIG
+    Forma: `{"equivalence_clusters": [["r1-id", "r2-id"], ...]}`.
+    - `equivalence_clusters` é OBRIGATÓRIO; `[]` é válido ("nenhuma relação
+      proposta");
+    - cada cluster tem >= 2 ids (cluster vazio/unitário -> rejeitado pelo
+      schema); cruzar rodadas, ids elegíveis e unicidade global são validados
+      em `_parse_and_validate_reconciliation_equivalence`
+      (app/debate/claim_extraction.py);
+    - sem `canonical_text`, sem `ungrouped_claim_ids`, chave extra proibida.
 
-    groups: list[ClaimGroupProposal] = Field(default_factory=list)
-    ungrouped_claim_ids: list[str] = Field(default_factory=list)
+    Uma claim NÃO mencionada significa SOMENTE "nenhuma relação foi
+    proposta" -- nunca "verificada como não relacionada", nem contradição,
+    nem claim nova, nem evidência negativa. Um cluster é uma PROPOSTA
+    consultiva e auditável do modelo, nunca equivalência verificada nem
+    consenso: NÃO cria claim, NÃO une nem transfere suporte, NÃO cria
+    `parent_claim_id`/revisão e NÃO altera o conjunto de claims atuais.
+
+    Config PRÓPRIA (não `_IO_CONFIG`): SEM `str_strip_whitespace` -- ids
+    precisam casar EXATAMENTE com os elegíveis (nenhum " id"/"id\n" vira
+    "id" em silêncio). Escopo: só este schema."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+    equivalence_clusters: list[Annotated[list[str], Field(min_length=2)]]

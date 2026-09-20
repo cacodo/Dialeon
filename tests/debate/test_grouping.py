@@ -509,9 +509,15 @@ async def test_whitespace_altered_partition_twice_fails_closed():
 
 
 def test_other_schemas_keep_their_whitespace_stripping_config():
-    """A mudança é ESCOPADA ao schema da partição v4: reconciliação e demais
-    contratos históricos continuam com `_IO_CONFIG`."""
-    from app.debate.schemas import ClaimGroupingOutput, ClaimGroupingPartitionOutput
+    """A mudança é ESCOPADA aos schemas de ids exatos (partição v4 e
+    equivalência de reconciliação v2): o schema de extração continua com
+    `_IO_CONFIG` (strip habilitado)."""
+    from app.debate.schemas import (
+        ClaimExtractionOutput,
+        ClaimGroupingPartitionOutput,
+        CrossRoundEquivalenceProposalOutput,
+    )
 
     assert ClaimGroupingPartitionOutput.model_config.get("str_strip_whitespace") is False
-    assert ClaimGroupingOutput.model_config.get("str_strip_whitespace") is True
+    assert CrossRoundEquivalenceProposalOutput.model_config.get("str_strip_whitespace") is False
+    assert ClaimExtractionOutput.model_config.get("str_strip_whitespace") is True

@@ -160,8 +160,9 @@ def test_no_canonical_claim_path_is_reachable_from_group_claims():
     assert "_run_structured_grouping_call" in from_grouping  # sanidade do grafo
     for forbidden in ("_build_canonical_claim", "_merge_supports", "_compute_status"):
         assert forbidden not in from_grouping, forbidden
-    # reconciliação (fora do escopo desta slice) continua usando a construção canônica
-    assert "_build_canonical_claim" in from_reconciliation
+        # reconciliation v2 também é consultiva: o caminho destrutivo v1 não existe mais
+        assert forbidden not in from_reconciliation, forbidden
+        assert not hasattr(ce, forbidden), forbidden
 
 
 def test_debate_engine_round_processing_only_uses_raw_claims():
@@ -205,9 +206,8 @@ def _processor(cluster_style: str, captured: dict):
         if "CLAIMS_ATUAIS" in content:
             payload = json.loads(content.split("rodada de crítica combinadas):\n", 1)[1])
             captured.setdefault("reconciliation_payloads", []).append(payload)
-            ids = [c["id"] for c in payload]
-            # reconciliação (fora do escopo): tudo ungrouped (formato próprio dela)
-            return _ok("claude-processor", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            # reconciliação v2: nenhuma relação proposta
+            return _ok("claude-processor", json.dumps({"equivalence_clusters": []}))
         if "CLAIMS_BRUTAS" in content:
             payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
             captured.setdefault("grouping_payloads", []).append(payload)

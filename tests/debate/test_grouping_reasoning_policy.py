@@ -343,15 +343,15 @@ async def test_anthropic_never_sends_thinking_for_the_reconciliation_request():
 # ---------------------------------------------------------------------------
 
 
-def test_reconciliation_request_and_contract_are_unchanged():
+def test_reconciliation_execution_policy_is_unchanged_only_its_contract_advanced():
     round1 = [raw_claim("A", "resp-1", provider="openai", id="r1-a")]
     round2 = [raw_claim("B", "resp-2", provider="anthropic", id="r2-b", round_introduced=2)]
 
     request = _build_reconciliation_request(round1, round2, 8192)
 
-    assert request.minimal_reasoning is False
+    assert request.minimal_reasoning is False  # NÃO copia o flag do agrupamento
     assert request.max_tokens == 8192
-    assert CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION == "cross_round_claim_reconciliation_v1"
+    assert CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION == "cross_round_claim_reconciliation_v2"
     assert CLAIM_GROUPING_CONTRACT_VERSION != CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION
 
 
@@ -434,9 +434,7 @@ async def test_grouping_transport_stays_the_provider_default_policy():
 async def test_reconciliation_transport_stays_the_provider_default_policy():
     round1 = [raw_claim("A", "resp-1", provider="openai")]
     round2 = [raw_claim("B", "resp-2", provider="anthropic", round_introduced=2)]
-    payload = json.dumps(
-        {"groups": [], "ungrouped_claim_ids": [round1[0].id, round2[0].id]}
-    )
+    payload = json.dumps({"equivalence_clusters": []})
     provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
 
     await reconcile_claims(
@@ -448,8 +446,6 @@ async def test_reconciliation_transport_stays_the_provider_default_policy():
         prior_input_tokens=0,
         prior_output_tokens=0,
         prior_cost_usd=0.0,
-        total_models_in_round=3,
-        support_scope_model_count=3,
     )
 
     sent = provider.received_requests[0]

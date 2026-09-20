@@ -93,7 +93,8 @@ def _ungrouped_response(provider_name: str, content: str, split_marker: str) -> 
     if split_marker == "CLAIMS_BRUTAS:\n":
         # claim_grouping_v4 -- partição exata, tudo em clusters unitários
         return _ok(provider_name, _all_singleton_clusters(ids))
-    return _ok(provider_name, json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+    # cross_round_claim_reconciliation_v2 -- nenhuma relação proposta
+    return _ok(provider_name, json.dumps({"equivalence_clusters": []}))
 
 
 def _normal_processing_handler(provider_name: str, debate_text: str):
@@ -695,9 +696,7 @@ async def test_partial_extraction_coverage_is_disclosed_while_debate_proceeds_no
             ids = [c["id"] for c in payload]
             return _ok("anthropic", _all_singleton_clusters(ids))
         if "CLAIMS_ATUAIS" in content:
-            payload = json.loads(content.split("rodada de crítica combinadas):\n", 1)[1])
-            ids = [c["id"] for c in payload]
-            return _ok("anthropic", json.dumps({"groups": [], "ungrouped_claim_ids": ids}))
+            return _ok("anthropic", json.dumps({"equivalence_clusters": []}))
         if "RESPOSTA_A_ANALISAR" in content:
             if "resposta de GEMINI" in content:
                 return _ok("anthropic", "isto não é JSON válido")
