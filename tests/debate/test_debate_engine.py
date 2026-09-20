@@ -74,44 +74,15 @@ async def _err_coro(provider_name: str) -> ProviderResponse:
     return _err(provider_name)
 
 
-def _all_singleton_clusters(ids: list[str]) -> str:
-    """Resposta válida do agrupamento v4 sem nenhuma proposta de equivalência."""
-    return json.dumps({"clusters": [[i] for i in ids]})
-
-
-def _ungrouped_response(provider_name: str, content: str, split_marker: str) -> ProviderResponse:
-    """Resposta padrão de agrupamento/reconciliação: devolve TODOS os ids
-    recebidos em `ungrouped_claim_ids`, sem nenhuma fusão -- merge/
-    reconciliação com fusão real já são testados à parte
-    (test_grouping.py, test_claim_extraction.py). Compartilhada entre
-    `_normal_processing_handler`/`_capturing_handler` pras duas formas de
-    chamada que compartilham o mesmo `ClaimGroupingOutput`
-    (agrupamento="CLAIMS_BRUTAS:\\n", reconciliação="CLAIMS_ATUAIS ..." --
-    ver `split_marker`)."""
-    payload = json.loads(content.split(split_marker, 1)[1])
-    ids = [c["id"] for c in payload]
-    if split_marker == "CLAIMS_BRUTAS:\n":
-        # claim_grouping_v4 -- partição exata, tudo em clusters unitários
-        return _ok(provider_name, _all_singleton_clusters(ids))
-    # cross_round_claim_reconciliation_v2 -- nenhuma relação proposta
-    return _ok(provider_name, json.dumps({"equivalence_clusters": []}))
-
-
 def _normal_processing_handler(provider_name: str, debate_text: str):
-    """Handler padrão: extração devolve 1 claim; agrupamento E
-    reconciliação (cross-round) devolvem tudo em ungrouped_claim_ids (sem
-    fusão — fusão já é testada à parte em test_grouping.py/
-    test_claim_extraction.py); qualquer outra chamada é tratada como
-    resposta de debate normal (rodada inicial ou crítica)."""
+    """Handler padrão: extração devolve 1 claim; qualquer outra chamada é
+    tratada como resposta de debate normal (rodada inicial ou crítica).
+    Agrupamento e reconciliação cross-round NÃO existem mais na execução
+    corrente -- se uma dessas chamadas fosse agendada, o corpo dela cairia
+    aqui como "resposta de debate" e quebraria as contagens de attempts."""
 
     async def handler(call_index: int, request) -> ProviderResponse:
         content = request.messages[0].content
-        if "CLAIMS_BRUTAS" in content:
-            return _ungrouped_response(provider_name, content, "CLAIMS_BRUTAS:\n")
-        if "CLAIMS_ATUAIS" in content:
-            return _ungrouped_response(
-                provider_name, content, "rodada de crítica combinadas):\n"
-            )
         if "RESPOSTA_A_ANALISAR" in content:
             text = json.dumps(
                 {"claims": [{"text": f"claim de {provider_name}", "revises_claim_id": None}]}
@@ -126,30 +97,15 @@ def _make_provider(name: str, debate_text: str) -> CallableProvider:
     return CallableProvider(name, _normal_processing_handler(name, debate_text))
 
 
-def _capturing_handler(provider_name: str, debate_text: str, captured_grouping_max_tokens: list):
+def _capturing_handler(provider_name: str, debate_text: str, captured_max_tokens: list):
     """Igual a `_normal_processing_handler`, mas guarda o `max_tokens`
-    enviado em CADA chamada de agrupamento OU reconciliação (as duas
-    compartilham `max_output_tokens_grouping`, ver
-    app/debate/debate_engine.py) -- pra provar que essas chamadas usam
-    `max_output_tokens_grouping`, distinto do `max_output_tokens_per_call`
-    geral usado pra extração/crítica."""
+    enviado em CADA chamada -- pra provar que nenhuma chamada usa mais o
+    teto `max_output_tokens_grouping` (não há mais agrupamento/reconciliação
+    na execução corrente) e que a extração usa o teto geral."""
 
     async def handler(call_index: int, request) -> ProviderResponse:
-        content = request.messages[0].content
-        if "CLAIMS_BRUTAS" in content:
-            captured_grouping_max_tokens.append(request.max_tokens)
-            return _ungrouped_response(provider_name, content, "CLAIMS_BRUTAS:\n")
-        if "CLAIMS_ATUAIS" in content:
-            captured_grouping_max_tokens.append(request.max_tokens)
-            return _ungrouped_response(
-                provider_name, content, "rodada de crítica combinadas):\n"
-            )
-        if "RESPOSTA_A_ANALISAR" in content:
-            text = json.dumps(
-                {"claims": [{"text": f"claim de {provider_name}", "revises_claim_id": None}]}
-            )
-            return _ok(provider_name, text)
-        return _ok(provider_name, debate_text)
+        captured_max_tokens.append(request.max_tokens)
+        return await _normal_processing_handler(provider_name, debate_text)(call_index, request)
 
     return handler
 
@@ -189,14 +145,13 @@ async def test_full_flow_3_of_3_runs_critique_and_produces_claims():
     assert result.critique_round is not None
     assert result.critique_round.critique_obtained is True
     assert result.critique_round.coverage_ratio == 1.0
-    # 3 claims da rodada 1 + 3 claims da rodada 2 (extração simples, sem merge) +
-    # reconciliação cross-round sem fusão (fake handler devolve tudo
-    # ungrouped) -- claims inalteradas
+    # 3 claims da rodada 1 + 3 claims da rodada 2 (extração simples; nenhuma
+    # fusão/agrupamento/reconciliação existe na execução corrente)
     assert len(result.claims) == 6
-    # 3 extrações + 1 agrupamento por rodada (8) + 1 reconciliação
-    # cross-round (ambos os lados -- R1 e R2 -- têm claims atuais) = 9
-    # attempts, todos aceitos
-    assert len(result.claim_processing_attempts) == 9
+    # SÓ extrações: 3 por rodada = 6 attempts, todos aceitos, nenhum
+    # attempt de agrupamento/reconciliação
+    assert len(result.claim_processing_attempts) == 6
+    assert {a.operation for a in result.claim_processing_attempts} == {"extraction"}
     assert all(a.parse_status == "accepted" for a in result.claim_processing_attempts)
     assert all(a.provider == "anthropic" for a in result.claim_processing_attempts)
 
@@ -267,10 +222,6 @@ async def test_critique_coverage_1_of_3():
 async def test_critique_coverage_0_of_3_does_not_raise_and_debate_still_returns():
     async def anthropic_flaky_critique(call_index, request):
         content = request.messages[0].content
-        if "CLAIMS_BRUTAS" in content:
-            payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
-            ids = [c["id"] for c in payload]
-            return _ok("anthropic", _all_singleton_clusters(ids))
         if "RESPOSTA_A_ANALISAR" in content:
             return _ok(
                 "anthropic",
@@ -387,25 +338,21 @@ async def _budget_example_handler(call_index: int, request) -> ProviderResponse:
         assert "RESPOSTA_A_ANALISAR" in content
         text = json.dumps({"claims": [{"text": "Brasília é a capital.", "revises_claim_id": None}]})
         return _ok("anthropic", text, input_tokens=1500, output_tokens=500)
-    if call_index == 3:
-        assert "CLAIMS_BRUTAS" in content
-        payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
-        ids = [c["id"] for c in payload]
-        text = _all_singleton_clusters(ids)
-        return _ok("anthropic", text, input_tokens=700, output_tokens=300)
-    raise AssertionError(f"chamada inesperada nº {call_index}")
+    # a partir daqui (só alcançável se o gate de budget deixar a crítica
+    # rodar): crítica + extração da crítica. NUNCA agrupamento/reconciliação.
+    assert "CLAIMS_BRUTAS" not in content and "CLAIMS_ATUAIS" not in content
+    if "RESPOSTA_A_ANALISAR" in content:
+        text = json.dumps({"claims": [{"text": "Brasília segue a capital.", "revises_claim_id": None}]})
+        return _ok("anthropic", text, input_tokens=100, output_tokens=50)
+    return _ok("anthropic", "crítica: mantenho a resposta.", input_tokens=200, output_tokens=100)
 
 
 @pytest.mark.asyncio
 async def test_budget_gate_considers_all_calls_not_just_initial_result():
     """round1=4000 (3000+1000) + extraction=2000 (1500+500) = 6000 já
-    esgota max_total_tokens=6000 -- Etapa 17A (B2): o agrupamento agora é
-    gateado TAMBÉM antes de começar, então nem chega a ser chamado (só
-    2 chamadas reais, não 3). Nome do teste preservado -- o ponto
-    original (o gate de budget antes da crítica precisa enxergar TODAS
-    as chamadas de processamento, não só InitialResponsesResult) continua
-    verdadeiro e testado aqui, só que agora o agrupamento em si já para
-    de rodar antes disso."""
+    esgota max_total_tokens=6000 -- o gate de budget antes da crítica
+    precisa enxergar TODAS as chamadas de processamento (extração), não só
+    InitialResponsesResult (2 chamadas reais; agrupamento não existe mais)."""
     providers = {"anthropic": CallableProvider("anthropic", _budget_example_handler)}
     engine = DebateEngine(providers)
     run_config = _run_config(
@@ -421,18 +368,16 @@ async def test_budget_gate_considers_all_calls_not_just_initial_result():
     assert result.debate_skipped_reason == "budget_exhausted_before_critique"
     assert result.critique_round is None
     assert result.cumulative_budget_exceeded is True
-    assert result.cumulative_input_tokens == 3000 + 1500  # agrupamento não rodou
+    assert result.cumulative_input_tokens == 3000 + 1500
     assert result.cumulative_output_tokens == 1000 + 500
-    assert providers["anthropic"].call_count == 2  # rodada inicial + extração, sem agrupamento
+    assert providers["anthropic"].call_count == 2  # rodada inicial + extração
 
 
 @pytest.mark.asyncio
-async def test_budget_gate_blocks_grouping_specifically_when_extraction_alone_exhausts():
-    """Etapa 17A (B2), caso específico: budget suficiente pra rodada
-    inicial + extração, mas exatamente esgotado depois disso -- prova
-    que o agrupamento não roda (chamada nº 3 nunca acontece), distinto
-    do gate antes da crítica (que roda depois, sobre o total já
-    reduzido)."""
+async def test_budget_gate_skips_critique_when_initial_round_plus_extraction_exhaust_exactly():
+    """Budget suficiente pra rodada inicial + extração, mas exatamente
+    esgotado depois disso -- a crítica não roda (chamada nº 3 nunca
+    acontece)."""
     providers = {"anthropic": CallableProvider("anthropic", _budget_example_handler)}
     engine = DebateEngine(providers)
     run_config = _run_config(
@@ -462,7 +407,8 @@ async def test_budget_not_exceeded_allows_critique_to_proceed():
 
     assert result.debate_skipped_reason is None
     assert result.critique_round is not None
-    assert providers["anthropic"].call_count > 3
+    # rodada inicial + extração + crítica + extração da crítica -- nada mais
+    assert providers["anthropic"].call_count == 4
 
 
 # ---------------------------------------------------------------------------
@@ -522,10 +468,9 @@ async def test_budget_gate_a_initial_round_alone_exhausts_blocks_extraction():
 
 
 @pytest.mark.asyncio
-async def test_budget_gate_b_extraction_alone_exhausts_blocks_grouping():
-    """Etapa 17A (B2), caso B: extração sozinha já leva o total acima do
-    budget -- agrupamento nunca é chamado (call_count == 2, rodada
-    inicial + extração, sem agrupamento)."""
+async def test_budget_gate_b_extraction_alone_exhausts_skips_critique():
+    """Caso B: extração sozinha já leva o total acima do budget -- a
+    crítica nunca é chamada (call_count == 2, rodada inicial + extração)."""
     providers = {"anthropic": CallableProvider("anthropic", _budget_example_handler)}
     engine = DebateEngine(providers)
     run_config = _run_config(
@@ -536,7 +481,7 @@ async def test_budget_gate_b_extraction_alone_exhausts_blocks_grouping():
 
     result = await engine.run(run_config)
 
-    assert providers["anthropic"].call_count == 2  # rodada inicial + extração, sem agrupamento
+    assert providers["anthropic"].call_count == 2  # rodada inicial + extração
 
 
 # ---------------------------------------------------------------------------
@@ -545,12 +490,11 @@ async def test_budget_gate_b_extraction_alone_exhausts_blocks_grouping():
 
 
 @pytest.mark.asyncio
-async def test_grouping_call_uses_max_output_tokens_grouping_not_the_general_ceiling():
-    """`max_output_tokens_per_call` (geral, usado por extração/crítica) e
-    `max_output_tokens_grouping` (próprio do agrupamento) precisam ser
-    valores DIFERENTES forwarded pra CompletionRequest.max_tokens
-    corretos -- prova direta de que debate_engine._process_round lê o
-    campo certo do RunConfig pra cada tipo de chamada."""
+async def test_no_call_uses_max_output_tokens_grouping_and_extraction_keeps_the_general_ceiling():
+    """`max_output_tokens_grouping` continua um campo de RunConfig (compat
+    de reconstrução de runs históricas), mas NENHUMA chamada da execução
+    corrente o usa: agrupamento/reconciliação não são mais agendados. A
+    extração segue no teto GERAL (`max_output_tokens_per_call`)."""
     captured: list[int] = []
     providers = {
         "anthropic": CallableProvider(
@@ -569,19 +513,9 @@ async def test_grouping_call_uses_max_output_tokens_grouping_not_the_general_cei
 
     await engine.run(run_config)
 
-    assert captured  # a chamada de agrupamento realmente aconteceu
-    assert all(max_tokens == 8000 for max_tokens in captured)
-    # confirma que os dois tetos são de fato distintos nesta chamada
-    assert 8000 != run_config.max_output_tokens_per_call
-
-    # extração continua usando o teto GERAL, não o de agrupamento
-    extraction_requests = [
-        req
-        for req in providers["anthropic"].received_requests
-        if "RESPOSTA_A_ANALISAR" in req.messages[0].content
-    ]
-    assert extraction_requests
-    assert all(req.max_tokens == 1024 for req in extraction_requests)
+    assert captured  # a execução realmente fez chamadas
+    assert 8000 not in captured
+    assert all(max_tokens == 1024 for max_tokens in captured)
 
 
 # ---------------------------------------------------------------------------
@@ -691,12 +625,6 @@ async def test_partial_extraction_coverage_is_disclosed_while_debate_proceeds_no
 
     async def processor_handler(call_index: int, request) -> ProviderResponse:
         content = request.messages[0].content
-        if "CLAIMS_BRUTAS" in content:
-            payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
-            ids = [c["id"] for c in payload]
-            return _ok("anthropic", _all_singleton_clusters(ids))
-        if "CLAIMS_ATUAIS" in content:
-            return _ok("anthropic", json.dumps({"equivalence_clusters": []}))
         if "RESPOSTA_A_ANALISAR" in content:
             if "resposta de GEMINI" in content:
                 return _ok("anthropic", "isto não é JSON válido")
@@ -776,18 +704,14 @@ async def test_round_one_success_is_never_masked_by_total_critique_extraction_fa
 
     async def processor_handler(call_index: int, request) -> ProviderResponse:
         content = request.messages[0].content
-        if "CLAIMS_BRUTAS" in content:
-            payload = json.loads(content.split("CLAIMS_BRUTAS:\n", 1)[1])
-            ids = [c["id"] for c in payload]
-            return _ok("anthropic", _all_singleton_clusters(ids))
         if "RESPOSTA_A_ANALISAR" in content:
             # Diferencia rodada 1 de rodada de crítica por `call_index`,
             # nunca por conteúdo do texto -- as 2 primeiras chamadas de
             # extração deste processor são SEMPRE as da rodada 1 (mesma
             # ordem determinística já usada por `_budget_example_handler`
             # acima: dispatch da rodada 1 termina, DEPOIS extração roda
-            # sequencialmente por resposta, DEPOIS agrupamento -- tudo
-            # `await`ado em sequência, nunca concorrente). As chamadas de
+            # sequencialmente por resposta -- tudo `await`ado em sequência,
+            # nunca concorrente). As chamadas de
             # extração seguintes (rodada de crítica) sempre falham,
             # exercitando falha TOTAL da crítica sem afetar a rodada 1.
             if call_index <= 2:

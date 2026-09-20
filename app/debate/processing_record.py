@@ -1,6 +1,8 @@
 """
 `ClaimProcessingAttempt` — registro de auditoria de UMA chamada real do
-claim processor (extração ou agrupamento), Etapa 5.
+claim processor (extração; `grouping`/`reconciliation` são operações
+HISTÓRICAS -- não são mais executadas, mas runs antigas as persistiram e
+elas continuam legíveis), Etapa 5.
 
 Deliberadamente NÃO é um `ModelResponse`: chamadas de processamento nunca
 participam de rodada de debate, nunca são supporter de nenhuma Claim,

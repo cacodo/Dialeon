@@ -144,7 +144,7 @@ class RunConfig(BaseModel):
     inteira do Council: reinicia de forma INDEPENDENTE a cada rodada
     (mesmo valor aplicado de novo, nunca um orçamento compartilhado ou
     decrescente entre rodadas) e não cobre NENHUMA das fases fora do
-    dispatch de rodada -- extração de claims, agrupamento, Source
+    dispatch de rodada -- extração de claims, Source
     Analysis, Judge, Editor rodam depois/entre rodadas e usam só o
     timeout por chamada de `provider_timeout_seconds`
     (`app/config.py`), nunca este campo. Se estourar, o Orchestrator
@@ -172,19 +172,18 @@ class RunConfig(BaseModel):
       participante/crítica. `max_output_tokens_per_call` continua 4096
       (inalterado por este repair) -- a correção foi limitar
       CARDINALIDADE + raciocínio da chamada, nunca aumentar o teto.
-    - `max_output_tokens_grouping`/`max_output_tokens_judge` (Etapa
-      17A.2): tetos PRÓPRIOS, separados de `max_output_tokens_per_call`,
-      usados respectivamente pela chamada de agrupamento
-      (`app/debate/claim_extraction.py:group_claims`) e pela chamada do
-      Judge (`app/judge/single_judge.py`). Investigação confirmou que
-      essas duas operações têm schema de output com cobertura
-      OBRIGATÓRIA (uma entrada por claim bruta/atual) — o tamanho mínimo
-      exigido do output cresce com a contagem de claims, então
-      compartilhar o mesmo teto fixo de uma chamada sem essa cobertura as
-      deixava estruturalmente mais propensas a truncamento. Continuam
-      valores FIXOS e config-driven (nenhum cálculo dinâmico por
-      contagem de claims, nenhuma alocação adaptativa) — só reconhecem
-      que são operações de natureza diferente.
+    - `max_output_tokens_judge` (Etapa 17A.2): teto PRÓPRIO, separado de
+      `max_output_tokens_per_call`, usado pela chamada do Judge
+      (`app/judge/single_judge.py`) -- o schema de output do Judge tem
+      cobertura OBRIGATÓRIA (uma entrada por claim atual), então o
+      tamanho mínimo do output cresce com a contagem de claims. Valor
+      FIXO e config-driven (nenhum cálculo dinâmico por contagem de
+      claims, nenhuma alocação adaptativa).
+    - `max_output_tokens_grouping` (Etapa 17A.2): campo MANTIDO só para
+      reconstruir RunConfig/runs históricas -- o agrupamento e a
+      reconciliação cross-round foram removidos da execução corrente e
+      NENHUMA chamada atual o usa (historicamente era o teto dessas duas
+      operações, que também tinham schema de cobertura obrigatória).
     - `max_total_tokens`: orçamento AGREGADO da execução inteira (soma
       de input+output de TODOS os providers), comparado com o total
       DEPOIS que todas as respostas da Fase 1 chegam. Não limita
@@ -237,8 +236,8 @@ class RunConfig(BaseModel):
     max_output_tokens_judge: int = Field(gt=0)
     quorum: QuorumPolicy
     round_dispatch_timeout_seconds: float = Field(gt=0)
-    # Provider que realiza extração de claims E agrupamento semântico
-    # (Etapa 5). Não precisa pertencer a enabled_providers — pode ser um
+    # Provider que realiza extração de claims (Etapa 5; não há mais
+    # agrupamento semântico na execução corrente). Não precisa pertencer a enabled_providers — pode ser um
     # provider dedicado, só processando, nunca respondendo à pergunta
     # original. A única validação possível aqui é sintática (não vazio);
     # confirmar que o nome corresponde a um provider real acontece em

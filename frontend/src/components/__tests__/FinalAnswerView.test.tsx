@@ -445,11 +445,16 @@ describe('FinalAnswerView -- unevaluated_claims (Structured Unevaluated Claims +
     render(<FinalAnswerView finalAnswer={makeNoVerdictAnswer()} />)
 
     expect(
-      screen.getByText(/O juiz não avaliou as afirmações abaixo/),
+      screen.getByText(
+        /Algumas alegações não foram avaliadas pelo Judge e podem se sobrepor a outras alegações ou permanecer sem verificação/,
+      ),
     ).toBeInTheDocument()
     expect(
       screen.getByText(/não são fatos verificados nem conclusões do Dialeon/),
     ).toBeInTheDocument()
+    // provenance-neutral: nunca implica que houve agrupamento/canonicalização
+    const note = document.querySelector('.final-answer__unevaluated-claims-note')
+    expect(note?.textContent ?? '').not.toMatch(/agrupad|agrupamento|reconcili|canônic/i)
   })
 
   it('registros históricos com unevaluated_claims null caem pro fallback de answer_text existente, sem tentar fazer parsing dele', () => {

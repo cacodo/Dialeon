@@ -16,7 +16,7 @@ from app.providers.pricing import PricingRegistry
 class ScriptedProvider(LLMProvider):
     """Provider fake que devolve uma sequência pré-definida de
     ProviderResponse, um por chamada de complete(), na ordem dada — usado
-    pra testar extract_claims/group_claims/DebateEngine de forma
+    pra testar extract_claims/DebateEngine de forma
     determinística (inclusive sequências com retry: 1a resposta malformada,
     2a aceita)."""
 

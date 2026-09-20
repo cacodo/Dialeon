@@ -152,9 +152,8 @@ function UnevaluatedClaimsDisclosure({ claims }: { claims: string[] }) {
   return (
     <div className="final-answer__unevaluated-claims">
       <p className="final-answer__unevaluated-claims-note">
-        O juiz não avaliou as afirmações abaixo. Elas podem se sobrepor entre si, podem incluir
-        material bruto ou apenas parcialmente agrupado, e não são fatos verificados nem
-        conclusões do Dialeon.
+        Algumas alegações não foram avaliadas pelo Judge e podem se sobrepor a outras alegações ou
+        permanecer sem verificação. Elas não são fatos verificados nem conclusões do Dialeon.
       </p>
       <details>
         <summary>Mostrar todas as {claims.length} afirmações não avaliadas</summary>

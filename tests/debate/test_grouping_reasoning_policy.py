@@ -1,11 +1,12 @@
 """
-Política de request/proveniência do agrupamento intra-round:
-`minimal_reasoning=True` (desde claim_grouping_v2) mantido em
-claim_grouping_v4 (partição consultiva, sem canonical_text).
+PROVENIÊNCIA HISTÓRICA do request de agrupamento intra-round
+(`claim_grouping_v1`..`v4`): o agrupamento NÃO é mais executado (removido da
+execução corrente), mas o builder do request v4 e os prompts v1-v3 seguem
+sendo o oráculo que reproduz os digests persistidos das runs antigas.
 
-Prova que nada além da política/contrato do agrupamento mudou (reconciliação,
-extração, Judge, transporte, orçamento de saída, contabilidade, superfície
-pública). Nenhuma chamada de rede/provider aqui.
+Estes testes travam o builder (`_build_grouping_request`) e a proveniência --
+NÃO exercitam nenhuma chamada de agrupamento (não existe caminho de execução).
+Nenhuma chamada de rede/provider aqui.
 
 Evidência (replays exatos do request R1 persistido da run 2bd3b8b4):
 - v1 (`minimal_reasoning=False`): 81,479 s, `max_tokens`, 6.284 tokens de
@@ -37,8 +38,6 @@ from app.debate.claim_extraction import (
     _build_extraction_request,
     _build_grouping_request,
     _build_reconciliation_request,
-    group_claims,
-    reconcile_claims,
 )
 from app.judge.context import JUDGE_CONTRACT_VERSION, build_judge_request
 from app.models.provider_models import CompletionRequest, Message
@@ -51,8 +50,6 @@ from app.models.request_provenance import (
 from app.orchestrator.config import RunConfig
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.pricing import PricingRegistry
-from tests.council.fixtures import run_config as _run_config
-from tests.debate.fakes import ScriptedProvider, text_response, transport_error_response
 from tests.judge.fixtures import debate_result, model_response, raw_claim
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -374,146 +371,6 @@ def test_judge_request_and_contract_are_unchanged():
     assert request.minimal_reasoning is False
     assert request.max_tokens == 8192
     assert JUDGE_CONTRACT_VERSION == "judge_v1"
-
-
-# ---------------------------------------------------------------------------
-# 4. group_claims: proveniência v4, transporte default, cobertura de ids,
-#    truncamento fail-closed, contabilidade
-# ---------------------------------------------------------------------------
-
-
-async def _group(provider, claims, *, max_tokens=8192):
-    return await group_claims(
-        claims,
-        round_number=1,
-        grouper=provider,
-        max_output_tokens_per_call=max_tokens,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,
-    )
-
-
-def _two_claims():
-    return [
-        raw_claim("claim a", "resp-a", provider="openai"),
-        raw_claim("claim b", "resp-b", provider="anthropic"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_grouping_attempts_record_the_v4_provenance_of_the_exact_request_sent():
-    a, b = _two_claims()
-    payload = json.dumps({"clusters": [[a.id], [b.id]]})
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-
-    attempts = await _group(provider, [a, b])
-
-    sent = provider.received_requests[0]
-    assert sent.minimal_reasoning is True
-    assert sent.max_tokens == 8192
-    assert attempts[0].request_provenance == build_request_provenance("claim_grouping_v4", sent)
-    assert attempts[0].request_provenance.contract_version == "claim_grouping_v4"
-
-
-@pytest.mark.asyncio
-async def test_grouping_transport_stays_the_provider_default_policy():
-    """Agrupamento chama `complete(request)` SEM override de política de
-    transporte -> continua 60 s / 3 tentativas (default do provider)."""
-    a, b = _two_claims()
-    payload = json.dumps({"clusters": [[a.id], [b.id]]})
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-
-    await _group(provider, [a, b])
-
-    assert provider.received_execution_policies == [None]
-
-
-@pytest.mark.asyncio
-async def test_reconciliation_transport_stays_the_provider_default_policy():
-    round1 = [raw_claim("A", "resp-1", provider="openai")]
-    round2 = [raw_claim("B", "resp-2", provider="anthropic", round_introduced=2)]
-    payload = json.dumps({"equivalence_clusters": []})
-    provider = ScriptedProvider("anthropic", [text_response("anthropic", payload)])
-
-    await reconcile_claims(
-        round1,
-        round2,
-        reconciler=provider,
-        max_output_tokens_per_call=8192,
-        run_config=_run_config(),
-        prior_input_tokens=0,
-        prior_output_tokens=0,
-        prior_cost_usd=0.0,
-    )
-
-    sent = provider.received_requests[0]
-    assert sent.minimal_reasoning is False
-    assert provider.received_execution_policies == [None]
-
-
-@pytest.mark.asyncio
-async def test_exact_once_id_coverage_remains_mandatory_under_v4():
-    a, b = _two_claims()
-    only_a = json.dumps({"clusters": [[a.id]]})  # esquece b
-    provider = ScriptedProvider(
-        "anthropic",
-        [text_response("anthropic", only_a), text_response("anthropic", only_a)],
-    )
-
-    attempts = await _group(provider, [a, b])
-
-    assert [x.parse_status for x in attempts] == ["inconsistent_references"] * 2  # fail-closed
-
-
-@pytest.mark.asyncio
-async def test_truncated_grouping_output_from_the_live_replay_shape_fails_closed_without_retry():
-    """Forma REAL do replay (30/36 ids emitidos, cortado no meio de uma
-    string, `max_tokens`): rejeitado como malformado, sem retry (truncamento
-    conhecido), nenhuma claim fundida -- e a contabilidade do uso
-    CONHECIDO da resposta truncada é preservada, nunca zerada/omitida."""
-    claims = [raw_claim(f"claim {i}", f"resp-{i}", provider="openai") for i in range(6)]
-    emitted = ", ".join(f'"{c.id}"' for c in claims[:5])
-    truncated = '{"clusters": [\n  [' + emitted + '], ["' + claims[5].id[:8]
-    provider = ScriptedProvider(
-        "anthropic",
-        [
-            text_response(
-                "anthropic",
-                truncated,
-                input_tokens=5059,
-                output_tokens=8192,
-                cost_usd=0.092038,
-                provider_finish_reason="max_tokens",
-            )
-        ],
-    )
-
-    attempts = await _group(provider, claims)
-
-    assert len(attempts) == 1  # sem retry -- truncamento confirmado
-    assert attempts[0].parse_status == "malformed"
-    assert attempts[0].provider_finish_reason == "max_tokens"
-    assert attempts[0].usage.input_tokens == 5059
-    assert attempts[0].usage.output_tokens == 8192
-    assert attempts[0].cost_usd == pytest.approx(0.092038)
-    assert len(provider.received_requests) == 1
-
-
-@pytest.mark.asyncio
-async def test_transport_failure_accounting_stays_unknown_not_zero():
-    a, b = _two_claims()
-    provider = ScriptedProvider(
-        "anthropic", [transport_error_response("anthropic", attempts=3)]
-    )
-
-    attempts = await _group(provider, [a, b])
-
-    assert attempts[0].transport_status == "error"
-    assert attempts[0].usage is None
-    assert attempts[0].cost_usd is None
-    assert attempts[0].transport_attempts == 3  # propagado verbatim da resposta do provider
 
 
 # ---------------------------------------------------------------------------

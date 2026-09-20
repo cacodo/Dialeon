@@ -23,9 +23,10 @@ exata de `Fraction`. `1/3` comparado a asserted_result="0.33" É
 `contradicts` — sem tolerância, sem arredondamento implícito.
 
 Placement: verificação roda sobre a Claim BRUTA (recém-extraída),
-ANTES do agrupamento semântico (`group_claims`) — nunca sobre a claim
-canônica de fusão, que tem texto sintetizado pela LLM e nunca teve uma
-proposta numérica própria. `judge/context.py` é quem decide como expor
+sobre a claim extraída, que é a claim autoritativa (não há mais agrupamento
+semântico na execução corrente) — nunca sobre uma claim canônica de fusão
+histórica, que tinha texto sintetizado pela LLM e nunca teve uma proposta
+numérica própria. `judge/context.py` é quem decide como expor
 isso por nó de lineage.
 """
 

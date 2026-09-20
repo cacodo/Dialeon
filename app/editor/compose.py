@@ -151,7 +151,7 @@ NENHUM dos seguintes (investigação de "claim amplification", fora de
 escopo aqui por decisão explícita): quantidade excessiva de claims
 extraídas (`app/debate/claim_extraction.py::extract_claims`),
 agrupamento insuficiente de claims semanticamente próximas
-(`extract_claims::group_claims`), ou relevância de uma claim específica
+(o agrupamento foi removido da execução corrente), ou relevância de uma claim específica
 para a pergunta do usuário -- não existe, e este patch não introduz,
 NENHUM sinal de saliência/relevância/importância no domínio (ver
 app/models/domain.py: `Claim`/`ClaimAssessment` não têm nenhum campo

@@ -1,6 +1,7 @@
 """
-Exceções da camada de "structured output" do claim processor — extração e
-agrupamento de claims. Deliberadamente SEPARADAS das exceções de transporte
+Exceções da camada de "structured output" do claim processor — extração de
+claims (o agrupamento de claims não é mais executado; ver
+app/debate/debate_engine.py). Deliberadamente SEPARADAS das exceções de transporte
 (`app/providers/errors.py`, usadas só dentro do LLMProvider): erro HTTP/
 timeout/rate limit e output semanticamente inválido são classes de erro
 diferentes, com retries diferentes, em camadas diferentes.
@@ -8,7 +9,7 @@ diferentes, com retries diferentes, em camadas diferentes.
 - ClaimProcessingError: base.
 - MalformedClaimOutputError: a chamada teve sucesso de transporte, mas o
   texto retornado não é JSON válido, ou é JSON válido que não bate com o
-  schema esperado (ClaimExtractionOutput/ClaimGroupingOutput).
+  schema esperado (ClaimExtractionOutput).
 - InconsistentClaimReferenceError: JSON estruturalmente válido, mas
   referencia ids que a aplicação não reconhece como válidos no contexto
   daquela chamada (id inexistente, de round errado, fora do conjunto

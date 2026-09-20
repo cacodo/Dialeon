@@ -24,25 +24,19 @@ qualquer chamada) e o `status` estrutural de `ModelResponse`/
 Não implementa: Judge, Context Manager separado, Verification, Cost
 Tracker real, persistência, loop de N rodadas.
 
-Cross-round claim reconciliation (cross_round_claim_reconciliation_v2) --
-depois que a Round 2 termina de processar (extração + agrupamento, ambos
-escopados a uma única rodada), `run()` tenta UMA reconciliação semântica
-adicional entre claims atuais do Round 1 e do Round 2 (ver
-`reconcile_claims`, app/debate/claim_extraction.py) -- a única comparação
-desta camada que atravessa a fronteira entre rodadas. É CONSULTIVA e
-NÃO-DESTRUTIVA (mesmo princípio do agrupamento v4): o modelo propõe
-relações esparsas de equivalência que ficam só na resposta bruta auditável
-do `ClaimProcessingAttempt`; nunca cria claim, nunca une/transfere
-suporte, nunca cria `parent_claim_id`, nunca supersede nem remove claim.
-Só revisão EXPLÍCITA da extração (`parent_claim_id`) altera o conjunto de
-claims atuais. Nunca aborta o debate nem afeta a disponibilidade do Judge --
-falha/budget insuficiente/ausência de candidato em algum dos lados
-simplesmente resulta em nenhuma proposta (o conjunto de claims atuais segue
-pro Judge exatamente como estava)."""
+Agrupamento e reconciliação cross-round -- REMOVIDOS da execução. Ambas
+eram operações consultivas e não-destrutivas (claim_grouping_v4 e
+cross_round_claim_reconciliation_v2) cujas propostas eram descartadas depois
+da auditoria, sem nenhum consumidor semântico; um run novo não faz nenhuma
+requisição pra elas e não grava nenhum `ClaimProcessingAttempt` delas. As
+claims extraídas são autoritativas; só a revisão EXPLÍCITA da extração
+(`parent_claim_id`) altera o conjunto de claims atuais. Runs históricos com
+tentativas/claims canônicas de agrupamento/reconciliação (v1-v4) continuam
+legíveis exatamente como foram gravados."""
 
 from __future__ import annotations
 
-from app.debate.claim_extraction import extract_claims, group_claims, reconcile_claims
+from app.debate.claim_extraction import extract_claims
 from app.debate.claim_extraction_coverage import (
     CRITIQUE_ROUND_NUMBER as _CRITIQUE_ROUND_NUMBER,
 )
@@ -229,80 +223,17 @@ class DebateEngine:
         all_attempts = all_attempts + round2_attempts
         all_verifications = all_verifications + round2_verifications
 
-        # --- Reconciliação cross-round (pós Round 2, pré-Judge) ---
-        # `group_claims` (rodada 1 e rodada 2 acima) NUNCA compara uma
-        # claim sobrevivente do Round 1 com uma do Round 2 -- cada chamada
-        # dela é escopada a uma única rodada, por construção (ver
-        # app/debate/claim_extraction.py). Isso permite que uma
-        # proposição semanticamente equivalente permaneça atual duas
-        # vezes só porque as duas representações vieram de rodadas
-        # diferentes. `reconcile_claims` é a ÚNICA operação desta camada
-        # que compara as duas rodadas entre si.
-        #
-        # `get_current_claims(all_claims)` (não os dois lados brutos
-        # separadamente) é quem decide "sobrevivente" aqui -- inclui
-        # corretamente uma revisão cross-round já existente (uma claim do
-        # Round 2 com parent_claim_id apontando pro Round 1 já retira o
-        # ancestral do conjunto atual, então ele nunca chega a ser
-        # candidato de reconciliação -- reconciliação nunca reconsidera o
-        # que a revisão já resolveu, ver app/debate/claims.py).
-        current_after_round2 = get_current_claims(all_claims)
-        current_round1_after_round2 = [
-            c for c in current_after_round2 if c.round_introduced == _INITIAL_ROUND_NUMBER
-        ]
-        current_round2_after_round2 = [
-            c for c in current_after_round2 if c.round_introduced == _CRITIQUE_ROUND_NUMBER
-        ]
-
-        reconciliation_attempts: list[ClaimProcessingAttempt] = []
-
-        # Só reconcilia quando os DOIS lados têm ao menos uma claim atual
-        # -- não há nada pra uma chamada semântica comparar quando um dos
-        # lados está vazio (nenhuma claim atual sobreviveu daquela
-        # rodada), então nem uma chamada LLM é iniciada nesse caso --
-        # nenhum ClaimProcessingAttempt fabricado pra uma comparação que
-        # não podia produzir nada.
-        if current_round1_after_round2 and current_round2_after_round2:
-            (
-                input_before_reconciliation,
-                output_before_reconciliation,
-                cost_before_reconciliation,
-            ) = _cumulative_totals(initial_result, round2_round_result, all_attempts)
-
-            # Gate de budget ANTES da chamada -- mesmo padrão já usado
-            # antes de cada extração/agrupamento acima. Se o budget já
-            # está esgotado, a reconciliação simplesmente não é tentada;
-            # nenhum ClaimProcessingAttempt fabricado pra uma chamada que
-            # nunca aconteceu (o conjunto pré-reconciliação segue
-            # exatamente como está).
-            if not compute_budget_exceeded(
-                input_before_reconciliation,
-                output_before_reconciliation,
-                cost_before_reconciliation,
-                run_config,
-            ):
-                # cross_round_claim_reconciliation_v2 -- CONSULTIVA: só
-                # devolve as tentativas (a proposta esparsa de equivalência
-                # fica auditável na resposta bruta). Nenhuma claim canônica,
-                # nenhuma união/transferência de suporte, nenhum
-                # parent_claim_id, nenhuma supersessão: as claims atuais
-                # abaixo seguem EXATAMENTE como estão e são as que a Source
-                # Analysis, o Judge e o Editor veem. Os dois lados são
-                # passados SEPARADOS (a identidade de rodada vem daqui, não
-                # do id) pra que o validador exija cluster cross-round.
-                reconciliation_attempts = await reconcile_claims(
-                    current_round1_after_round2,
-                    current_round2_after_round2,
-                    reconciler=processor,
-                    # Mesmo teto de agrupamento (não o geral de extração).
-                    max_output_tokens_per_call=run_config.max_output_tokens_grouping,
-                    run_config=run_config,
-                    prior_input_tokens=input_before_reconciliation,
-                    prior_output_tokens=output_before_reconciliation,
-                    prior_cost_usd=cost_before_reconciliation,
-                )
-
-        all_attempts = all_attempts + reconciliation_attempts
+        # Nota de arquitetura -- NENHUMA operação de agrupamento nem de
+        # reconciliação cross-round roda mais aqui. Ambas eram consultivas e
+        # não-destrutivas (claim_grouping_v4 / cross_round_claim_reconciliation_v2:
+        # suas propostas eram descartadas depois da auditoria) e nunca tiveram
+        # consumidor semântico; um run NOVO não faz nenhuma requisição de
+        # provider pra elas, não grava nenhum `ClaimProcessingAttempt` delas
+        # (nem tentativa "pulada" fabricada) e não gasta budget com elas.
+        # As claims extraídas seguem autoritativas; só a revisão EXPLÍCITA da
+        # extração (`parent_claim_id`, ver `get_current_claims`) retira uma
+        # claim do conjunto atual -- sem dedupe, canonicalização, união de
+        # suporte, inferência de relação nem teto de cardinalidade.
 
         input_total, output_total, cost_total = _cumulative_totals(
             initial_result, round2_round_result, all_attempts
@@ -336,25 +267,24 @@ class DebateEngine:
         prior_output_tokens: int,
         prior_cost_usd: float,
     ) -> tuple[list[Claim], list[ClaimProcessingAttempt], list[DeterministicVerificationAttempt]]:
-        """Extração (uma chamada por resposta) + agrupamento (uma chamada
-        pro round inteiro) — usado tanto pra rodada 1 quanto pra rodada de
-        crítica, só variando `known_claims` (None no round 1; as claims
-        atuais do round anterior, com id+texto, no round 2+).
+        """Extração de claims (uma chamada por resposta) -- usado tanto pra
+        rodada 1 quanto pra rodada de crítica, só variando `known_claims`
+        (None no round 1; as claims atuais do round anterior, com id+texto,
+        no round 2+). É o ÚNICO processamento de claims que roda: nenhuma
+        chamada de agrupamento nem de reconciliação existe mais na execução
+        (ver a nota de arquitetura em `run`). As claims devolvidas são as
+        extraídas, autoritativas e inalteradas.
 
         Etapa 15: `verification_attempts` só é produzido durante a
-        EXTRAÇÃO (sobre claims brutas) — `group_claims` nunca gera
-        nenhum. (Historicamente, v1-v3, a claim canônica de fusão tinha
-        texto sintetizado pela LLM e nunca teve proposta numérica própria;
-        em v4 o agrupamento nem cria claim -- ver `group_claims`.)
+        EXTRAÇÃO (sobre claims brutas).
 
         Etapa 17A (B2): `prior_*` é o total conhecido ANTES desta rodada
         de processamento começar (dispatch do round + qualquer fase
         anterior) — verificado ANTES de cada chamada nova de extração
-        (por resposta) e ANTES da chamada de agrupamento. Se o budget já
-        estiver esgotado, as respostas RESTANTES simplesmente não são
-        extraídas (contribuem 0 claims, mesmo formato de ausência já
-        usado pra output malformado — nenhum ClaimProcessingAttempt
-        fabricado) e o agrupamento nem é chamado. Nunca fabrica um
+        (por resposta). Se o budget já estiver esgotado, as respostas
+        RESTANTES simplesmente não são extraídas (contribuem 0 claims,
+        mesmo formato de ausência já usado pra output malformado —
+        nenhum ClaimProcessingAttempt fabricado). Nunca fabrica um
         Attempt pra uma chamada que não aconteceu.
 
         Dívida técnica registrada, não corrigida nesta etapa: as extrações
@@ -392,38 +322,6 @@ class DebateEngine:
             raw_claims.extend(claims)
             attempts.extend(extraction_attempts)
             verification_attempts.extend(extraction_verifications)
-
-        extraction_input, extraction_output, extraction_cost, _ = sum_usage_and_cost(attempts)
-        if compute_budget_exceeded(
-            prior_input_tokens + extraction_input,
-            prior_output_tokens + extraction_output,
-            prior_cost_usd + extraction_cost,
-            run_config,
-        ):
-            return raw_claims, attempts, verification_attempts  # agrupamento não é chamado
-
-        # claim_grouping_v4 -- agrupamento é CONSULTIVO: só devolve as
-        # tentativas (a proposta fica auditável na resposta bruta). Nenhuma
-        # claim canônica, nenhuma fusão de suporte, nenhuma supersessão:
-        # TODAS as claims brutas seguem atuais e são as que a crítica, a
-        # reconciliação, a Source Analysis e o Judge veem.
-        grouping_attempts = await group_claims(
-            raw_claims,
-            round_number=round_number,
-            grouper=processor,
-            # Etapa 17A.2 -- teto PRÓPRIO do agrupamento (não o
-            # `max_output_tokens_per_call` geral usado pela extração
-            # acima): o schema de agrupamento exige cobertura de TODA
-            # claim bruta, então o output mínimo exigido cresce com a
-            # contagem de claims do round, ao contrário da extração
-            # (uma resposta por vez).
-            max_output_tokens_per_call=run_config.max_output_tokens_grouping,
-            run_config=run_config,
-            prior_input_tokens=prior_input_tokens + extraction_input,
-            prior_output_tokens=prior_output_tokens + extraction_output,
-            prior_cost_usd=prior_cost_usd + extraction_cost,
-        )
-        attempts.extend(grouping_attempts)
 
         return raw_claims, attempts, verification_attempts
 

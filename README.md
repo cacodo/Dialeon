@@ -1,7 +1,7 @@
 # LLM Council (Dialeon)
 
 Sistema que envia uma pergunta para vários modelos de linguagem
-independentemente, faz eles debaterem em rodadas, extrai e agrupa as
+independentemente, faz eles debaterem em rodadas, extrai as
 afirmações (claims) resultantes, e submete o resultado do debate a um
 juiz (outro modelo). Quando uma fonte textual opcional é fornecida
 pelo usuário, ela é comparada contra essas claims em um canal separado
@@ -39,9 +39,12 @@ abaixo.
   retornar algo).
 - Debate em rodadas: resposta inicial de cada modelo e, quando há
   quórum suficiente, uma rodada de crítica.
-- Extração de afirmações (claims) a partir das respostas, com
-  agrupamento/reconciliação das mesmas afirmações entre modelos e entre
-  rodadas.
+- Extração de afirmações (claims) a partir das respostas. As claims
+  extraídas são as claims autoritativas: não há agrupamento nem
+  reconciliação de claims entre modelos ou rodadas (essas operações
+  consultivas foram removidas da execução; runs antigas que as
+  registraram continuam legíveis). Só uma revisão explícita feita na
+  própria extração (`parent_claim_id`) substitui uma claim.
 - Verificação determinística de expressões aritméticas simples
   encontradas nas claims (sem chamada a modelo).
 - Análise de fonte (Source Analysis) opcional: quando o usuário fornece
@@ -96,7 +99,7 @@ abaixo.
 ## Como o pipeline funciona
 
 ```
-Debate (rodadas + extração/agrupamento de claims)
+Debate (rodadas + extração de claims)
   → Source Analysis (só se uma fonte foi fornecida)
   → Judge (avaliação escopada ao debate)
   → Reconciliação determinística Source↔Judge
@@ -132,7 +135,7 @@ llm-council/
 │   ├── config.py            # Settings (variáveis de ambiente)
 │   ├── providers/           # adapters dos providers (OpenAI/Anthropic/Gemini)
 │   ├── orchestrator/        # dispatch concorrente + política de quórum/budget
-│   ├── debate/               # rodadas, extração e agrupamento de claims
+│   ├── debate/               # rodadas e extração de claims
 │   ├── source_analysis/      # comparação claim × texto de fonte
 │   ├── judge/                 # avaliação escopada ao debate
 │   ├── reconciliation/        # relacionamento determinístico Source↔Judge
@@ -289,9 +292,10 @@ Dois orçamentos independentes por execução (nomes de campo em runtime,
   execução pode legitimamente terminar acima desse número.
 
 Distintos dos tetos de **output por chamada** (`max_output_tokens_per_call`/
-`max_output_tokens_grouping`/`max_output_tokens_judge`), que limitam
-quanto texto uma única chamada a um único provider pode gerar — não
-têm relação com o orçamento agregado acima.
+`max_output_tokens_judge`), que limitam quanto texto uma única chamada a
+um único provider pode gerar — não têm relação com o orçamento agregado
+acima. (`max_output_tokens_grouping` é mantido só por compatibilidade
+com execuções históricas: nenhuma chamada atual o usa.)
 
 Esses valores vêm de `Settings` (configuráveis via `.env`) sob nomes de
 variável distintos dos nomes de campo acima:

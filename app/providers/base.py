@@ -84,7 +84,7 @@ def is_known_output_truncation(provider_finish_reason: str | None) -> bool:
 def transport_error_common_fields(provider_response: ProviderResponse) -> dict:
     """Campos comuns de um ProviderResponse com `status="error"` (falha
     de transporte) -- usado pelos 4 conversores de stage-Attempt
-    (extração/agrupamento, source analysis, judge, editor) pra nunca
+    (extração, source analysis, judge, editor; runs históricas também tinham agrupamento) pra nunca
     descartar accounting/provenance real que já existe em
     `ProviderResponse`.
 

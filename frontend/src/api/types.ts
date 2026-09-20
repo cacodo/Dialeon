@@ -386,7 +386,8 @@ export interface RunConfigPublic {
   max_cost_usd: PositiveExecutionLimitPublic
   max_total_tokens: number
   max_output_tokens_per_call: number
-  // Tetos PRÓPRIOS de agrupamento/reconciliação e do Judge -- ver
+  // Tetos PRÓPRIOS de agrupamento/reconciliação (histórico: não mais usados
+  // por nenhuma chamada atual) e do Judge -- ver
   // RunConfigPublic (app/presentation/schemas.py), distintos de
   // max_output_tokens_per_call porque o output cresce com a contagem
   // de claims (cobertura obrigatória, uma entrada/avaliação por claim).

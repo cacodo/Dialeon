@@ -566,7 +566,9 @@ class RunConfigPublic(BaseModel):
     # RunConfig.max_output_tokens_grouping/max_output_tokens_judge),
     # materialmente diferentes de max_output_tokens_per_call -- omiti-los
     # aqui perderia capacidade de explicar historicamente por que um
-    # agrupamento/Judge específico truncou ou não.
+    # agrupamento/Judge específico truncou ou não. O agrupamento não é mais
+    # executado: `max_output_tokens_grouping` segue exposto só para runs
+    # históricas (nenhuma chamada atual o usa).
     max_output_tokens_grouping: int
     max_output_tokens_judge: int
     # Renomeado de overall_timeout_seconds (clarificação de contrato de

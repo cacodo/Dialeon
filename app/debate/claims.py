@@ -4,7 +4,7 @@ sem nunca consultar `status="superseded"` nem `superseded_by`.
 
 Claims são imutáveis: uma claim não pode ser informada, no momento da
 própria criação, de que será superada por algo que ainda não existe — nem
-no caso de fusão (agrupamento) nem no de revisão entre rounds
+no caso de fusão (agrupamento HISTÓRICO, não mais executado) nem no de revisão entre rounds
 (`parent_claim_id`). Por isso `superseded_by`/`status="superseded"` ficam
 dormentes nesta etapa (documentado em app/models/domain.py), e a única
 fonte confiável de "isto ainda vale" é consulta inversa: uma claim deixa

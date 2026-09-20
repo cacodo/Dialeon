@@ -30,7 +30,7 @@ Cada chamada real (aceita ou rejeitada) gera seu próprio
 from __future__ import annotations
 
 import json
-from typing import Callable, Literal, TypeVar
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -40,12 +40,7 @@ from app.debate.numeric_verification import (
     build_verification_attempt,
 )
 from app.debate.processing_record import ClaimProcessingAttempt
-from app.debate.schemas import (
-    MAX_EXTRACTED_CLAIMS,
-    ClaimExtractionOutput,
-    ClaimGroupingPartitionOutput,
-    CrossRoundEquivalenceProposalOutput,
-)
+from app.debate.schemas import MAX_EXTRACTED_CLAIMS, ClaimExtractionOutput
 from app.models.domain import Claim, ClaimSupport, ModelResponse
 from app.models.provider_models import CompletionRequest, Message, ProviderResponse
 from app.models.request_provenance import RequestProvenance, build_request_provenance
@@ -62,15 +57,18 @@ from app.structured_output import strip_single_json_code_fence
 # fixa pro MVP, sem campo novo em Settings.
 _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 
-_ValidatedT = TypeVar("_ValidatedT")  # saída validada de `_run_structured_grouping_call`
 
 # Provider-Neutral Request Provenance V1 -- contratos das 3 operações
 # deste módulo, cada uma com sua PRÓPRIA versão (nunca uma versão
 # global de "claim processing") -- extração, agrupamento intra-round e
 # reconciliação cross-round são 3 operações semanticamente distintas,
-# mesmo compartilhando mecanismo de retry/schema (reconciliação reusa o
-# mecanismo de agrupamento, mas nunca sua versão de contrato -- ver
-# docstring de `reconcile_claims`).
+# mesmo compartilhando (à época) mecanismo de retry/schema.
+#
+# ESTADO ATUAL: só a EXTRAÇÃO é executada. As versões de agrupamento e
+# reconciliação abaixo são HISTÓRICAS (últimas versões implementadas: v4 e v2,
+# NÃO avançadas quando as operações foram removidas da execução): a
+# narrativa a seguir descreve o que cada contrato foi, para interpretar a
+# proveniência persistida de runs antigas.
 #
 # v1 -> v2 (Run02 claim-extraction exhaustion repair): cardinalidade de
 # claims deixou de ser semanticamente ilimitada (teto rígido de
@@ -101,10 +99,10 @@ _ValidatedT = TypeVar("_ValidatedT")  # saída validada de `_run_structured_grou
 # replay v3 mostrou uma falsa fusão clara (duas proposições distintas
 # conjugadas num texto sintético que fazia dois modelos parecerem apoiar
 # algo que nenhum afirmou por inteiro). Em v4 o agrupamento devolve UMA
-# partição exata em clusters de ids (`ClaimGroupingPartitionOutput`) que é
+# partição exata em clusters de ids (schema de saída já removido) que é
 # só metadado CONSULTIVO/auditável (a resposta bruta fica no
 # `ClaimProcessingAttempt`): não cria claim, não une suporte, não supersede
-# nem remove nenhuma claim original -- ver `group_claims`. Prompt e saída
+# nem remove nenhuma claim original. Prompt e saída
 # mudaram materialmente, por isso a versão avança. `minimal_reasoning=True`,
 # `max_tokens` e transporte permanecem. Linhas históricas
 # `claim_grouping_v1`/`v2`/`v3` (inclusive claims canônicas persistidas e
@@ -118,10 +116,10 @@ _ValidatedT = TypeVar("_ValidatedT")  # saída validada de `_run_structured_grou
 # SLA/preço-fixo do R2) e mudou o conjunto de claims autoritativo consumido
 # downstream. Em v2 a reconciliação devolve PROPOSTAS ESPARSAS E POSITIVAS de
 # equivalência cross-round (`{"equivalence_clusters": [[ids...], ...]}`,
-# `CrossRoundEquivalenceProposalOutput`) que são só metadado CONSULTIVO/
+# schema de saída já removido) que são só metadado CONSULTIVO/
 # auditável (a resposta bruta fica no `ClaimProcessingAttempt`): não cria
 # claim, não une nem transfere suporte, não cria `parent_claim_id`/revisão,
-# não supersede nem remove nada -- ver `reconcile_claims`. Prompt e saída
+# não supersede nem remove nada. Prompt e saída
 # mudaram materialmente, por isso a versão avança. `minimal_reasoning`
 # (False), `max_tokens` e transporte permanecem. Linhas históricas
 # `cross_round_claim_reconciliation_v1` (inclusive claims canônicas
@@ -169,7 +167,8 @@ async def extract_claims(
     retornada — só quando `draft.proposed_numeric_assertion` não é
     `None` (ver `numeric_verification.build_verification_attempt`).
     Sempre roda sobre a Claim BRUTA recém-construída, nunca sobre nada
-    de `group_claims` (que roda depois, separadamente).
+    de nenhum agrupamento (removido da execução; a claim extraída é a
+    claim autoritativa).
 
     Etapa 17A (B2): `run_config`/`prior_*` só existem pra gatear o RETRY
     interno (tentativa 2, quando a tentativa 1 veio malformada) — a
@@ -524,359 +523,24 @@ def _build_extraction_request(
 
 
 # ---------------------------------------------------------------------------
-# Agrupamento
+# Contratos INATIVOS de agrupamento e reconciliação (somente proveniência)
 # ---------------------------------------------------------------------------
-
-
-async def group_claims(
-    raw_claims: list[Claim],
-    round_number: int,
-    grouper: LLMProvider,
-    max_output_tokens_per_call: int,
-    *,
-    run_config: RunConfig,
-    prior_input_tokens: int,
-    prior_output_tokens: int,
-    prior_cost_usd: float,
-) -> list[ClaimProcessingAttempt]:
-    """Agrupamento intra-round (claim_grouping_v4) -- CONSULTIVO e
-    NÃO-DESTRUTIVO: pede ao modelo uma partição exata das claims em clusters
-    de ids, valida exata-uma-vez e REGISTRA a tentativa (a resposta bruta
-    fica auditável em `ClaimProcessingAttempt.raw_output_text`).
-
-    PRINCÍPIO: agrupamento PROPÕE relações, NÃO reescreve claims. Um
-    resultado válido -- inclusive com clusters de 2+ ids -- NÃO cria claim
-    canônica, NÃO sintetiza texto, NÃO une suporte, NÃO supersede nem remove
-    nenhuma claim original, NÃO altera linhagem e NÃO muda o que a
-    reconciliação/Judge veem: TODAS as `raw_claims` recebidas continuam
-    atuais e autoritativas. Por isso esta função devolve SÓ as tentativas --
-    não há nada a aplicar; o chamador (`DebateEngine._process_round`) segue
-    com as claims brutas intactas. Um cluster de 2+ ids é uma proposta do
-    modelo, nunca equivalência verificada nem consenso.
-
-    (v1-v3 devolviam claims canônicas que substituíam os membros; esse
-    caminho de aplicação NÃO existe mais aqui. `_build_canonical_claim`/
-    `_merge_supports` continuam existindo SÓ pra `reconcile_claims`.)
-
-    Partição inválida (JSON malformado/truncado, id faltando/extra/
-    duplicado, cluster vazio, tipo errado, chave extra) é REJEITADA sem
-    nenhuma normalização e participa do retry estruturado existente
-    (tentativa 2) ou falha fechada -- em qualquer caso as claims brutas
-    permanecem exatamente como estão.
-
-    Etapa 17A (B2): `run_config`/`prior_*` só gateiam o RETRY interno
-    (tentativa 2) -- a chamada de agrupamento em si (1ª tentativa) já foi
-    autorizada pelo chamador antes desta função ser invocada."""
-    if not raw_claims:
-        return []
-
-    raw_ids = {c.id for c in raw_claims}
-    request = _build_grouping_request(raw_claims, max_output_tokens_per_call)
-    request_provenance = build_request_provenance(CLAIM_GROUPING_CONTRACT_VERSION, request)
-
-    _partition, attempts = await _run_structured_grouping_call(
-        "grouping",
-        request,
-        request_provenance,
-        raw_ids,
-        round_number,
-        grouper,
-        run_config=run_config,
-        prior_input_tokens=prior_input_tokens,
-        prior_output_tokens=prior_output_tokens,
-        prior_cost_usd=prior_cost_usd,
-        validate=_parse_and_validate_grouping_partition,
-    )
-    # `_partition` (quando válida) é deliberadamente DESCARTADA aqui: nenhuma
-    # camada aplica a proposta -- só a tentativa auditável a registra.
-    return attempts
-
-
-# ---------------------------------------------------------------------------
-# Cross-round claim reconciliation
-# ---------------------------------------------------------------------------
-
-# round_number FIXO pra toda tentativa de reconciliação -- esta arquitetura
-# tem EXATAMENTE 2 rodadas reais de debate (ver
-# _INITIAL_ROUND_NUMBER/_CRITIQUE_ROUND_NUMBER em app/debate/debate_engine.py);
-# reconciliação SEMPRE ocorre depois que a Round 2 termina de processar,
-# nunca em outro ponto. round_number=2 aqui NUNCA significa "esta é uma
-# operação ordinária da Round 2" -- só faz sentido em conjunto com
-# `operation="reconciliation"` (ver docstring do campo,
-# app/debate/processing_record.py). Nenhuma "Round 3" é inventada.
-_RECONCILIATION_ATTEMPT_ROUND_NUMBER = 2
-
-
-async def reconcile_claims(
-    round1_candidates: list[Claim],
-    round2_candidates: list[Claim],
-    reconciler: LLMProvider,
-    max_output_tokens_per_call: int,
-    *,
-    run_config: RunConfig,
-    prior_input_tokens: int,
-    prior_output_tokens: int,
-    prior_cost_usd: float,
-) -> list[ClaimProcessingAttempt]:
-    """Reconciliação cross-round (cross_round_claim_reconciliation_v2) --
-    CONSULTIVA e NÃO-DESTRUTIVA: pede ao modelo PROPOSTAS ESPARSAS e
-    POSITIVAS de equivalência entre uma claim atual do Round 1 e uma do
-    Round 2 (`equivalence_clusters`), valida e REGISTRA a tentativa (a
-    resposta bruta fica auditável em `ClaimProcessingAttempt.raw_output_text`)
-    e devolve SÓ as tentativas.
-
-    PRINCÍPIO: reconciliação PROPÕE relações de equivalência; NÃO reescreve
-    claims. Um resultado -- válido, inválido ou semanticamente ERRADO -- NÃO
-    cria claim canônica, NÃO sintetiza texto, NÃO une nem transfere suporte,
-    NÃO cria/altera `parent_claim_id` ou linhagem de revisão, NÃO supersede
-    nem remove nenhuma claim e NÃO muda o conjunto de claims atuais: TODAS as
-    candidatas continuam atuais e autoritativas. Uma proposta é uma
-    proposta -- `parse_status="accepted"` significa "estruturalmente
-    aceita", NUNCA "semanticamente verificada". Uma claim NÃO mencionada
-    significa somente "nenhuma relação proposta" (nem "verificada como não
-    relacionada", nem contradição, nem evidência negativa).
-
-    `round1_candidates`/`round2_candidates` são as claims ATUAIS
-    (`get_current_claims`) de cada lado, recebidas SEPARADAMENTE: a
-    elegibilidade de id (exata) e a identidade de rodada vêm da aplicação
-    (`Claim.round_introduced` já resolvido pelo chamador), NUNCA da sintaxe
-    do id nem do modelo. Um id de claim já tornada não-atual por revisão
-    explícita (`parent_claim_id`) não está em nenhum dos dois conjuntos,
-    então não pode ser referenciado (desconhecido/inelegível -> rejeitado).
-    Cada cluster precisa cruzar as rodadas (>= 1 id de cada lado), sem id
-    repetido em nenhum lugar da resposta, sem normalização de whitespace.
-
-    `round1_candidates=[]` OU `round2_candidates=[]` (o chamador já deveria
-    ter decidido pular a chamada; short-circuit defensivo) retorna `[]` sem
-    nenhuma chamada real -- nenhum `ClaimProcessingAttempt` fabricado.
-
-    Resposta inválida (JSON malformado/truncado, id desconhecido/inelegível/
-    duplicado, cluster unitário/vazio/same-side, chave extra, tipo errado) é
-    REJEITADA sem normalização e participa do retry estruturado existente
-    (tentativa 2) ou falha fechada -- em qualquer caso o conjunto de claims
-    permanece exatamente como estava.
-
-    Contratos históricos v1 (claims canônicas persistidas, `operation=
-    "reconciliation"` com `cross_round_claim_reconciliation_v1`) NÃO são
-    reinterpretados aqui."""
-    if not round1_candidates or not round2_candidates:
-        return []
-
-    round1_candidate_ids = {c.id for c in round1_candidates}
-    round2_candidate_ids = {c.id for c in round2_candidates}
-    candidate_ids = round1_candidate_ids | round2_candidate_ids
-    request = _build_reconciliation_request(
-        round1_candidates, round2_candidates, max_output_tokens_per_call
-    )
-    request_provenance = build_request_provenance(
-        CROSS_ROUND_CLAIM_RECONCILIATION_CONTRACT_VERSION, request
-    )
-
-    def validate(raw_text: str, eligible_ids: set[str]) -> CrossRoundEquivalenceProposalOutput:
-        return _parse_and_validate_reconciliation_equivalence(
-            raw_text, round1_candidate_ids, round2_candidate_ids
-        )
-
-    _proposal, attempts = await _run_structured_grouping_call(
-        "reconciliation",
-        request,
-        request_provenance,
-        candidate_ids,
-        _RECONCILIATION_ATTEMPT_ROUND_NUMBER,
-        reconciler,
-        run_config=run_config,
-        prior_input_tokens=prior_input_tokens,
-        prior_output_tokens=prior_output_tokens,
-        prior_cost_usd=prior_cost_usd,
-        validate=validate,
-    )
-    # `_proposal` (quando válida) é deliberadamente DESCARTADA: nenhuma
-    # camada aplica a proposta -- só a tentativa auditável a registra.
-    return attempts
-
-
-async def _run_structured_grouping_call(
-    operation: Literal["grouping", "reconciliation"],
-    request: CompletionRequest,
-    request_provenance: RequestProvenance,
-    raw_ids: set[str],
-    round_number: int,
-    provider: LLMProvider,
-    *,
-    run_config: RunConfig,
-    prior_input_tokens: int,
-    prior_output_tokens: int,
-    prior_cost_usd: float,
-    validate: Callable[[str, set[str]], _ValidatedT],
-) -> tuple[_ValidatedT | None, list[ClaimProcessingAttempt]]:
-    """Loop de dispatch/retry/parse compartilhado por `group_claims` (v4,
-    partição consultiva) e `reconcile_claims` (v2, propostas esparsas)
-    -- mesma disciplina de retry/budget/truncamento conhecido; só o
-    `operation` (rótulo de auditoria), o `request` (prompt) e o `validate`
-    (schema de saída) variam por chamador, todos passados explicitamente.
-
-    `validate` é OBRIGATÓRIO e específico da operação:
-    `_parse_and_validate_grouping_partition` (agrupamento v4) ou um
-    fechamento sobre `_parse_and_validate_reconciliation_equivalence`
-    (reconciliação v2). Nenhuma normalização de saída inválida existe aqui: erro de
-    parse/validação vira tentativa rejeitada -> retry estruturado
-    existente."""
-    attempts: list[ClaimProcessingAttempt] = []
-    parsed: _ValidatedT | None = None
-
-    for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
-        if attempt_number > 1:
-            so_far_input, so_far_output, so_far_cost, _ = sum_usage_and_cost(attempts)
-            if compute_budget_exceeded(
-                prior_input_tokens + so_far_input,
-                prior_output_tokens + so_far_output,
-                prior_cost_usd + so_far_cost,
-                run_config,
-            ):
-                break  # budget já esgotado -- não inicia o retry
-        provider_response = await provider.complete(request)
-
-        if provider_response.status == "error":
-            attempts.append(
-                _transport_error_attempt(
-                    operation,
-                    round_number,
-                    attempt_number,
-                    provider_response,
-                    target_claim_ids=sorted(raw_ids),
-                    request_provenance=request_provenance,
-                )
-            )
-            break
-
-        try:
-            parsed = validate(provider_response.text, raw_ids)
-        except MalformedClaimOutputError as exc:
-            attempts.append(
-                _parse_rejected_attempt(
-                    operation,
-                    round_number,
-                    attempt_number,
-                    provider_response,
-                    "malformed",
-                    str(exc),
-                    target_claim_ids=sorted(raw_ids),
-                    request_provenance=request_provenance,
-                )
-            )
-            if is_known_output_truncation(provider_response.provider_finish_reason):
-                break  # truncamento confirmado -- retry idêntico não corrige isso
-            continue
-        except InconsistentClaimReferenceError as exc:
-            attempts.append(
-                _parse_rejected_attempt(
-                    operation,
-                    round_number,
-                    attempt_number,
-                    provider_response,
-                    "inconsistent_references",
-                    str(exc),
-                    target_claim_ids=sorted(raw_ids),
-                    request_provenance=request_provenance,
-                )
-            )
-            if is_known_output_truncation(provider_response.provider_finish_reason):
-                break
-            continue
-
-        attempts.append(
-            _accepted_attempt(
-                operation,
-                round_number,
-                attempt_number,
-                provider_response,
-                target_claim_ids=sorted(raw_ids),
-                request_provenance=request_provenance,
-            )
-        )
-        break
-
-    return parsed, attempts
-
-
-def _parse_and_validate_grouping_partition(
-    raw_text: str, raw_claim_ids: set[str]
-) -> ClaimGroupingPartitionOutput:
-    """claim_grouping_v4 -- valida UMA partição EXATA (fail-closed, nenhuma
-    normalização): JSON fechado e forma `{"clusters": [[ids...], ...]}`
-    (cluster vazio/tipo errado/chave extra -> `MalformedClaimOutputError`);
-    depois, todo id de entrada aparece EXATAMENTE uma vez em todos os
-    clusters -- id desconhecido, id duplicado (dentro de um cluster ou entre
-    clusters) ou id faltando -> `InconsistentClaimReferenceError`. Cluster de
-    1 id é válido e esperado. A ordem devolvida é a da resposta (clusters e
-    membros, sem reordenar)."""
-    parsed = _parse_json_schema(raw_text, ClaimGroupingPartitionOutput, "agrupamento")
-
-    seen: set[str] = set()
-    for cluster in parsed.clusters:
-        for claim_id in cluster:
-            if claim_id not in raw_claim_ids:
-                raise InconsistentClaimReferenceError(
-                    f"agrupamento referenciou id desconhecido: {claim_id!r}"
-                )
-            if claim_id in seen:
-                raise InconsistentClaimReferenceError(
-                    f"id {claim_id!r} aparece mais de uma vez na partição"
-                )
-            seen.add(claim_id)
-
-    if seen != raw_claim_ids:
-        missing = raw_claim_ids - seen
-        raise InconsistentClaimReferenceError(
-            f"agrupamento não cobriu todas as claims brutas — faltando: {sorted(missing)}"
-        )
-    return parsed
-
-
-def _parse_and_validate_reconciliation_equivalence(
-    raw_text: str, round1_candidate_ids: set[str], round2_candidate_ids: set[str]
-) -> CrossRoundEquivalenceProposalOutput:
-    """cross_round_claim_reconciliation_v2 -- valida propostas ESPARSAS de
-    equivalência (fail-closed, nenhuma normalização):
-
-      1. JSON fechado + forma `{"equivalence_clusters": [[ids...], ...]}`
-         (chave ausente/extra, tipo errado, cluster com < 2 ids ->
-         `MalformedClaimOutputError`); `[]` é válido;
-      2. todo id precisa ser EXATAMENTE um id elegível (claim atual do
-         Round 1 ou do Round 2) -- desconhecido/inelegível (inclusive uma
-         claim já revisada, não-atual) ou com whitespace alterado ->
-         `InconsistentClaimReferenceError`;
-      3. cada id aparece NO MÁXIMO UMA vez em toda a resposta (duplicata
-         dentro do cluster, entre clusters ou clusters sobrepostos ->
-         `InconsistentClaimReferenceError`);
-      4. cada cluster cruza as rodadas: >= 1 id do Round 1 E >= 1 do Round 2
-         (cluster same-side -> `InconsistentClaimReferenceError`).
-
-    NÃO há exigência de cobertura: claim não mencionada = "nenhuma relação
-    proposta". A identidade de rodada vem dos conjuntos recebidos, nunca da
-    sintaxe do id. Ordem preservada como veio."""
-    parsed = _parse_json_schema(raw_text, CrossRoundEquivalenceProposalOutput, "reconciliação")
-
-    eligible = round1_candidate_ids | round2_candidate_ids
-    seen: set[str] = set()
-    for cluster in parsed.equivalence_clusters:
-        for claim_id in cluster:
-            if claim_id not in eligible:
-                raise InconsistentClaimReferenceError(
-                    f"reconciliação referenciou id desconhecido/inelegível: {claim_id!r}"
-                )
-            if claim_id in seen:
-                raise InconsistentClaimReferenceError(
-                    f"id {claim_id!r} aparece mais de uma vez na resposta de reconciliação"
-                )
-            seen.add(claim_id)
-        members = set(cluster)
-        if not (members & round1_candidate_ids) or not (members & round2_candidate_ids):
-            raise InconsistentClaimReferenceError(
-                "cluster de reconciliação same-side rejeitado -- precisa conter ao menos "
-                f"uma claim do Round 1 E ao menos uma do Round 2: {list(cluster)}"
-            )
-    return parsed
+#
+# ARQUITETURA: agrupamento (claim_grouping_v4) e reconciliação cross-round
+# (cross_round_claim_reconciliation_v2) foram REMOVIDOS da execução -- eram
+# operações consultivas cujas propostas eram descartadas depois da auditoria,
+# sem consumidor semântico. NENHUM run novo agenda, chama ou grava tentativa
+# delas: `group_claims`, `reconcile_claims`, o loop de retry estruturado
+# compartilhado, os parsers/validadores e os schemas de saída foram removidos.
+#
+# Os DOIS builders de request abaixo e as constantes de contrato (no topo
+# deste módulo) permanecem SOMENTE como fatos históricos de proveniência:
+# reconstruir/verificar digests de requests já persistidos (goldens em
+# tests/models/test_request_provenance_contracts.py, evidência local nos
+# testes de política) e nunca são chamados pela execução. Não são um "modo
+# opcional": nada os liga. Runs históricos (v1-v4 de agrupamento; v1-v2 de
+# reconciliação, inclusive claims canônicas persistidas) permanecem legíveis
+# exatamente como gravados -- essa leitura não depende de nenhum código daqui.
 
 
 def _build_grouping_request(

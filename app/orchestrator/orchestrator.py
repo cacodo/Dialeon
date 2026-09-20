@@ -23,7 +23,7 @@ pelo Debate Engine, não aqui (ver app/debate/debate_engine.py).
 Responsabilidades que este módulo NÃO tem, de propósito:
 - retry (já é do LLMProvider — chama `complete()` uma vez por provider e
   trata o que vier, seja sucesso ou erro definitivo);
-- agrupamento de claims, extração, crítica, juiz, verificação;
+- extração de claims, crítica, juiz, verificação;
 - persistência;
 - interpretar texto de resposta de LLM como instrução — a única fonte de
   decisão aqui é `RunConfig`/os requests recebidos (construídos ANTES de

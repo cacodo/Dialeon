@@ -247,7 +247,7 @@ class ProviderExecutionPolicy(TransportAttemptPolicy):
     # Judge-scoped transport policy (Judge Transport Execution Policy
     # V1). Os dois campos herdados acima são o DEFAULT do deployment --
     # o que TODA operação sem override usa (participantes, extração,
-    # agrupamento/reconciliação, Source Analysis, Editor). `judge_override`
+    # Source Analysis, Editor; runs históricas também agrupamento/reconciliação). `judge_override`
     # é o override EFETIVO que só a chamada de Judge aplica
     # (`SingleJudge` -> `LLMProvider.complete(execution_policy=...)`).
     #

@@ -104,11 +104,17 @@ class Settings(BaseSettings):
     # 4096 é o menor ajuste que reduz drasticamente a chance de repetir
     # esse cenário sem introduzir um subsistema de alocação de recursos
     # por fase -- continua um único valor provider-neutro, repassado
-    # igual a toda chamada (participante, extração, agrupamento,
-    # crítica, Judge, Editor, SourceAnalyzer), configurável via
+    # igual a toda chamada (participante, extração, crítica, Judge,
+    # Editor, SourceAnalyzer), configurável via
     # RunConfig por execução como já era.
     default_max_output_tokens_per_call: int = Field(default=4096, gt=0)
 
+    # NOTA (remoção do agrupamento/reconciliação da execução): o agrupamento
+    # e a reconciliação cross-round NÃO são mais chamados. O campo
+    # `default_max_output_tokens_grouping` permanece só pela compatibilidade
+    # de reconstrução de RunConfig/runs históricas -- nenhuma chamada da
+    # execução corrente o usa. O texto abaixo é a justificativa HISTÓRICA.
+    #
     # Etapa 17A.2 -- investigação confirmou amplificação estrutural de
     # escala: agrupamento e Judge têm schema de output com cobertura
     # OBRIGATÓRIA (uma entrada por claim bruta/atual), então o tamanho
@@ -139,7 +145,8 @@ class Settings(BaseSettings):
     default_max_output_tokens_judge: int = Field(default=8192, gt=0)
 
     # --- Claim processor (Etapa 5) ---
-    # Mesmo provider realiza extração de claims E agrupamento semântico.
+    # Provider que realiza a extração de claims (o agrupamento semântico e a
+    # reconciliação cross-round não existem mais na execução corrente).
     # Não precisa obrigatoriamente estar em enabled_providers — só precisa
     # existir entre os providers que o DebateEngine recebeu por injeção.
     # Sem fallback automático: se este provider falhar, o processamento
@@ -210,7 +217,7 @@ class Settings(BaseSettings):
     # --- Timeout de dispatch de UMA rodada de providers em paralelo ---
     # Renomeado de `orchestrator_overall_timeout_seconds` (clarificação de
     # contrato de execução, pós-run real): o nome antigo dava a entender
-    # um prazo pra EXECUÇÃO INTEIRA do Council (extração, agrupamento,
+    # um prazo pra EXECUÇÃO INTEIRA do Council (extração,
     # Source Analysis, Judge, Editor incluídos) -- não é isso. Cada
     # RODADA de dispatch paralelo (rodada inicial, rodada de crítica)
     # aplica este mesmo valor de forma INDEPENDENTE (reinicia por
