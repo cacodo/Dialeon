@@ -288,6 +288,20 @@ def has_selectable_support(eligible: dict[str, tuple[str, AnswerVerdictLabel]]) 
     return any(label in (_SUPPORTED, _PARTIAL) for _text, label in eligible.values())
 
 
+def count_omitted_not_established(
+    eligible: dict[str, tuple[str, AnswerVerdictLabel]], selected_ids: set[str]
+) -> int:
+    """Regra ÚNICA (usada pelo validador do plano E pela verificação
+    cruzada de registros): quantas claims avaliadas como NÃO estabelecidas
+    (rejeitada/conflitante/sem informação) ficaram fora da seleção."""
+    not_established_labels = {VERDICT_LABELS["rejected"], _CONFLICTING, _UNRESOLVED}
+    return sum(
+        1
+        for claim_id, (_text, label) in eligible.items()
+        if claim_id not in selected_ids and label in not_established_labels
+    )
+
+
 def validate_plan(
     plan: PrimaryAnswerPlan,
     *,
@@ -334,12 +348,7 @@ def validate_plan(
             )
         )
 
-    not_established_labels = {VERDICT_LABELS["rejected"], _CONFLICTING, _UNRESOLVED}
-    omitted = sum(
-        1
-        for claim_id, (_text, label) in eligible.items()
-        if claim_id not in seen and label in not_established_labels
-    )
+    omitted = count_omitted_not_established(eligible, seen)
     return ValidatedSelection(
         sections=tuple(sections),
         assessed_claim_count=len(eligible),

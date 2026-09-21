@@ -37,6 +37,7 @@ from app.orchestrator.budget import sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
 from app.orchestrator.result import InitialResponsesResult, RoundResult
+from app.editor.primary_answer_coherence import validate_primary_answer_coherence
 from app.reconciliation.errors import ReconciliationError
 from app.reconciliation.reconcile import validate_reconciliation_coherence
 from app.storage.database import session_scope
@@ -308,6 +309,10 @@ class CouncilRepository:
         validate_reconciliation_coherence(
             result.reconciliation, get_current_claims(debate.claims), judge, source_analysis
         )
+        # Primary Answer -- MESMA regra única aplicada na reconstrução (validator
+        # de `CouncilRunResult`); aqui cobre objetos montados sem validação
+        # (ex. `model_copy`) antes de qualquer escrita.
+        validate_primary_answer_coherence(debate, judge, editor)
 
         async with session_scope(self._session_factory) as session:
             accepted_row = await session.get(AcceptedRunRow, result.id)

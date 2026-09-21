@@ -25,9 +25,13 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.debate.result import DebateResult
+from app.editor.primary_answer_coherence import (
+    PrimaryAnswerCoherenceError,
+    validate_primary_answer_coherence,
+)
 from app.editor.result import EditorResult, FinalAnswer
 from app.judge.result import JudgeResult
 from app.orchestrator.config import RunConfig
@@ -85,6 +89,20 @@ class CouncilRunResult(BaseModel):
     reconciliation: SourceJudgeReconciliationResult | None = None
     started_at: datetime
     completed_at: datetime
+
+    @model_validator(mode="after")
+    def _primary_answer_is_coherent_with_this_run(self) -> CouncilRunResult:
+        """Um Primary Answer não-nulo nunca reivindica autoridade que os
+        registros DESTA execução (claims atuais, avaliações do Judge,
+        limitações, tentativa de planejamento) não sustentam -- vale na
+        construção e na reconstrução a partir do storage (fail-closed)."""
+        try:
+            validate_primary_answer_coherence(
+                self.debate_result, self.judge_result, self.editor_result
+            )
+        except PrimaryAnswerCoherenceError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property
