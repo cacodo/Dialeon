@@ -18,9 +18,15 @@ retry de output estruturado abaixo.
 
 Etapa 17A.2 — truncamento CONHECIDO (provider_finish_reason confirmado,
 nunca inferido de JSON malformado sozinho) também cancela o retry: o
-`CompletionRequest` desta camada é montado UMA vez, idêntico em toda
-tentativa, então repeti-lo não corrige um output que já estourou
-`max_output_tokens_judge`. Vira `verdict_unavailable_reason=
+retry só muda o corpo com feedback determinístico (regra violada), então
+repeti-lo não corrige um output que já estourou `max_output_tokens_judge`.
+
+Retry ACIONÁVEL: cada tentativa monta um `CompletionRequest` novo. Depois de
+uma rejeição determinística (referências inconsistentes) ou de schema, a 2ª
+tentativa leva feedback AUTORADO PELA APLICAÇÃO (código fechado + ids/contagens
+que a aplicação conhece; nunca texto de exceção, saída do modelo ou claim).
+O limite de tentativas não muda e a validação segue fail-closed: nada é
+deduplicado nem "consertado" pela aplicação. Vira `verdict_unavailable_reason=
 "judge_output_truncated"`, distinto de "judge_output_invalid" (output
 genuinamente incoerente, causa desconhecida) e "judge_transport_failed"
 (falha de transporte sem relação com truncamento).
@@ -178,21 +184,11 @@ class SingleJudge(JudgeStrategy):
 
         current_claim_ids = {c.id for c in current_claims}
         participating_providers = get_participating_providers(debate_result)
-        request = build_judge_request(
-            question=run_config.question,
-            debate_result=debate_result,
-            current_claims=current_claims,
-            # Etapa 17A.2 -- teto PRÓPRIO do Judge (não o
-            # `max_output_tokens_per_call` geral): o schema exige uma
-            # avaliação por claim atual, então o output mínimo exigido
-            # cresce com a contagem de claims do debate inteiro.
-            max_output_tokens_per_call=run_config.max_output_tokens_judge,
-        )
-        request_provenance = build_request_provenance(JUDGE_CONTRACT_VERSION, request)
-
         attempts: list[JudgeAttempt] = []
         parsed: JudgeOutput | None = None
         accepted_response: ProviderResponse | None = None
+        # por que a tentativa anterior foi rejeitada (autorado pela aplicação)
+        feedback: str | None = None
 
         for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
             if attempt_number > 1:
@@ -204,6 +200,21 @@ class SingleJudge(JudgeStrategy):
                     run_config,
                 ):
                     break  # budget já esgotado -- não inicia o retry
+            # Request NOVO por tentativa: o retry de uma rejeição determinística
+            # carrega a regra violada (não é mais um retry cego) e a
+            # proveniência reflete o request efetivamente enviado.
+            request = build_judge_request(
+                question=run_config.question,
+                debate_result=debate_result,
+                current_claims=current_claims,
+                # Etapa 17A.2 -- teto PRÓPRIO do Judge (não o
+                # `max_output_tokens_per_call` geral): o schema exige uma
+                # avaliação por claim atual, então o output mínimo exigido
+                # cresce com a contagem de claims do debate inteiro.
+                max_output_tokens_per_call=run_config.max_output_tokens_judge,
+                rejection_feedback=feedback,
+            )
+            request_provenance = build_request_provenance(JUDGE_CONTRACT_VERSION, request)
             provider_response = await judge_llm.complete(
                 request, execution_policy=self._execution_policy
             )
@@ -219,6 +230,7 @@ class SingleJudge(JudgeStrategy):
                     provider_response.text, current_claim_ids, participating_providers
                 )
             except MalformedJudgeOutputError as exc:
+                feedback = exc.to_feedback()
                 attempts.append(
                     _parse_rejected_attempt(
                         attempt_number,
@@ -232,6 +244,7 @@ class SingleJudge(JudgeStrategy):
                     break  # truncamento confirmado -- retry idêntico não corrige isso
                 continue
             except InconsistentJudgeReferenceError as exc:
+                feedback = exc.to_feedback()
                 attempts.append(
                     _parse_rejected_attempt(
                         attempt_number,
@@ -332,28 +345,48 @@ def _parse_and_validate(
         raise MalformedJudgeOutputError(f"JSON não bate com o schema esperado: {exc}") from exc
 
     assessment_ids = [a.claim_id for a in parsed.claim_assessments]
+    required = len(current_claim_ids)
     if len(set(assessment_ids)) != len(assessment_ids):
-        raise InconsistentJudgeReferenceError("claim_assessments contém claim_id duplicado")
+        repeated = {i for i in assessment_ids if assessment_ids.count(i) > 1}
+        raise InconsistentJudgeReferenceError(
+            "claim_assessments contém claim_id duplicado",
+            code="duplicate_claim_id",
+            count=len(repeated),
+            # só ids que a aplicação conhece; ids inventados pelo modelo ficam de fora
+            known_ids=tuple(sorted(repeated & current_claim_ids)),
+            required_count=required,
+        )
 
     assessment_id_set = set(assessment_ids)
     unknown = assessment_id_set - current_claim_ids
     if unknown:
         raise InconsistentJudgeReferenceError(
-            f"claim_assessments referencia claim_id(s) desconhecido(s): {sorted(unknown)}"
+            f"claim_assessments referencia claim_id(s) desconhecido(s): {sorted(unknown)}",
+            code="unknown_claim_id",
+            count=len(unknown),
+            required_count=required,
         )
 
     missing = current_claim_ids - assessment_id_set
     if missing:
         raise InconsistentJudgeReferenceError(
             "claim_assessments não avaliou todas as claims atuais — "
-            f"faltando: {sorted(missing)}"
+            f"faltando: {sorted(missing)}",
+            code="missing_claim_id",
+            count=len(missing),
+            known_ids=tuple(sorted(missing)),
+            required_count=required,
         )
 
     unknown_providers = set(parsed.best_arguments_by) - participating_providers
     if unknown_providers:
         raise InconsistentJudgeReferenceError(
             "best_arguments_by referencia provider(s) que não participaram "
-            f"do debate: {sorted(unknown_providers)}"
+            f"do debate: {sorted(unknown_providers)}",
+            code="unknown_provider",
+            count=len(unknown_providers),
+            known_ids=tuple(sorted(participating_providers)),
+            required_count=required,
         )
 
     return parsed
