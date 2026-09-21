@@ -774,7 +774,7 @@ function makePrimary(overrides: Partial<PrimaryAnswerPublic> = {}): PrimaryAnswe
       },
       {
         role: 'uncertainties',
-        heading: 'Incertezas e pontos não estabelecidos:',
+        heading: 'Incertezas e ressalvas:',
         items: [
           {
             claim_id: 'c2',
@@ -818,7 +818,7 @@ describe('FinalAnswerView -- resposta principal', () => {
 
     expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
-    expect(screen.getByRole('heading', { level: 3, name: 'Incertezas e pontos não estabelecidos:' })).toBeVisible()
+    expect(screen.getByRole('heading', { level: 3, name: 'Incertezas e ressalvas:' })).toBeVisible()
     expect(screen.getByText('Um SaaS é a melhor escolha.')).toBeVisible()
     expect(screen.getByText('(sustentada pelo debate)')).toBeVisible()
     expect(screen.getByText('(sem informação suficiente para decidir)')).toBeVisible()

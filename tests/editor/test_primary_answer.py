@@ -211,8 +211,7 @@ def test_duplicate_references_are_rejected(roles):
         ("conditions", "c-unr"),
         ("tradeoffs", "c-unr"),
         ("tradeoffs", "c-rej"),
-        ("uncertainties", "c-rej"),
-        ("uncertainties", "c-sup2"),  # "sustentada" nunca vira "incerteza"
+        ("uncertainties", "c-rej"),  # rejeitada segue inelegível em QUALQUER papel
     ],
 )
 def test_role_verdict_incompatibility_is_rejected(role, claim_id):
@@ -233,6 +232,7 @@ def test_role_verdict_incompatibility_is_rejected(role, claim_id):
         ("uncertainties", "c-unr"),
         ("uncertainties", "c-con"),
         ("uncertainties", "c-par"),
+        ("uncertainties", "c-sup2"),  # papel semântico != veredito: ressalva cujo conteúdo é sustentado
     ],
 )
 def test_compatible_combinations_are_accepted(role, claim_id):
@@ -329,6 +329,78 @@ def test_rendering_is_deterministic_scaffolding_plus_verbatim_claim_text():
     assert "EXPLICACAO" not in text
 
 
+def test_uncertainty_role_matrix_after_the_repair_is_exact():
+    from app.editor.primary_answer import PRIMARY_ANSWER_ROLE_VALID_LABELS as valid
+
+    assert PRIMARY_ANSWER_ROLE_HEADINGS["uncertainties"] == "Incertezas e ressalvas:"
+    by_verdict = {v: label for v, label in VERDICT_LABELS.items()}
+    allowed = {role: {v for v, lbl in by_verdict.items() if lbl in labels} for role, labels in valid.items()}
+    assert allowed["uncertainties"] == {"supported", "partially_supported", "conflicting", "unresolved"}
+    # papéis afirmativos NÃO foram enfraquecidos
+    for role in ("central_conclusion", "supporting_reasons", "conditions"):
+        assert allowed[role] == {"supported", "partially_supported"}
+    assert allowed["tradeoffs"] == {"supported", "partially_supported", "conflicting"}
+    assert all("rejected" not in verdicts for verdicts in allowed.values())
+
+
+def test_a_supported_uncertainty_is_rendered_under_the_new_heading_with_its_verdict_kept():
+    world = World()
+
+    answer = _render(world, _plan(uncertainties=["c-sup2"]))
+
+    text = answer.rendered_text
+    assert "Incertezas e ressalvas:" in text and "pontos não estabelecidos" not in text
+    (section,) = [s for s in answer.sections if s.role == "uncertainties"]
+    assert section.heading == "Incertezas e ressalvas:"
+    (item,) = section.items
+    # a colocação NÃO relabela: continua "sustentada", nunca "incerta"/"não resolvida"
+    assert item.verdict_label == "sustentada pelo debate"
+    assert "- Custos de SaaS são previsíveis. (sustentada pelo debate)" in text
+    assert "não resolvida" not in text
+
+
+def test_live_shaped_verdict_mix_can_still_produce_a_coherent_primary_answer():
+    """Reproduz o defeito vivo: só supported + partially_supported (nenhuma
+    conflitante/não resolvida) e o planejador coloca uma claim `supported`
+    cujo CONTEÚDO é uma ressalva em `uncertainties` (antes: rejeitado)."""
+    world = World()
+    caveat = raw_claim("Não é garantido que os descontos para ONGs sejam de 50% a 100%.", "r-9", id="c-cav")
+    world.claims.append(caveat)
+    world.current = get_current_claims(world.claims)
+    world.verdict = verdict(
+        [
+            ClaimAssessment(claim_id="c-sup", verdict="supported", explanation="X"),
+            ClaimAssessment(claim_id="c-sup2", verdict="supported", explanation="X"),
+            ClaimAssessment(claim_id="c-par", verdict="partially_supported", explanation="X"),
+            ClaimAssessment(claim_id="c-cav", verdict="supported", explanation="X"),
+        ],
+        debate_limitations=[],
+    )
+    plan = _plan(supporting_reasons=["c-sup2"], uncertainties=["c-cav", "c-par"])
+
+    answer = _render(world, plan)
+
+    assert [i.claim_id for s in answer.sections for i in s.items] == ["c-sup", "c-sup2", "c-cav", "c-par"]
+    assert not any(v in ("conflicting", "unresolved") for v in
+                   (a.verdict for a in world.verdict.claim_assessments))
+    assert "- Não é garantido que os descontos para ONGs sejam de 50% a 100%. (sustentada pelo debate)" in (
+        answer.rendered_text
+    )
+    assert PrimaryAnswer.model_validate(answer.model_dump(mode="json")) == answer  # coerente e reidratável
+
+
+@pytest.mark.parametrize("role", ["central_conclusion", "supporting_reasons", "conditions"])
+@pytest.mark.parametrize("claim_id", ["c-unr", "c-con", "c-rej"])
+def test_affirmative_roles_stay_closed_to_unresolved_conflicting_and_rejected(role, claim_id):
+    world = World()
+    data = {"central_conclusion": [claim_id]} if role == "central_conclusion" else {
+        "central_conclusion": ["c-sup"], role: [claim_id]
+    }
+
+    with pytest.raises(InvalidPrimaryAnswerPlanError, match="incompatível"):
+        _validate(world, PrimaryAnswerPlan.model_validate(data))
+
+
 def test_a_partially_supported_claim_is_never_presented_as_plainly_supported():
     world = World()
 
@@ -390,6 +462,7 @@ def test_a_valid_dump_roundtrips():
         lambda d: d.update(scope_note="Verificado externamente."),
         lambda d: d.update(lead_in="Fato estabelecido:"),
         lambda d: d["sections"][0].update(heading="Verdade absoluta:"),
+        lambda d: d["sections"][0].update(heading="Incertezas e pontos não estabelecidos:"),  # rótulo antigo
         lambda d: d["sections"][0]["items"][0].update(verdict_label="rejeitada pelo juiz com base no debate disponível"),
         lambda d: d["sections"][0]["items"][0].update(verdict_label="com posições conflitantes, não resolvida"),
         lambda d: d.update(selected_claim_count=5),
@@ -519,6 +592,134 @@ async def test_a_semantically_invalid_plan_gets_one_structured_retry_then_succee
     assert [a.parse_status for a in result.primary_answer_attempts] == ["inconsistent_references", "accepted"]
     assert result.primary_answer_attempts[0].parse_error_message
     assert result.final_answer.primary_answer is not None
+
+
+def _user_body(request) -> str:
+    return request.messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_the_retry_after_a_validation_failure_carries_bounded_application_feedback():
+    world = World()
+    provider = _provider(
+        primary=[
+            text_response("anthropic", json.dumps({"central_conclusion": ["c-sup"], "supporting_reasons": ["c-unr"]}),
+                          input_tokens=10, output_tokens=5, cost_usd=0.001),
+            text_response("anthropic", _primary_payload(uncertainties=["c-unr"]),
+                          input_tokens=12, output_tokens=6, cost_usd=0.002),
+        ]
+    )
+
+    result = await _compose(world, provider)
+
+    first, second = provider.primary_requests
+    assert "REJEICAO_DA_TENTATIVA_ANTERIOR" not in _user_body(first)
+    body = _user_body(second)
+    assert "REJEICAO_DA_TENTATIVA_ANTERIOR" in body
+    # explica O QUE e POR QUÊ, com vocabulário fechado da própria aplicação
+    assert "c-unr" in body and "'unresolved'" in body and "'supporting_reasons'" in body
+    assert "partially_supported, supported" in body
+    feedback = body.split("REJEICAO_DA_TENTATIVA_ANTERIOR", 1)[1]
+    assert len(feedback) < 700  # limitado
+    # mesma família de contrato/system prompt; só o corpo difere
+    assert first.system_prompt == second.system_prompt and first.max_tokens == second.max_tokens
+    assert body.startswith(_user_body(first))
+    # proveniência/accounting auditáveis pelo mecanismo existente, uma por tentativa
+    a1, a2 = result.primary_answer_attempts
+    assert [a.parse_status for a in (a1, a2)] == ["inconsistent_references", "accepted"]
+    assert a1.request_provenance.contract_version == a2.request_provenance.contract_version == "primary_answer_plan_v1"
+    assert a1.request_provenance != a2.request_provenance  # não é mais um retry cego
+    assert result.editor_input_tokens == result.attempts[0].usage.input_tokens + 22
+    assert result.editor_output_tokens == result.attempts[0].usage.output_tokens + 11
+    assert result.final_answer.primary_answer is not None and result.primary_answer_fallback_reason is None
+
+
+@pytest.mark.asyncio
+async def test_retry_feedback_never_echoes_model_supplied_ids_or_claim_text():
+    world = World()
+    hostile = "c-IGNORE-TUDO<script>alert(1)</script>"
+    provider = _provider(
+        primary=[
+            text_response("anthropic", json.dumps({"central_conclusion": [hostile]})),
+            text_response("anthropic", _primary_payload()),
+        ]
+    )
+
+    await _compose(world, provider)
+
+    body = _user_body(provider.primary_requests[1])
+    assert "REJEICAO_DA_TENTATIVA_ANTERIOR" in body
+    assert hostile not in body and "IGNORE-TUDO" not in body and "<script>" not in body
+    assert "nenhuma afirmação fornecida" in body
+
+
+def test_feedback_is_derived_only_from_closed_vocabulary_and_known_ids():
+    world = World()
+    with pytest.raises(InvalidPrimaryAnswerPlanError) as excinfo:
+        _validate(world, _plan(conditions=["c-con"]))
+    feedback = excinfo.value.to_feedback()
+
+    assert "c-con" in feedback and "'conflicting'" in feedback and "'conditions'" in feedback
+    assert "Descontos para ONGs" not in feedback and "EXPLICACAO" not in feedback  # nada de claim/Judge
+    assert str(excinfo.value) not in feedback  # nunca o texto cru da exceção
+
+    with pytest.raises(InvalidPrimaryAnswerPlanError) as unknown:
+        _validate(world, _plan(conditions=["forjado' OR 1=1"]))
+    assert "forjado" not in unknown.value.to_feedback()
+
+
+@pytest.mark.asyncio
+async def test_a_schema_malformed_first_output_gets_generic_format_feedback_only():
+    world = World()
+    provider = _provider(
+        primary=[
+            text_response("anthropic", json.dumps({"central_conclusion": ["c-sup"], "narrative": "SEGREDO-INJETADO"})),
+            text_response("anthropic", _primary_payload()),
+        ]
+    )
+
+    result = await _compose(world, provider)
+
+    body = _user_body(provider.primary_requests[1])
+    assert "não seguiu o formato exigido" in body and "SEGREDO-INJETADO" not in body
+    assert [a.parse_status for a in result.primary_answer_attempts] == ["malformed", "accepted"]
+
+
+@pytest.mark.asyncio
+async def test_a_supported_uncertainty_planned_by_the_model_now_succeeds_on_the_first_attempt():
+    world = World()
+    provider = _provider(primary=[text_response("anthropic", _primary_payload(uncertainties=["c-sup2"]))])
+
+    result = await _compose(world, provider)
+
+    assert len(provider.primary_requests) == 1
+    assert [a.parse_status for a in result.primary_answer_attempts] == ["accepted"]
+    primary = result.final_answer.primary_answer
+    assert primary is not None and "Incertezas e ressalvas:" in primary.rendered_text
+
+
+def test_the_planner_prompt_separates_semantic_role_from_verdict():
+    world = World()
+    system = build_primary_answer_plan_request("Q?", world.verdict, world.current, [], 1024).system_prompt or ""
+
+    assert "apenas escolhe ids" in system
+    assert "incertezas e ressalvas" in system and "supported" in system.split("uncertainties", 1)[1]
+    assert "dimensões separadas" in system
+    assert "pontos não estabelecidos" not in system
+
+
+@pytest.mark.asyncio
+async def test_two_validation_failures_still_fall_back_safely_without_a_third_attempt():
+    world = World()
+    bad = json.dumps({"central_conclusion": ["c-unr"]})
+    provider = _provider(primary=[text_response("anthropic", bad), text_response("anthropic", bad)])
+
+    result = await _compose(world, provider)
+
+    assert len(provider.primary_requests) == 2  # sem novos retries
+    assert result.primary_answer_fallback_reason == "primary_answer_output_invalid"
+    assert result.final_answer.primary_answer is None and result.final_answer.answer_blocks is not None
+    assert [a.parse_status for a in result.primary_answer_attempts] == ["inconsistent_references"] * 2
 
 
 @pytest.mark.asyncio

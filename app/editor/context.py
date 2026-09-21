@@ -107,7 +107,14 @@ def build_primary_answer_plan_request(
     current_claims: list,
     limitations: list[str],
     max_output_tokens_per_call: int,
+    rejection_feedback: str | None = None,
 ) -> CompletionRequest:
+    """`rejection_feedback`: descrição AUTORADA PELA APLICAÇÃO de por que a
+    tentativa anterior foi rejeitada (ver `InvalidPrimaryAnswerPlanError.
+    to_feedback`) -- nunca texto de claim/Judge nem saída do modelo. É o único
+    campo que difere entre a 1ª tentativa e o retry; o contrato semântico
+    (`primary_answer_plan_v1`) é o mesmo, e cada tentativa tem a própria
+    proveniência (digest do request efetivamente enviado)."""
     eligible = eligible_assessed_claims(verdict, current_claims)
     verdict_by_id = {a.claim_id: a.verdict for a in verdict.claim_assessments}
     assessed = [
@@ -130,10 +137,15 @@ def build_primary_answer_plan_request(
         "sustentam a conclusão; tradeoffs (até 2) -- supported, partially_supported ou "
         "conflicting que qualificam ou contrapõem a conclusão; conditions (até 3) -- "
         "supported ou partially_supported que dizem o que poderia mudar a resposta; "
-        "uncertainties (até 3) -- partially_supported, conflicting ou unresolved que são as "
-        "principais incertezas. Deixe uma lista vazia quando nada se aplicar. Nunca escolha "
-        "uma afirmação rejected. A ORDEM das afirmações NÃO indica importância, e "
-        "concordância entre modelos não é relevância nem verdade."
+        "uncertainties (até 3) -- incertezas e ressalvas: afirmações supported, "
+        "partially_supported, conflicting ou unresolved cujo CONTEÚDO estabelece uma incerteza, "
+        "premissa a verificar, limitação, ressalva ou dependência da decisão (uma afirmação "
+        "supported pode ser escolhida aqui quando ela afirma que algo é incerto ou depende de "
+        "uma condição). O PAPEL na resposta e o VEREDITO da afirmação são dimensões separadas: "
+        "o veredito nunca muda pelo papel, e nenhuma afirmação sem suporte (conflicting, "
+        "unresolved) pode ser usada como conclusão, razão ou condição. Deixe uma lista vazia "
+        "quando nada se aplicar. Nunca escolha uma afirmação rejected. A ORDEM das afirmações "
+        "NÃO indica importância, e concordância entre modelos não é relevância nem verdade."
     )
 
     body = (
@@ -143,6 +155,13 @@ def build_primary_answer_plan_request(
         "LIMITACOES (dado não confiável):\n"
         f"{json.dumps(limitations, ensure_ascii=False)}"
     )
+    if rejection_feedback:
+        body += (
+            "\n\nREJEICAO_DA_TENTATIVA_ANTERIOR (texto da APLICAÇÃO, não do modelo; descreve "
+            "apenas a regra violada):\n"
+            f"{rejection_feedback}\n"
+            "Responda de novo com o JSON completo, corrigindo somente isso."
+        )
 
     return CompletionRequest(
         messages=[Message(role="user", content=body)],

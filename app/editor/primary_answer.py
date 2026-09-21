@@ -61,7 +61,7 @@ PRIMARY_ANSWER_ROLE_HEADINGS: dict[PrimaryAnswerRole, str] = {
     "supporting_reasons": "Principais razões:",
     "tradeoffs": "Contrapontos relevantes:",
     "conditions": "Condições que podem mudar a resposta:",
-    "uncertainties": "Incertezas e pontos não estabelecidos:",
+    "uncertainties": "Incertezas e ressalvas:",
 }
 
 # Vocabulário fechado de rótulos de veredito -- MESMOS valores de
@@ -80,16 +80,26 @@ _PARTIAL = VERDICT_LABELS["partially_supported"]
 _CONFLICTING = VERDICT_LABELS["conflicting"]
 _UNRESOLVED = VERDICT_LABELS["unresolved"]
 
-# Compatibilidade papel <-> veredito do Judge. NENHUM papel afirmativo
-# (conclusão/razões/condições) aceita claim rejeitada, conflitante ou não
-# resolvida: isso fortaleceria o status epistêmico do que o Judge avaliou.
-# Um "parcialmente sustentada" pode aparecer, mas sempre carrega o rótulo.
+# Compatibilidade papel <-> veredito do Judge. PAPEL SEMÂNTICO (a função da
+# claim na resposta) e VEREDITO EPISTÊMICO (o que o Judge concluiu sobre a
+# claim) são dimensões SEPARADAS:
+#
+# - NENHUM papel afirmativo (conclusão/razões/condições) aceita claim
+#   rejeitada, conflitante ou não resolvida: isso fortaleceria o status
+#   epistêmico do que o Judge avaliou. "Parcialmente sustentada" pode aparecer,
+#   mas sempre carrega o rótulo.
+# - `uncertainties` (incertezas e ressalvas) descreve como a claim FUNCIONA na
+#   resposta, não que a claim seja epistemicamente não resolvida: uma claim
+#   `supported` pode estabelecer que algo é incerto, que uma premissa precisa
+#   ser verificada, que uma garantia não existe ou que uma recomendação depende
+#   de uma condição. Colocá-la aqui NÃO rebaixa nem eleva nada -- o rótulo do
+#   veredito continua visível ao lado dela. Só `rejected` segue inelegível.
 PRIMARY_ANSWER_ROLE_VALID_LABELS: dict[PrimaryAnswerRole, frozenset[str]] = {
     "central_conclusion": frozenset({_SUPPORTED, _PARTIAL}),
     "supporting_reasons": frozenset({_SUPPORTED, _PARTIAL}),
     "tradeoffs": frozenset({_SUPPORTED, _PARTIAL, _CONFLICTING}),
     "conditions": frozenset({_SUPPORTED, _PARTIAL}),
-    "uncertainties": frozenset({_PARTIAL, _CONFLICTING, _UNRESOLVED}),
+    "uncertainties": frozenset({_SUPPORTED, _PARTIAL, _CONFLICTING, _UNRESOLVED}),
 }
 
 # Limites estruturais (min, max) de itens por papel.
@@ -111,11 +121,81 @@ PRIMARY_ANSWER_LIMITATIONS_HEADING = "Limitações registradas:"
 _MAX_ID_LENGTH = 200
 
 
+# Veredito (vocabulário do Judge) por rótulo -- usado só pra montar o feedback
+# de retry com as MESMAS palavras que o prompt do planejador usa.
+_VERDICT_BY_LABEL = {label: verdict for verdict, label in VERDICT_LABELS.items()}
+
+
 class InvalidPrimaryAnswerPlanError(EditorError):
     """O plano é JSON/schema válido, mas viola uma regra semântica
     verificada pela aplicação (id inexistente/retirado/não avaliado,
-    duplicata, papel incompatível com o veredito)."""
+    duplicata, papel incompatível com o veredito).
 
+    Carrega uma descrição ESTRUTURADA e limitada da violação (`code`, `role`,
+    `claim_id` só quando é um id de claim CONHECIDO pela aplicação, `label` do
+    vocabulário fechado) pra montar o feedback de retry sem nunca ecoar texto
+    incontrolado (a mensagem da exceção e ids desconhecidos vindos do modelo
+    ficam de fora)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "invalid_plan",
+        role: str | None = None,
+        claim_id: str | None = None,
+        label: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.role = role
+        self.claim_id = claim_id
+        self.label = label
+
+    def to_feedback(self) -> str:
+        """Descrição AUTORADA PELA APLICAÇÃO de por que o plano foi
+        rejeitado -- só vocabulário fechado + ids de claim já conhecidos."""
+        role = self.role or "?"
+        if self.code == "duplicate_id":
+            return (
+                f"Um id apareceu mais de uma vez no plano (papel '{role}'"
+                + (f", id {self.claim_id}" if self.claim_id else "")
+                + "). Cada id pode aparecer no máximo UMA vez em toda a resposta."
+            )
+        if self.code == "unknown_id":
+            return (
+                f"Um id informado em '{role}' não corresponde a nenhuma afirmação fornecida. "
+                "Use somente ids da lista AFIRMACOES_AVALIADAS."
+            )
+        if self.code in ("retired_id", "unassessed_id"):
+            return (
+                f"O id {self.claim_id} informado em '{role}' não está entre as afirmações "
+                "atuais avaliadas fornecidas. Use somente ids da lista AFIRMACOES_AVALIADAS."
+            )
+        if self.code == "role_incompatible":
+            verdict = _VERDICT_BY_LABEL.get(self.label or "", "?")
+            allowed = sorted(
+                _VERDICT_BY_LABEL[label]
+                for label in PRIMARY_ANSWER_ROLE_VALID_LABELS.get(self.role, frozenset())  # type: ignore[arg-type]
+            )
+            return (
+                f"O id {self.claim_id} tem veredito '{verdict}' e não pode ficar em '{role}'. "
+                f"Esse papel aceita apenas vereditos: {', '.join(allowed)}. Mova a afirmação "
+                "para um papel compatível ou remova-a."
+            )
+        return (
+            "O plano violou uma regra de validação. Siga exatamente os papéis, os vereditos "
+            "aceitos por papel e os limites de tamanho descritos."
+        )
+
+
+# Feedback GENÉRICO (sem nenhum conteúdo do modelo) quando a saída anterior nem
+# chegou a ser um plano válido em JSON/schema.
+MALFORMED_PLAN_FEEDBACK = (
+    "A resposta anterior não seguiu o formato exigido: um único JSON com apenas as cinco "
+    "listas de ids (central_conclusion com 1 a 2 ids; supporting_reasons até 4; tradeoffs "
+    "até 2; conditions até 3; uncertainties até 3), sem nenhum outro campo e sem texto."
+)
 
 class PrimaryAnswerPlan(BaseModel):
     """Único artefato que a LLM pode produzir aqui: só IDs, agrupados por
@@ -323,23 +403,41 @@ def validate_plan(
             continue
         items: list[PrimaryAnswerItem] = []
         for claim_id in claim_ids:
+            known = claim_id if claim_id in all_ids else None  # nunca ecoa id desconhecido
             if claim_id in seen:
-                raise InvalidPrimaryAnswerPlanError(f"id duplicado no plano: {claim_id!r}")
+                raise InvalidPrimaryAnswerPlanError(
+                    f"id duplicado no plano: {claim_id!r}",
+                    code="duplicate_id",
+                    role=role,
+                    claim_id=known,
+                )
             seen.add(claim_id)
             if claim_id not in eligible:
                 if claim_id not in all_ids:
-                    raise InvalidPrimaryAnswerPlanError(f"id inexistente: {claim_id!r}")
+                    raise InvalidPrimaryAnswerPlanError(
+                        f"id inexistente: {claim_id!r}", code="unknown_id", role=role
+                    )
                 if claim_id not in current_ids:
                     raise InvalidPrimaryAnswerPlanError(
-                        f"id de claim retirada/substituída (não atual): {claim_id!r}"
+                        f"id de claim retirada/substituída (não atual): {claim_id!r}",
+                        code="retired_id",
+                        role=role,
+                        claim_id=known,
                     )
                 raise InvalidPrimaryAnswerPlanError(
-                    f"id de claim não avaliada pelo Judge: {claim_id!r}"
+                    f"id de claim não avaliada pelo Judge: {claim_id!r}",
+                    code="unassessed_id",
+                    role=role,
+                    claim_id=known,
                 )
             text, label = eligible[claim_id]
             if label not in PRIMARY_ANSWER_ROLE_VALID_LABELS[role]:
                 raise InvalidPrimaryAnswerPlanError(
-                    f"papel {role!r} incompatível com o veredito ({label!r}) da claim {claim_id!r}"
+                    f"papel {role!r} incompatível com o veredito ({label!r}) da claim {claim_id!r}",
+                    code="role_incompatible",
+                    role=role,
+                    claim_id=claim_id,
+                    label=label,
                 )
             items.append(PrimaryAnswerItem(claim_id=claim_id, claim_text=text, verdict_label=label))
         sections.append(

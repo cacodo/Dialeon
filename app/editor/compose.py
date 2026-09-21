@@ -225,6 +225,7 @@ from app.editor.context import (
 )
 from app.editor.errors import MalformedEditorOutputError
 from app.editor.primary_answer import (
+    MALFORMED_PLAN_FEEDBACK,
     InvalidPrimaryAnswerPlanError,
     PrimaryAnswer,
     PrimaryAnswerPlan,
@@ -771,17 +772,9 @@ class Editor:
         if compute_budget_exceeded(input_before, output_before, cost_before, run_config):
             return None, [], "budget_exhausted_before_primary_answer"
 
-        request = build_primary_answer_plan_request(
-            run_config.question,
-            verdict,
-            current_claims,
-            list(limitations),
-            run_config.max_output_tokens_per_call,
-        )
-        request_provenance = build_request_provenance(PRIMARY_ANSWER_CONTRACT_VERSION, request)
-
         attempts: list[EditorAttempt] = []
         selection = None
+        feedback: str | None = None  # por que a tentativa anterior foi rejeitada (autorado pela aplicação)
         for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
             if attempt_number > 1:
                 so_far_input, so_far_output, so_far_cost, _ = sum_usage_and_cost(attempts)
@@ -792,6 +785,17 @@ class Editor:
                     run_config,
                 ):
                     break
+            # Retry ACIONÁVEL: a 2ª tentativa recebe a regra violada; cada
+            # tentativa tem a proveniência do request EFETIVAMENTE enviado.
+            request = build_primary_answer_plan_request(
+                run_config.question,
+                verdict,
+                current_claims,
+                list(limitations),
+                run_config.max_output_tokens_per_call,
+                rejection_feedback=feedback,
+            )
+            request_provenance = build_request_provenance(PRIMARY_ANSWER_CONTRACT_VERSION, request)
             provider_response = await editor_llm.complete(request)
 
             if provider_response.status == "error":
@@ -809,6 +813,11 @@ class Editor:
                     all_claims=debate_result.claims,
                 )
             except (MalformedEditorOutputError, InvalidPrimaryAnswerPlanError) as exc:
+                feedback = (
+                    exc.to_feedback()
+                    if isinstance(exc, InvalidPrimaryAnswerPlanError)
+                    else MALFORMED_PLAN_FEEDBACK
+                )
                 attempts.append(
                     _parse_rejected_attempt(
                         attempt_number,
