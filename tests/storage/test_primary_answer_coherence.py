@@ -429,3 +429,256 @@ async def test_an_old_shape_row_survives_the_additive_upgrade_and_public_mapping
     )
     assert response.final_answer.primary_answer is None
     assert audit.primary_answer_attempts == [] and audit.editor_outcome.primary_answer_fallback_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Blocker 1 (closure repair sobre 9464fdf) -- "bind PrimaryAnswer to
+# accepted plan": as checagens por-item acima (claim_id elegível,
+# claim_text/verdict_label batendo com a avaliação real) provam que CADA
+# item é individualmente válido, mas não que a SELEÇÃO/PAPÉIS/ORDEM
+# persistidos correspondem exatamente ao plano REALMENTE aceito
+# (`primary_answer_attempts[-1].raw_output_text`). Os mutantes abaixo
+# passariam INCÓLUMES pelas checagens por-item de cima (cada claim
+# referenciada É elegível, com texto/rótulo corretos) -- só a reconstrução
+# determinística a partir do plano aceito (adicionada por este repair) os
+# pega. Precisam de DUAS claims elegíveis reais (a fixture de 1 claim não
+# basta pra "trocar por outra claim elegível" nem "mover pra outro papel
+# compatível") -- ver `_two_claim_result` abaixo.
+# ---------------------------------------------------------------------------
+
+
+def _two_claim_result():
+    """Execução com DUAS claims elegíveis, ambas `supported` -- a fixture
+    padrão de 1 claim não permite exercitar "substituir por outra claim
+    elegível"/"mover pra outro papel"/"reordenar" (precisam de pelo menos
+    duas). `c2` é uma claim nova e genuína desta execução (não uma
+    fabricação de teste sobreposta a um `PrimaryAnswer`) -- avaliada pelo
+    Judge como qualquer outra."""
+    from uuid import uuid4
+
+    from app.models.domain import ClaimAssessment
+
+    base = full_council_run_result()
+    c1 = base.debate_result.claims[0]
+    c2 = c1.model_copy(
+        update={"id": str(uuid4()), "text": "Segunda claim, também elegível e sustentada."}
+    )
+    debate = base.debate_result.model_copy(update={"claims": [c1, c2]})
+    verdict = base.judge_result.verdict.model_copy(
+        update={
+            "claim_assessments": [
+                *base.judge_result.verdict.claim_assessments,
+                ClaimAssessment(claim_id=c2.id, verdict="supported", explanation="Também sustentada."),
+            ]
+        }
+    )
+    judge_result = base.judge_result.model_copy(update={"verdict": verdict})
+    result = base.model_copy(update={"debate_result": debate, "judge_result": judge_result})
+    return with_recomputed_reconciliation(result), c1, c2
+
+
+def test_a_genuinely_coherent_two_claim_primary_answer_is_accepted():
+    """Controle positivo -- prova que o harness de duas claims em si não
+    está simplesmente quebrado/rejeitando tudo: uma seleção que CORRESPONDE
+    exatamente ao plano aceito é aceita normalmente."""
+    result, c1, c2 = _two_claim_result()
+    plan_payload = {"central_conclusion": [c1.id], "supporting_reasons": [c2.id]}
+    result, _primary = _with_primary_answer(result, plan_payload=plan_payload)
+
+    _check(result)  # não levanta
+
+
+def test_coordinated_mutant_removing_a_selected_claim_is_rejected():
+    """Remove `c2` (que o plano aceito realmente selecionou em
+    `supporting_reasons`) da seleção persistida, recomputando
+    `selected_claim_count`/`rendered_text`/`scope_note` pra continuar
+    internamente coerente -- só `central_conclusion=[c1]` sobra. Cada item
+    remanescente continua individualmente válido; só a reconstrução do
+    plano aceito percebe que uma claim selecionada sumiu."""
+    result, c1, c2 = _two_claim_result()
+    plan_payload = {"central_conclusion": [c1.id], "supporting_reasons": [c2.id]}
+    result, primary = _with_primary_answer(result, plan_payload=plan_payload)
+
+    mutant = _mutant(primary, sections=[primary.sections[0]])  # só central_conclusion=[c1]
+    assert PrimaryAnswer.model_validate(mutant.model_dump(mode="json")) == mutant  # internamente coerente
+
+    with pytest.raises(PrimaryAnswerCoherenceError, match="reconstru|plano aceito"):
+        _check(_with_final(result, mutant))
+
+
+def test_coordinated_mutant_replacing_a_selected_claim_with_another_eligible_claim_is_rejected():
+    """Troca `c1` (selecionado pelo plano aceito) por `c2` -- outra claim
+    IGUALMENTE elegível e `supported` desta MESMA execução -- no MESMO
+    papel (`central_conclusion`), com `claim_text`/`verdict_label`
+    corretos pra `c2` (então cada checagem por-item de cima passa: `c2` É
+    elegível, com texto/rótulo reais). Só a reconstrução do plano aceito
+    (que continua dizendo `central_conclusion=[c1]`) percebe a troca."""
+    result, c1, c2 = _two_claim_result()
+    plan_payload = {"central_conclusion": [c1.id]}
+    result, primary = _with_primary_answer(result, plan_payload=plan_payload)
+
+    mutant = _mutant(
+        primary,
+        sections=_replace_first_item(
+            primary, claim_id=c2.id, claim_text=c2.text, verdict_label="sustentada pelo debate"
+        ),
+    )
+    assert PrimaryAnswer.model_validate(mutant.model_dump(mode="json")) == mutant
+
+    with pytest.raises(PrimaryAnswerCoherenceError, match="reconstru|plano aceito"):
+        _check(_with_final(result, mutant))
+
+
+def test_coordinated_mutant_moving_a_claim_to_another_compatible_role_is_rejected():
+    """O plano aceito colocou `c2` em `supporting_reasons`; o mutante move
+    a MESMA claim (texto/rótulo intactos, `supported` é compatível com os
+    dois papéis) pra `conditions` -- estruturalmente tão válida quanto
+    antes, só o PAPEL mudou em relação ao que o plano aceito realmente
+    continha."""
+    result, c1, c2 = _two_claim_result()
+    plan_payload = {"central_conclusion": [c1.id], "supporting_reasons": [c2.id]}
+    result, primary = _with_primary_answer(result, plan_payload=plan_payload)
+
+    from app.editor.primary_answer import PRIMARY_ANSWER_ROLE_HEADINGS
+
+    moved_section = PrimaryAnswerSection(
+        role="conditions",
+        heading=PRIMARY_ANSWER_ROLE_HEADINGS["conditions"],
+        items=primary.sections[1].items,  # a mesma claim c2, intacta
+    )
+    mutant = _mutant(primary, sections=[primary.sections[0], moved_section])
+    assert PrimaryAnswer.model_validate(mutant.model_dump(mode="json")) == mutant
+
+    with pytest.raises(PrimaryAnswerCoherenceError, match="reconstru|plano aceito"):
+        _check(_with_final(result, mutant))
+
+
+def test_coordinated_mutant_reordering_items_within_a_role_is_rejected():
+    """O plano aceito escolheu `central_conclusion=[c1, c2]`, NESSA ordem;
+    o mutante persiste as MESMAS duas claims, íntegras, mas em ORDEM
+    invertida dentro da mesma seção -- a ordem é semanticamente persistida
+    (reflete a ordem do plano aceito, ver `validate_plan`), então este
+    repair exige que ela também corresponda."""
+    result, c1, c2 = _two_claim_result()
+    plan_payload = {"central_conclusion": [c1.id, c2.id]}
+    result, primary = _with_primary_answer(result, plan_payload=plan_payload)
+
+    original_section = primary.sections[0]
+    assert [item.claim_id for item in original_section.items] == [c1.id, c2.id]
+    reordered_section = PrimaryAnswerSection(
+        role=original_section.role,
+        heading=original_section.heading,
+        items=tuple(reversed(original_section.items)),
+    )
+    mutant = _mutant(primary, sections=[reordered_section])
+    assert PrimaryAnswer.model_validate(mutant.model_dump(mode="json")) == mutant
+
+    with pytest.raises(PrimaryAnswerCoherenceError, match="reconstru|plano aceito"):
+        _check(_with_final(result, mutant))
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_a_coordinated_mutant_that_replaces_the_selected_claim_before_any_write(
+    repo, engine
+):
+    """Mesma disciplina de `test_save_refuses_a_cross_record_invalid_primary_answer_before_any_write`
+    (achados anteriores) aplicada ao Blocker 1: `save_success` recusa ANTES
+    de qualquer escrita, nenhuma linha fica meio-persistida."""
+    result, c1, c2 = _two_claim_result()
+    plan_payload = {"central_conclusion": [c1.id]}
+    result, primary = _with_primary_answer(result, plan_payload=plan_payload)
+    mutant = _mutant(
+        primary,
+        sections=_replace_first_item(
+            primary, claim_id=c2.id, claim_text=c2.text, verdict_label="sustentada pelo debate"
+        ),
+    )
+
+    with pytest.raises(PrimaryAnswerCoherenceError):
+        await repo.save_success(_with_final(result, mutant))
+
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT count(*) FROM council_runs"))).scalar_one() == 0
+        assert (await conn.execute(text("SELECT count(*) FROM final_answers"))).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_genuinely_coherent_two_claim_primary_answer_round_trips(repo):
+    """Controle positivo de persistência: a seleção real de duas claims
+    (correspondendo ao plano aceito) sobrevive save+reload sem alteração --
+    o repair não afetou o caminho honesto."""
+    result, c1, c2 = _two_claim_result()
+    plan_payload = {"central_conclusion": [c1.id], "supporting_reasons": [c2.id]}
+    result, primary = _with_primary_answer(result, plan_payload=plan_payload)
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.editor_result.final_answer.primary_answer == primary
+
+
+# ---------------------------------------------------------------------------
+# Blocker 2 (closure repair sobre 9464fdf) -- "canonical limitation
+# authority": os mutantes de "limitation drift"/"limitation removed" já
+# existentes acima (`_mutants()`) só alteravam `primary.limitations`,
+# deixando `final_answer.limitations` no valor ORIGINAL -- a checagem
+# ANTIGA (primary<->final_answer) já pegava isso. O caso que a checagem
+# antiga NUNCA pegava (o gap real que este blocker fecha): os DOIS
+# registros mutados EM CONJUNTO, de forma consistente ENTRE SI -- só a
+# comparação contra a derivação CANÔNICA (JudgeVerdict.debate_limitations
+# + cobertura de extração, app/editor/limitations.py) percebe que nenhum
+# dos dois bate com a fonte real.
+# ---------------------------------------------------------------------------
+
+
+def test_coordinated_mutant_forging_limitations_in_both_primary_and_final_answer_together_is_rejected():
+    result, primary = _with_primary_answer(full_council_run_result())
+    forged_limitations = ("Limitação inteiramente forjada, nunca dita pelo Judge.",)
+
+    mutant_primary = _mutant(primary, limitations=forged_limitations)
+    assert PrimaryAnswer.model_validate(mutant_primary.model_dump(mode="json")) == mutant_primary
+
+    final_answer = result.editor_result.final_answer.model_copy(
+        update={"primary_answer": mutant_primary, "limitations": list(forged_limitations)}
+    )
+    editor = result.editor_result.model_copy(update={"final_answer": final_answer})
+    tampered = result.model_copy(update={"editor_result": editor})
+
+    with pytest.raises(PrimaryAnswerCoherenceError, match="canôn"):
+        _check(tampered)
+
+
+def test_coordinated_mutant_removing_limitations_from_both_records_together_is_rejected():
+    result, primary = _with_primary_answer(full_council_run_result())
+    assert primary.limitations  # controle: a fixture tem limitações reais a remover
+
+    mutant_primary = _mutant(primary, limitations=())
+    final_answer = result.editor_result.final_answer.model_copy(
+        update={"primary_answer": mutant_primary, "limitations": []}
+    )
+    editor = result.editor_result.model_copy(update={"final_answer": final_answer})
+    tampered = result.model_copy(update={"editor_result": editor})
+
+    with pytest.raises(PrimaryAnswerCoherenceError, match="canôn"):
+        _check(tampered)
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_a_coordinated_limitation_forgery_across_both_records_before_any_write(
+    repo, engine
+):
+    result, primary = _with_primary_answer(full_council_run_result())
+    forged_limitations = ("Limitação inteiramente forjada, nunca dita pelo Judge.",)
+    mutant_primary = _mutant(primary, limitations=forged_limitations)
+    final_answer = result.editor_result.final_answer.model_copy(
+        update={"primary_answer": mutant_primary, "limitations": list(forged_limitations)}
+    )
+    editor = result.editor_result.model_copy(update={"final_answer": final_answer})
+    tampered = result.model_copy(update={"editor_result": editor})
+
+    with pytest.raises(PrimaryAnswerCoherenceError):
+        await repo.save_success(tampered)
+
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT count(*) FROM council_runs"))).scalar_one() == 0
+        assert (await conn.execute(text("SELECT count(*) FROM final_answers"))).scalar_one() == 0

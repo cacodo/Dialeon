@@ -224,14 +224,23 @@ from app.editor.context import (
     build_primary_answer_plan_request,
 )
 from app.editor.errors import MalformedEditorOutputError
-from app.editor.natural_answer import NaturalAnswer, render_natural_answer
+from app.editor.limitations import (
+    canonical_limitations,
+    extraction_coverage_note,
+    limitations_with_coverage_note,
+)
+from app.editor.natural_answer import (
+    NaturalAnswer,
+    NaturalAnswerUnsafePresentationError,
+    render_natural_answer,
+)
 from app.editor.primary_answer import (
     MALFORMED_PLAN_FEEDBACK,
     InvalidPrimaryAnswerPlanError,
     PrimaryAnswer,
-    PrimaryAnswerPlan,
     eligible_assessed_claims,
     has_selectable_support,
+    parse_primary_answer_plan,
     render_primary_answer,
     validate_plan,
 )
@@ -461,65 +470,12 @@ _CLOSING_LIMITATIONS_CONCISE_HEADER = "Limitações do debate:"
 _DEFAULT_PLAN = EditorPlan(opening_style="direct", closing_style="concise")
 
 
-def _extraction_coverage_note(debate_result: DebateResult) -> str | None:
-    """Repair (Run02 claim-extraction exhaustion) -- disclosure
-    DETERMINÍSTICA de cobertura de extração incompleta: quando ao menos
-    uma resposta bem-sucedida de participante não teve suas claims
-    extraídas (ver `DebateResult.claim_extraction_missing_response_count`),
-    a resposta final NUNCA deve dar a entender cobertura completa. `None`
-    quando a cobertura é completa (`missing_response_count == 0`) -- nenhuma
-    nota é anexada nesse caso, byte-idêntico ao comportamento de antes
-    desta repair.
-
-    Usada pelos 3 caminhos que produzem uma `FinalAnswer` com veredito
-    presente (sucesso da LLM Editor, fallback por budget, fallback por
-    transporte/parse do Editor) E, desde o repair da revisão adversarial
-    (recheck Finding A), TAMBÉM por `Editor._no_verdict_result` -- os
-    dois fatos (Judge sem veredito / cobertura de extração incompleta)
-    são INDEPENDENTES e podem coexistir (ex.: algumas respostas
-    elegíveis falharam extração, outras produziram claims sobreviventes,
-    e o Judge não chegou a avaliá-las por budget/transporte -- motivo
-    TOTALMENTE alheio à extração). A ÚNICA exceção continua sendo o caso
-    de falha TOTAL de extração da rodada 1
-    (`verdict_unavailable_reason=="claim_extraction_failed"`), onde
-    `missing_response_count == eligible_response_count` e
-    `current_claims` é sempre vazio -- `_no_verdict_result` chama esta
-    função ali também, mas ela naturalmente devolve a MESMA disclosure
-    (nunca `None`), consistente com o resto do texto daquele branch."""
-    missing = debate_result.claim_extraction_missing_response_count
-    if missing <= 0:
-        return None
-    eligible = debate_result.claim_extraction_eligible_response_count
-    response_phrase = "resposta bem-sucedida" if eligible == 1 else "respostas bem-sucedidas"
-    verb = "não pôde" if missing == 1 else "não puderam"
-    return (
-        f"Cobertura de extração de afirmações incompleta: {missing} de {eligible} "
-        f"{response_phrase} dos participantes {verb} ter suas afirmações extraídas "
-        "para avaliação -- o resultado acima considera só as afirmações que puderam "
-        "ser extraídas."
-    )
-
-
-def _limitations_with_coverage_note(
-    base_limitations: list[str], coverage_note: str | None
-) -> list[str]:
-    """Repair (adversarial review, Finding B) -- ÚNICO ponto que combina
-    as limitações VERBATIM do Judge (`base_limitations`) com a
-    disclosure DETERMINÍSTICA e APP-AUTORADA de cobertura de extração
-    (`coverage_note`, ver `_extraction_coverage_note`) -- usado pelos 2
-    caminhos que produzem `FinalAnswer` com veredito presente (sucesso
-    da LLM Editor e fallback determinístico a partir do veredito).
-
-    `coverage_note is None` (cobertura completa) devolve
-    `base_limitations` inalterada -- NUNCA adiciona uma entrada vazia/
-    duplicada quando não há nada a dizer sobre cobertura. Quando
-    presente, é SEMPRE a ÚLTIMA entrada da lista -- as limitações do
-    Judge (sobre o CONTEÚDO do debate) vêm primeiro, a limitação
-    OPERACIONAL (sobre o PROCESSAMENTO de extração, nunca escrita/
-    escolhida pela LLM) vem depois, nunca misturada/intercalada."""
-    if coverage_note is None:
-        return base_limitations
-    return base_limitations + [coverage_note]
+# Repair (closure repair sobre 9464fdf, Blocker 2) -- `extraction_coverage_note`/
+# `limitations_with_coverage_note`/`canonical_limitations` foram MOVIDAS pra
+# app/editor/limitations.py (ver docstring de lá pra semântica completa,
+# inalterada) pra existir como um helper PURO e COMPARTILHADO entre este
+# módulo e app/editor/primary_answer_coherence.py -- nunca duas definições
+# da mesma derivação que pudessem divergir silenciosamente.
 
 
 class Editor:
@@ -685,21 +641,24 @@ class Editor:
         # anexada AQUI (fora de `_compose_answer`, que preserva sua
         # assinatura/comportamento existente byte-a-byte pros
         # chamadores/testes que já a invocam diretamente) -- ver
-        # `_extraction_coverage_note`. Em DOIS lugares, nunca só um:
-        # `answer_text` (compatibilidade texto-puro/histórico) E
-        # `FinalAnswer.limitations` (canal ESTRUTURADO -- ver docstring
-        # de `FinalAnswer.limitations`, app/editor/result.py -- é o que
-        # `FinalAnswerView` no frontend realmente renderiza quando
+        # `extraction_coverage_note` (app/editor/limitations.py). Em DOIS
+        # lugares, nunca só um: `answer_text` (compatibilidade texto-puro/
+        # histórico) E `FinalAnswer.limitations` (canal ESTRUTURADO -- ver
+        # docstring de `FinalAnswer.limitations`, app/editor/result.py --
+        # é o que `FinalAnswerView` no frontend realmente renderiza quando
         # `answer_blocks` está presente, já que `answer_blocks` em si
         # segue uma forma FECHADA que nunca aceita um parágrafo de
         # fechamento solto, ver
         # `FinalAnswer._answer_blocks_follow_the_fixed_document_shape`).
-        coverage_note = _extraction_coverage_note(debate_result)
+        coverage_note = extraction_coverage_note(debate_result)
         if coverage_note is not None:
             answer_text += f"\n\n{coverage_note}"
-        limitations = _limitations_with_coverage_note(
-            list(verdict.debate_limitations), coverage_note
-        )
+        # Repair (closure repair, Blocker 2) -- `canonical_limitations`
+        # (app/editor/limitations.py) é a MESMA derivação que
+        # `validate_primary_answer_coherence` (app/editor/primary_answer_coherence.py)
+        # agora exige bater exatamente -- nunca duas fórmulas que pudessem
+        # divergir.
+        limitations = canonical_limitations(debate_result, verdict)
 
         # Primary Answer -- melhoria OPCIONAL sobre uma investigação válida:
         # qualquer falha aqui preserva a avaliação completa determinística
@@ -818,7 +777,7 @@ class Editor:
                 return None, attempts, "primary_answer_transport_failed"
 
             try:
-                plan = _parse_primary_answer_plan(provider_response.text)
+                plan = parse_primary_answer_plan(provider_response.text)
                 selection = validate_plan(
                     plan,
                     verdict=verdict,
@@ -930,10 +889,11 @@ class Editor:
         # independente (budget esgotado antes do Judge, falha de
         # transporte do Judge, etc.). Reusa a MESMA derivação/helper
         # determinística já usada nos caminhos COM veredito
-        # (`_extraction_coverage_note`) -- nunca uma segunda fonte de
-        # verdade nem uma segunda redação. `None` (cobertura completa)
-        # nunca adiciona nada, byte-idêntico ao comportamento anterior.
-        coverage_note = _extraction_coverage_note(debate_result)
+        # (`extraction_coverage_note`, app/editor/limitations.py) -- nunca
+        # uma segunda fonte de verdade nem uma segunda redação. `None`
+        # (cobertura completa) nunca adiciona nada, byte-idêntico ao
+        # comportamento anterior.
+        coverage_note = extraction_coverage_note(debate_result)
         if coverage_note is not None:
             answer_text += f"\n\n{coverage_note}"
 
@@ -947,7 +907,7 @@ class Editor:
             # disclosure de cobertura, mesmo aqui, vai SÓ pra
             # `answer_text`/`limitations`, nunca pra um bloco -- não há
             # `answer_blocks` nenhum pra ela entrar.
-            limitations=_limitations_with_coverage_note(
+            limitations=limitations_with_coverage_note(
                 [f"Avaliação final não realizada: {reason_text}."], coverage_note
             ),
             # Mesma sequência computada acima, sem prefixo `"- "` -- ver
@@ -990,23 +950,26 @@ class Editor:
         relacionamento entre canais que o caminho de sucesso mostraria
         pro mesmo veredito. `debate_result` (Run02 claim-extraction
         exhaustion repair; Finding B): mesma disciplina -- a disclosure
-        de cobertura de extração (`_extraction_coverage_note`) nunca
-        pode depender de qual caminho de execução produziu o veredito,
-        e vai tanto em `answer_text` quanto em `limitations` -- ver
-        comentário equivalente no caminho de sucesso, dentro de
-        `Editor.compose()`."""
+        de cobertura de extração (`extraction_coverage_note`,
+        app/editor/limitations.py) nunca pode depender de qual caminho de
+        execução produziu o veredito, e vai tanto em `answer_text` quanto
+        em `limitations` -- ver comentário equivalente no caminho de
+        sucesso, dentro de `Editor.compose()`."""
         answer_text, answer_blocks = _compose_answer(
             question, verdict, current_claims, _DEFAULT_PLAN, reconciliation, source_results_by_id
         )
-        coverage_note = _extraction_coverage_note(debate_result)
+        coverage_note = extraction_coverage_note(debate_result)
         if coverage_note is not None:
             answer_text += f"\n\n{coverage_note}"
         return FinalAnswer(
             answer_text=answer_text,
             answer_blocks=answer_blocks,
-            limitations=_limitations_with_coverage_note(
-                list(verdict.debate_limitations), coverage_note
-            ),
+            # Repair (closure repair, Blocker 2) -- `canonical_limitations`
+            # é EQUIVALENTE a `limitations_with_coverage_note(list(verdict.debate_limitations),
+            # coverage_note)` (já computado acima); chamado explicitamente
+            # aqui pra usar a MESMA função nomeada que a checagem de
+            # coerência (app/editor/primary_answer_coherence.py) exige.
+            limitations=canonical_limitations(debate_result, verdict),
             status="deterministic_from_verdict",
             based_on_verdict_id=verdict.id,
             judge_confidence=verdict.confidence,
@@ -1470,35 +1433,50 @@ def _render_final_answer_text(
     return answer_text
 
 
-def _parse_primary_answer_plan(raw_text: str | None) -> PrimaryAnswerPlan:
-    """JSON + schema fechado (`PrimaryAnswerPlan`, só ids). A validação
-    SEMÂNTICA contra o veredito real é `validate_plan`."""
-    try:
-        data = json.loads(strip_single_json_code_fence(raw_text or ""))
-    except json.JSONDecodeError as exc:
-        raise MalformedEditorOutputError(f"JSON inválido: {exc}") from exc
-    try:
-        return PrimaryAnswerPlan.model_validate(data)
-    except ValidationError as exc:
-        raise MalformedEditorOutputError(f"JSON não bate com o schema esperado: {exc}") from exc
+# Repair (closure repair sobre 9464fdf, Blocker 1) -- `_parse_primary_answer_plan`
+# MOVEU pra `app/editor/primary_answer.py::parse_primary_answer_plan`: a
+# MESMA função agora é usada tanto AQUI (a chamada real de planejamento)
+# quanto por `app/editor/primary_answer_coherence.py` (reconstrução da
+# autoridade de seleção a partir da tentativa aceita persistida) -- nunca
+# duas implementações de parsing que pudessem divergir.
 
 
 def _render_natural_answer_or_fallback(
     primary_answer: PrimaryAnswer | None,
-) -> tuple[NaturalAnswer | None, Literal["natural_answer_render_failed"] | None]:
+) -> tuple[
+    NaturalAnswer | None,
+    Literal["natural_answer_render_failed", "natural_answer_declined_unsafe_presentation"] | None,
+]:
     """Renderização PURA e determinística (sem LLM) do `NaturalAnswer` a
     partir de um `primary_answer` já validado -- ver
     app/editor/natural_answer.py. Sem `primary_answer` não há nada pra
     renderizar (`(None, None)`, nunca um motivo de falha -- não se aplica,
-    diferente de "tentou e falhou"). Qualquer exceção da renderização
-    (defensivo: um `primary_answer` coerente sempre deveria produzir um
-    `NaturalAnswer` válido) vira `natural_answer_fallback_reason`, nunca
-    propaga -- `primary_answer`/`answer_text` seguem disponíveis."""
+    diferente de "tentou e falhou").
+
+    Repair (closure repair, Blocker 4) -- `NaturalAnswerUnsafePresentationError`
+    (levantada pelo renderizador quando claim/limitação selecionada
+    contém um controle estrutural de apresentação não seguro, ver
+    app/editor/natural_answer.py) ganha um motivo PRÓPRIO e verdadeiro,
+    distinto de uma falha defensiva genérica -- nunca reaproveita
+    `natural_answer_render_failed` pra um caso que não é bug, é recusa
+    intencional.
+
+    Repair (closure repair, Blocker 3) -- QUALQUER outra exceção
+    (`Exception`, não só `ValueError`/`ValidationError`: um `KeyError`/
+    `TypeError`/`RuntimeError` ordinário nunca deve propagar e derrubar um
+    Run bem-sucedido) vira `natural_answer_fallback_reason` genérico,
+    nunca propaga -- `primary_answer`/`answer_text` seguem disponíveis.
+    Fronteira DELIBERADAMENTE larga só aqui: esta é a ÚNICA chamada desta
+    renderização opcional, sem I/O, sem estado, sem chamada de provider --
+    nunca um precedente pra engolir exceção em nenhum outro lugar deste
+    módulo."""
     if primary_answer is None:
         return None, None
     try:
         return render_natural_answer(primary_answer), None
-    except (ValueError, ValidationError):
+    except NaturalAnswerUnsafePresentationError:
+        return None, "natural_answer_declined_unsafe_presentation"
+    except Exception:
         return None, "natural_answer_render_failed"
 
 

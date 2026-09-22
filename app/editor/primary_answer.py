@@ -29,12 +29,14 @@ usadas como importância. Source Analysis fica fora da primeira versão.
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.editor.answer_blocks import AnswerVerdictLabel
-from app.editor.errors import EditorError
+from app.editor.errors import EditorError, MalformedEditorOutputError
+from app.structured_output import strip_single_json_code_fence
 
 PRIMARY_ANSWER_CONTRACT_VERSION = "primary_answer_plan_v1"
 
@@ -217,6 +219,32 @@ class PrimaryAnswerPlan(BaseModel):
                 if not claim_id or len(claim_id) > _MAX_ID_LENGTH:
                     raise ValueError(f"id inválido em {role!r}")
         return self
+
+
+def parse_primary_answer_plan(raw_text: str | None) -> PrimaryAnswerPlan:
+    """JSON + schema fechado (`PrimaryAnswerPlan`, só ids). A validação
+    SEMÂNTICA contra o veredito real continua sendo `validate_plan`,
+    chamada à parte por cada um dos dois usos desta função.
+
+    Repair (closure repair sobre 9464fdf, Blocker 1 -- "bind PrimaryAnswer
+    to accepted plan") -- movida de app/editor/compose.py (onde vivia como
+    `_parse_primary_answer_plan`, privada) pra existir como UM único
+    parser, importado tanto por `app/editor/compose.py` (a chamada REAL de
+    planejamento, que produz `EditorAttempt.raw_output_text`) quanto por
+    `app/editor/primary_answer_coherence.py` (que RECONSTRÓI o
+    `PrimaryAnswerPlan` aceito a partir desse mesmo `raw_output_text`
+    persistido, pra provar que a seleção/papéis persistidos correspondem
+    exatamente ao que o plano aceito realmente continha -- nunca confiando
+    no `PrimaryAnswer` já persistido como fonte da seleção esperada).
+    Nunca duas implementações de parsing que pudessem divergir."""
+    try:
+        data = json.loads(strip_single_json_code_fence(raw_text or ""))
+    except json.JSONDecodeError as exc:
+        raise MalformedEditorOutputError(f"JSON inválido: {exc}") from exc
+    try:
+        return PrimaryAnswerPlan.model_validate(data)
+    except ValidationError as exc:
+        raise MalformedEditorOutputError(f"JSON não bate com o schema esperado: {exc}") from exc
 
 
 _DOMAIN_CONFIG = ConfigDict(frozen=True, extra="forbid")

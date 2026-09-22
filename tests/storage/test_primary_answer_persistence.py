@@ -17,6 +17,7 @@ from app.api.app import create_app
 from app.cli import commands, output
 from app.config import Settings
 from app.debate.claims import get_current_claims
+from app.editor.limitations import canonical_limitations
 from app.editor.primary_answer import PrimaryAnswerPlan, render_primary_answer, validate_plan
 from app.editor.result import EditorResult
 from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
@@ -27,23 +28,46 @@ from tests.api.helpers import build_test_components, make_components_factory
 from tests.storage.fixtures import full_council_run_result, with_recomputed_reconciliation
 
 
-def _with_primary_answer(result, *, fallback_reason=None, primary_attempts=True):
+def _with_primary_answer(result, *, fallback_reason=None, primary_attempts=True, plan_payload=None):
+    """Repair (closure repair sobre 9464fdf, Blocker 1) -- `raw_output_text`
+    da tentativa aceita agora precisa ser o JSON REAL do plano (não mais um
+    valor emprestado da tentativa de plano de estilo, que nunca foi um
+    `PrimaryAnswerPlan` válido): `validate_primary_answer_coherence`
+    reconstrói o `PrimaryAnswer` esperado a partir dele e exige igualdade
+    exata com o persistido. `plan_payload` (opcional) permite a chamadores
+    (ex. tests/storage/test_primary_answer_coherence.py, mutantes
+    coordenados do Blocker 1) escolher EXATAMENTE que plano foi "aceito",
+    inclusive com múltiplas claims/papéis -- default preserva o
+    comportamento de sempre (uma claim só, em `central_conclusion`).
+
+    Repair (Blocker 2) -- `limitations` deixou de ser lido de
+    `result.editor_result.final_answer.limitations` como estava (podia
+    divergir da derivação canônica autoritativa pra esta fixture, que tem
+    cobertura de extração incompleta -- ver app/editor/limitations.py):
+    agora é `canonical_limitations(debate_result, verdict)`, a MESMA
+    derivação que `validate_primary_answer_coherence` exige, aplicada
+    tanto ao `primary_answer` quanto (via `model_copy`) a
+    `final_answer.limitations`."""
     verdict = result.judge_result.verdict
     claims = result.debate_result.claims
-    plan = PrimaryAnswerPlan.model_validate({"central_conclusion": [verdict.claim_assessments[0].claim_id]})
+    if plan_payload is None:
+        plan_payload = {"central_conclusion": [verdict.claim_assessments[0].claim_id]}
+    plan = PrimaryAnswerPlan.model_validate(plan_payload)
     selection = validate_plan(
         plan, verdict=verdict, current_claims=get_current_claims(claims), all_claims=claims
     )
+    expected_limitations = tuple(canonical_limitations(result.debate_result, verdict))
     primary = render_primary_answer(
         selection,
         based_on_verdict_id=verdict.id,
-        limitations=tuple(result.editor_result.final_answer.limitations),
+        limitations=expected_limitations,
     )
     style_attempts = result.editor_result.attempts
     primary_attempt = style_attempts[0].model_copy(
         update={
             "id": "primary-attempt-1",
             "attempt_number": 1,
+            "raw_output_text": json.dumps(plan_payload),
             "request_provenance": RequestProvenance(
                 contract_version="primary_answer_plan_v1",
                 request_digest=REQUEST_DIGEST_PREFIX + "a" * 64,
@@ -51,7 +75,11 @@ def _with_primary_answer(result, *, fallback_reason=None, primary_attempts=True)
         }
     )
     final_answer = result.editor_result.final_answer.model_copy(
-        update={"primary_answer": primary, "status": "llm_planned"}
+        update={
+            "primary_answer": primary,
+            "status": "llm_planned",
+            "limitations": list(expected_limitations),
+        }
     )
     editor = EditorResult(
         final_answer=final_answer,

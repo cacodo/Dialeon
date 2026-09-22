@@ -440,14 +440,23 @@ class EditorResult(BaseModel):
         | None
     ) = None
     # Natural Answer -- por que NÃO há renderização conversacional apesar de
-    # existir um `primary_answer`. Único valor possível hoje:
+    # existir um `primary_answer`. Dois valores possíveis:
     # `natural_answer_render_failed` (a renderização é pura/determinística,
     # sem chamada de LLM, sem `attempts` próprios -- nunca falha de
-    # transporte/parse). `None` quando `natural_answer` foi produzido, ou
-    # quando não se aplica (sem `primary_answer`). Um `natural_answer`
-    # ausente NUNCA torna o run uma falha: `primary_answer`/`answer_text`
-    # continuam a resposta.
-    natural_answer_fallback_reason: Literal["natural_answer_render_failed"] | None = None
+    # transporte/parse; esta é uma falha DEFENSIVA/inesperada) e, desde o
+    # closure repair sobre 9464fdf (Blocker 4 -- "trusted/untrusted
+    # presentation boundary"), `natural_answer_declined_unsafe_presentation`
+    # (RECUSA intencional e verdadeira: uma claim/limitação selecionada
+    # continha um controle estrutural de apresentação não seguro -- ver
+    # app/editor/natural_answer.py -- nunca um bug, nunca sanitização
+    # silenciosa do texto autoritativo). `None` quando `natural_answer` foi
+    # produzido, ou quando não se aplica (sem `primary_answer`). Um
+    # `natural_answer` ausente NUNCA torna o run uma falha:
+    # `primary_answer`/`answer_text` continuam a resposta.
+    natural_answer_fallback_reason: (
+        Literal["natural_answer_render_failed", "natural_answer_declined_unsafe_presentation"]
+        | None
+    ) = None
 
     @property
     def _all_editor_attempts(self) -> list[EditorAttempt]:
