@@ -911,3 +911,143 @@ describe('FinalAnswerView -- resposta principal', () => {
     ])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Resposta NATURAL (renderização conversacional determinística do
+// PrimaryAnswer, backend: app/editor/natural_answer.py)
+// ---------------------------------------------------------------------------
+
+import type { NaturalAnswerPublic } from '../../api/types'
+
+function makeNatural(overrides: Partial<NaturalAnswerPublic> = {}): NaturalAnswerPublic {
+  return {
+    renderer_contract_version: 'natural_answer_v1',
+    based_on_verdict_id: 'v-1',
+    rendered_text:
+      'Um SaaS é a melhor escolha. (sustentada pelo debate).\n\n' +
+      'Ficam registradas as seguintes incertezas e ressalvas: O fornecedor pode falir. ' +
+      '(sem informação suficiente para decidir).\n\n' +
+      'Seleção apresentacional: 2 de 3 afirmações avaliadas pelo Judge. A avaliação completa lista todas.',
+    ...overrides,
+  }
+}
+
+describe('FinalAnswerView -- resposta natural', () => {
+  const completeBlocks = sectionsBlocks(
+    [item('Claim da avaliação completa.', 'sustentada pelo debate')],
+    [item('Claim não estabelecida.', 'sem informação suficiente para decidir')],
+  )
+  const withNatural = (
+    natural: NaturalAnswerPublic | null = makeNatural(),
+    primary: PrimaryAnswerPublic | null = makePrimary(),
+  ) =>
+    makeFinalAnswer({
+      answer_text: 'AVALIAÇÃO COMPLETA CANÔNICA',
+      answer_blocks: completeBlocks,
+      limitations: ['Sem dados empíricos.'],
+      primary_answer: primary,
+      natural_answer: natural,
+    })
+
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  afterEach(() => {
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+  })
+
+  it('quando presente, a resposta natural domina: título "Resposta", texto conversacional em parágrafos, sem headings de seção', () => {
+    render(<FinalAnswerView finalAnswer={withNatural()} />)
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
+    expect(screen.getByText('Um SaaS é a melhor escolha. (sustentada pelo debate).').tagName).toBe('P')
+    expect(
+      screen.getByText(
+        'Ficam registradas as seguintes incertezas e ressalvas: O fornecedor pode falir. (sem informação suficiente para decidir).',
+      ).tagName,
+    ).toBe('P')
+    // nenhum heading de seção tipo "Conclusão central:"/"Incertezas e ressalvas:"
+    // fora da disclosure recolhida (a resposta principal estruturada, dentro
+    // dela, continua tendo seus próprios headings -- nunca removidos).
+    const topLevelHeadings = screen
+      .getAllByRole('heading', { level: 3 })
+      .filter((h) => !h.closest('details'))
+    expect(topLevelHeadings).toHaveLength(0)
+  })
+
+  it('preserva acesso à resposta principal estruturada e à avaliação completa via disclosure', async () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withNatural()} />)
+
+    const outer = container.querySelector('details.final-answer__inspect') as HTMLDetailsElement
+    expect(outer.open).toBe(false)
+    await userEvent.click(screen.getByText('Ver resposta principal e avaliação completa'))
+    expect(outer.open).toBe(true)
+
+    // resposta principal estruturada, com seus próprios headings/rótulos
+    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+    expect(screen.getByText('(sustentada pelo debate)')).toBeVisible()
+
+    // dentro dela, a mesma affordance de sempre continua presente e recolhida
+    expect(screen.getByText(/Ver avaliação completa \(3 afirmações avaliadas\)/)).toBeVisible()
+    const inner = container.querySelector('details.final-answer__complete') as HTMLDetailsElement
+    expect(inner.open).toBe(false)
+
+    await userEvent.click(screen.getByText(/Ver avaliação completa/))
+    expect(inner.open).toBe(true)
+    // avaliação completa continua alcançável dentro da resposta principal
+    expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+  })
+
+  it('"Copiar resposta" copia EXATAMENTE natural_answer.rendered_text -- nunca primary.rendered_text/answer_text', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    render(<FinalAnswerView finalAnswer={withNatural()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
+    expect(writeText).toHaveBeenLastCalledWith(makeNatural().rendered_text)
+    expect(writeText).not.toHaveBeenLastCalledWith(makePrimary().rendered_text)
+  })
+
+  it('ordem de fallback: sem natural_answer mas com primary_answer, cai pra resposta principal estruturada', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withNatural(null, makePrimary())} />)
+
+    expect(container.querySelector('.final-answer--natural')).toBeNull()
+    expect(container.querySelector('.final-answer--primary')).not.toBeNull()
+    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+  })
+
+  it('ordem de fallback: sem natural_answer e sem primary_answer, cai pra avaliação completa', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withNatural(null, null)} />)
+
+    expect(container.querySelector('.final-answer--natural')).toBeNull()
+    expect(container.querySelector('.final-answer--primary')).toBeNull()
+    expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+  })
+
+  it('defensivo: natural_answer presente sem primary_answer (não deveria acontecer, backend garante) nunca quebra -- cai pra próximo fallback', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withNatural(makeNatural(), null)} />)
+
+    expect(container.querySelector('.final-answer--natural')).toBeNull()
+    expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+  })
+
+  it('conteúdo não confiável dentro do texto renderizado permanece texto inerte (sem Markdown/HTML/links)', () => {
+    const evil = makeNatural({
+      rendered_text: '<img src=x onerror=alert(1)> **negrito** [link](http://x) # título\n- item',
+    })
+    const { container } = render(<FinalAnswerView finalAnswer={withNatural(evil)} />)
+
+    expect(container.querySelector('img, script, a, strong')).toBeNull()
+    expect(container.querySelector('.final-answer__text')?.textContent).toBe(
+      '<img src=x onerror=alert(1)> **negrito** [link](http://x) # título\n- item',
+    )
+  })
+
+  it('histórico: sem natural_answer (undefined, payload anterior a este campo) cai com segurança pro comportamento existente', () => {
+    const { container } = render(
+      <FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: completeBlocks, primary_answer: makePrimary() })} />,
+    )
+
+    expect(container.querySelector('.final-answer--natural')).toBeNull()
+    expect(container.querySelector('.final-answer--primary')).not.toBeNull()
+  })
+})

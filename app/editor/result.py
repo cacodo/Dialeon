@@ -31,6 +31,7 @@ from app.editor.answer_blocks import (
     AnswerParagraphBlock,
 )
 from app.editor.attempt import EditorAttempt
+from app.editor.natural_answer import NaturalAnswer
 from app.editor.primary_answer import PrimaryAnswer
 from app.models.provider_models import ModelIdentitySource
 from app.orchestrator.budget import sum_usage_and_cost
@@ -121,6 +122,18 @@ class FinalAnswer(BaseModel):
     # para runs históricos, para o caminho sem veredito e para qualquer run
     # em que o plano não foi produzido/validado -- nunca fabricado.
     primary_answer: PrimaryAnswer | None = None
+    # Natural Answer -- renderização conversacional, determinística e
+    # OPCIONAL, do `primary_answer` acima (ver app/editor/natural_answer.py).
+    # Campo ADITIVO com nome próprio: NUNCA redefine `primary_answer.rendered_text`
+    # nem `answer_text`/`answer_blocks`. Só existe (não-`None`) quando
+    # `primary_answer` também existe -- nunca fabricado sobre um
+    # `primary_answer` ausente/histórico (ver validador abaixo). `None` para
+    # runs históricos, pra qualquer run sem `primary_answer`, e pra qualquer
+    # run em que a renderização determinística falhou (defensivo -- não
+    # deveria acontecer sobre um `primary_answer` coerente, mas nunca é
+    # tratado como falha do run, ver `EditorResult.natural_answer_fallback_reason`).
+    # Nunca sintetizado retroativamente sobre um run histórico recarregado.
+    natural_answer: NaturalAnswer | None = None
     # Quando há veredito: SEMPRE começa com cópia VERBATIM de
     # JudgeVerdict.debate_limitations, na mesma ordem -- o Editor nunca
     # reescreve/resume/escolhe o CONTEÚDO dessas entradas (ver
@@ -222,6 +235,28 @@ class FinalAnswer(BaseModel):
             raise ValueError(f"status={self.status!r} nunca deve ter primary_answer")
         if self.primary_answer.based_on_verdict_id != self.based_on_verdict_id:
             raise ValueError("primary_answer.based_on_verdict_id diverge de based_on_verdict_id")
+        return self
+
+    @model_validator(mode="after")
+    def _natural_answer_requires_a_primary_answer(self) -> FinalAnswer:
+        """`natural_answer` é uma renderização do `primary_answer` --
+        nunca pode existir sozinho: sobre um `status` sem `primary_answer`
+        elegível (mesmos dois status de `_primary_answer_requires_an_assessed_verdict`),
+        sobre um `primary_answer` ausente, ou apontando pra outro
+        veredito. Não confere `rendered_text` (isso é responsabilidade de
+        `validate_natural_answer_coherence`, que também recomputa a
+        partir de `primary_answer` -- este validador é só a forma
+        estrutural mínima, mesma disciplina do validador irmão acima)."""
+        if self.natural_answer is None:
+            return self
+        if self.status not in ("llm_planned", "deterministic_from_verdict"):
+            raise ValueError(f"status={self.status!r} nunca deve ter natural_answer")
+        if self.primary_answer is None:
+            raise ValueError("natural_answer exige primary_answer correspondente")
+        if self.natural_answer.based_on_verdict_id != self.primary_answer.based_on_verdict_id:
+            raise ValueError(
+                "natural_answer.based_on_verdict_id diverge de primary_answer.based_on_verdict_id"
+            )
         return self
 
     @model_validator(mode="after")
@@ -404,6 +439,15 @@ class EditorResult(BaseModel):
         ]
         | None
     ) = None
+    # Natural Answer -- por que NÃO há renderização conversacional apesar de
+    # existir um `primary_answer`. Único valor possível hoje:
+    # `natural_answer_render_failed` (a renderização é pura/determinística,
+    # sem chamada de LLM, sem `attempts` próprios -- nunca falha de
+    # transporte/parse). `None` quando `natural_answer` foi produzido, ou
+    # quando não se aplica (sem `primary_answer`). Um `natural_answer`
+    # ausente NUNCA torna o run uma falha: `primary_answer`/`answer_text`
+    # continuam a resposta.
+    natural_answer_fallback_reason: Literal["natural_answer_render_failed"] | None = None
 
     @property
     def _all_editor_attempts(self) -> list[EditorAttempt]:
@@ -517,6 +561,18 @@ class EditorResult(BaseModel):
             raise ValueError("motivo de saída inválida exige a última tentativa rejeitada")
         elif reason == "primary_answer_render_failed" and attempts[-1].parse_status != "accepted":
             raise ValueError("falha de renderização exige a última tentativa aceita")
+        return self
+
+    @model_validator(mode="after")
+    def _natural_answer_fallback_is_coherent(self) -> EditorResult:
+        natural = self.final_answer.natural_answer
+        reason = self.natural_answer_fallback_reason
+        if natural is not None and reason is not None:
+            raise ValueError("natural_answer presente não deve ter natural_answer_fallback_reason")
+        if reason is not None and self.final_answer.primary_answer is None:
+            raise ValueError(
+                "natural_answer_fallback_reason exige primary_answer presente nesta execução"
+            )
         return self
 
     @model_validator(mode="after")

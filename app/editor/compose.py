@@ -224,6 +224,7 @@ from app.editor.context import (
     build_primary_answer_plan_request,
 )
 from app.editor.errors import MalformedEditorOutputError
+from app.editor.natural_answer import NaturalAnswer, render_natural_answer
 from app.editor.primary_answer import (
     MALFORMED_PLAN_FEEDBACK,
     InvalidPrimaryAnswerPlanError,
@@ -723,6 +724,16 @@ class Editor:
                 run_config,
             )
 
+        # Natural Answer -- renderização conversacional, PURA e
+        # determinística (nenhuma chamada de LLM, nenhum novo `attempt`),
+        # do `primary_answer` acima, quando ele existe. Melhoria OPCIONAL
+        # sobre uma seleção já válida: qualquer falha aqui (defensiva --
+        # não deveria acontecer sobre um `primary_answer` coerente) vira
+        # `natural_answer_fallback_reason`, nunca propaga -- o run
+        # continua bem-sucedido com `primary_answer`/`answer_text`
+        # disponíveis.
+        natural_answer, natural_reason = _render_natural_answer_or_fallback(primary_answer)
+
         final_answer = FinalAnswer(
             answer_text=answer_text,
             answer_blocks=answer_blocks,
@@ -733,6 +744,7 @@ class Editor:
             based_on_verdict_id=verdict.id,
             judge_confidence=verdict.confidence,
             primary_answer=primary_answer,
+            natural_answer=natural_answer,
         )
 
         return EditorResult(
@@ -743,6 +755,7 @@ class Editor:
             cumulative_budget_exceeded=cumulative_budget_exceeded,
             primary_answer_attempts=primary_attempts,
             primary_answer_fallback_reason=primary_reason,
+            natural_answer_fallback_reason=natural_reason,
         )
 
     async def _plan_primary_answer(
@@ -1468,6 +1481,25 @@ def _parse_primary_answer_plan(raw_text: str | None) -> PrimaryAnswerPlan:
         return PrimaryAnswerPlan.model_validate(data)
     except ValidationError as exc:
         raise MalformedEditorOutputError(f"JSON não bate com o schema esperado: {exc}") from exc
+
+
+def _render_natural_answer_or_fallback(
+    primary_answer: PrimaryAnswer | None,
+) -> tuple[NaturalAnswer | None, Literal["natural_answer_render_failed"] | None]:
+    """Renderização PURA e determinística (sem LLM) do `NaturalAnswer` a
+    partir de um `primary_answer` já validado -- ver
+    app/editor/natural_answer.py. Sem `primary_answer` não há nada pra
+    renderizar (`(None, None)`, nunca um motivo de falha -- não se aplica,
+    diferente de "tentou e falhou"). Qualquer exceção da renderização
+    (defensivo: um `primary_answer` coerente sempre deveria produzir um
+    `NaturalAnswer` válido) vira `natural_answer_fallback_reason`, nunca
+    propaga -- `primary_answer`/`answer_text` seguem disponíveis."""
+    if primary_answer is None:
+        return None, None
+    try:
+        return render_natural_answer(primary_answer), None
+    except (ValueError, ValidationError):
+        return None, "natural_answer_render_failed"
 
 
 def _parse_and_validate(raw_text: str) -> EditorPlan:

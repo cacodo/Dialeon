@@ -503,6 +503,21 @@ class PrimaryAnswerPublic(BaseModel):
     rendered_text: str
 
 
+class NaturalAnswerPublic(BaseModel):
+    """Renderização conversacional, ADITIVA e opcional, de
+    `PrimaryAnswerPublic` (ver app/editor/natural_answer.py).
+    `rendered_text` é EXATAMENTE o texto que o usuário vê e que
+    "Copiar resposta" copia quando este campo está presente -- consumidores
+    que não sabem renderizar isso podem ignorar o campo inteiramente e
+    continuar usando `primary_answer`/`answer_text`, inalterados."""
+
+    model_config = _CONFIG
+
+    renderer_contract_version: str
+    based_on_verdict_id: str
+    rendered_text: str
+
+
 class FinalAnswerPublic(BaseModel):
     model_config = _CONFIG
 
@@ -527,6 +542,10 @@ class FinalAnswerPublic(BaseModel):
     # Aditivo/opcional: `None` para runs históricos, sem veredito, ou sem plano
     # válido -- a avaliação completa acima segue sempre presente.
     primary_answer: PrimaryAnswerPublic | None = None
+    # Aditivo/opcional: `None` para runs históricos, sem `primary_answer`, ou
+    # quando a renderização determinística não foi produzida -- `primary_answer`/
+    # `answer_text` seguem sempre disponíveis como fallback.
+    natural_answer: NaturalAnswerPublic | None = None
     limitations: list[str]
     # Etapa 17B -- "llm_planned" é o status de runs novos (LLM escolheu
     # EditorPlan, aplicação renderizou o texto); "llm_composed" segue
@@ -827,6 +846,9 @@ class EditorOutcome(BaseModel):
     cumulative_budget_exceeded: bool
     # Aditivo: por que não há resposta principal num run com veredito.
     primary_answer_fallback_reason: str | None = None
+    # Aditivo: por que não há renderização conversacional (Natural Answer)
+    # apesar de existir resposta principal.
+    natural_answer_fallback_reason: str | None = None
 
 
 class SourceAnalysisOutcome(BaseModel):

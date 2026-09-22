@@ -100,6 +100,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_answer_blocks)
         await conn.run_sync(_upgrade_legacy_unevaluated_claims)
         await conn.run_sync(_upgrade_legacy_primary_answer)
+        await conn.run_sync(_upgrade_legacy_natural_answer)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -452,6 +453,31 @@ def _upgrade_legacy_primary_answer(sync_conn) -> None:  # noqa: ANN001
         ("final_answers", "primary_answer_json", "TEXT"),
         ("editor_attempts", "purpose", "TEXT"),
         ("council_runs", "editor_primary_answer_fallback_reason", "TEXT"),
+    ):
+        if table_name not in tables:
+            continue  # tabela nova (já nasce com a coluna via create_all())
+        existing = {col["name"] for col in inspector.get_columns(table_name)}
+        if column in existing:
+            continue
+        sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} {ddl}"))
+
+
+def _upgrade_legacy_natural_answer(sync_conn) -> None:  # noqa: ANN001
+    """Ajuste de schema direcionado -- Natural Answer (renderização
+    conversacional determinística e opcional do Primary Answer). DUAS
+    colunas ADITIVAS e nullable, mesma disciplina de
+    `_upgrade_legacy_primary_answer`: só `ALTER TABLE` quando a coluna não
+    existe, nunca reescreve/recalcula linha existente, sem backfill (não
+    existe Natural Answer para runs anteriores, e nenhum é fabricado
+    retroativamente):
+
+    - `final_answers.natural_answer_json`;
+    - `council_runs.editor_natural_answer_fallback_reason`."""
+    inspector = sa_inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+    for table_name, column, ddl in (
+        ("final_answers", "natural_answer_json", "TEXT"),
+        ("council_runs", "editor_natural_answer_fallback_reason", "TEXT"),
     ):
         if table_name not in tables:
             continue  # tabela nova (já nasce com a coluna via create_all())

@@ -94,6 +94,13 @@ class CouncilRunRow(Base):
     # `NULL` é honesto para todo run persistido antes desta coluna existir e
     # para "produzida / não se aplica" (ver `_upgrade_legacy_primary_answer`).
     editor_primary_answer_fallback_reason: Mapped[str | None]
+    # Natural Answer -- mesma disciplina de editor_primary_answer_fallback_reason
+    # acima, uma camada adiante: por que NÃO há renderização conversacional
+    # apesar de existir primary_answer (ver
+    # EditorResult.natural_answer_fallback_reason). NULLABLE sem DEFAULT --
+    # `NULL` é honesto para todo run persistido antes desta coluna existir
+    # e para "produzida / não se aplica" (ver `_upgrade_legacy_natural_answer`).
+    editor_natural_answer_fallback_reason: Mapped[str | None]
     # Idem -- ver FinalAnswerRow.council_run_id (1:1 no sentido inverso).
 
     # Etapa 16 -- TODAS nullable, diferente de debate/judge/editor acima:
@@ -665,6 +672,11 @@ class FinalAnswerRow(Base):
     # todo run anterior, sem veredito, ou sem plano válido. Nunca
     # reconstruída retroativamente (ver `_upgrade_legacy_primary_answer`).
     primary_answer_json: Mapped[dict | None] = mapped_column(JSON)
+    # Natural Answer -- representação opcional, com nome próprio; NULL para
+    # todo run anterior a esta coluna, sem primary_answer, ou sem renderização
+    # produzida. Nunca reconstruída retroativamente (ver
+    # `_upgrade_legacy_natural_answer`).
+    natural_answer_json: Mapped[dict | None] = mapped_column(JSON)
     limitations_json: Mapped[list] = mapped_column(JSON)
     status: Mapped[str]
     editor_model: Mapped[str | None]

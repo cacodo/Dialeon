@@ -37,6 +37,7 @@ from app.orchestrator.budget import sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
 from app.orchestrator.result import InitialResponsesResult, RoundResult
+from app.editor.natural_answer_coherence import validate_natural_answer_coherence
 from app.editor.primary_answer_coherence import validate_primary_answer_coherence
 from app.reconciliation.errors import ReconciliationError
 from app.reconciliation.reconcile import validate_reconciliation_coherence
@@ -313,6 +314,10 @@ class CouncilRepository:
         # de `CouncilRunResult`); aqui cobre objetos montados sem validação
         # (ex. `model_copy`) antes de qualquer escrita.
         validate_primary_answer_coherence(debate, judge, editor)
+        # Natural Answer -- MESMA regra única aplicada na reconstrução
+        # (validator de `CouncilRunResult`); aqui cobre objetos montados
+        # sem validação (ex. `model_copy`) antes de qualquer escrita.
+        validate_natural_answer_coherence(editor.final_answer)
 
         async with session_scope(self._session_factory) as session:
             accepted_row = await session.get(AcceptedRunRow, result.id)
@@ -347,6 +352,7 @@ class CouncilRepository:
                     editor_fallback_reason=editor.fallback_reason,
                     editor_cumulative_budget_exceeded=editor.cumulative_budget_exceeded,
                     editor_primary_answer_fallback_reason=editor.primary_answer_fallback_reason,
+                    editor_natural_answer_fallback_reason=editor.natural_answer_fallback_reason,
                     source_analyzer_provider=(
                         source_analysis.source_analyzer_provider
                         if source_analysis is not None
@@ -904,6 +910,7 @@ class CouncilRepository:
             ],
             fallback_reason=row.editor_fallback_reason,
             primary_answer_fallback_reason=row.editor_primary_answer_fallback_reason,
+            natural_answer_fallback_reason=row.editor_natural_answer_fallback_reason,
             editor_provider=row.editor_provider,
             cumulative_budget_exceeded=row.editor_cumulative_budget_exceeded,
         )

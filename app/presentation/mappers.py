@@ -42,6 +42,7 @@ from app.presentation.schemas import (
     JudgeOutcome,
     JudgeVerdictPublic,
     ModelResponsePublic,
+    NaturalAnswerPublic,
     QuorumFailureAudit,
     QuorumFailureRunResponse,
     QuorumPublic,
@@ -65,6 +66,7 @@ from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult
 from app.editor.answer_blocks import AnswerBlock, AnswerClaimSectionBlock, AnswerParagraphBlock
 from app.editor.attempt import EditorAttempt
+from app.editor.natural_answer import NaturalAnswer
 from app.editor.primary_answer import PrimaryAnswer
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
@@ -323,6 +325,16 @@ def primary_answer_public(primary: PrimaryAnswer | None) -> PrimaryAnswerPublic 
     )
 
 
+def natural_answer_public(natural: NaturalAnswer | None) -> NaturalAnswerPublic | None:
+    if natural is None:
+        return None
+    return NaturalAnswerPublic(
+        renderer_contract_version=natural.renderer_contract_version,
+        based_on_verdict_id=natural.based_on_verdict_id,
+        rendered_text=natural.rendered_text,
+    )
+
+
 def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
     return FinalAnswerPublic(
         answer_text=fa.answer_text,
@@ -333,6 +345,7 @@ def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
             list(fa.unevaluated_claims) if fa.unevaluated_claims is not None else None
         ),
         primary_answer=primary_answer_public(fa.primary_answer),
+        natural_answer=natural_answer_public(fa.natural_answer),
         limitations=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -616,6 +629,7 @@ def completed_run_audit(
             fallback_reason=editor.fallback_reason,
             cumulative_budget_exceeded=editor.cumulative_budget_exceeded,
             primary_answer_fallback_reason=editor.primary_answer_fallback_reason,
+            natural_answer_fallback_reason=editor.natural_answer_fallback_reason,
         ),
         source_analysis=source_analysis_outcome_public(result.source_analysis_result),
         initial_round=initial_round_audit(debate.initial_result),

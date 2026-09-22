@@ -46,6 +46,7 @@ import type {
   AnswerClaimItemPublic,
   FinalAnswerPublic,
   FinalAnswerStatus,
+  NaturalAnswerPublic,
   PrimaryAnswerPublic,
 } from '../api/types'
 import {
@@ -298,21 +299,34 @@ function CompleteAnswerView({
 // renderizada deterministicamente no backend. É o objeto visual dominante
 // quando existe; a avaliação completa continua a um clique. Todo conteúdo
 // vindo do backend é texto (claim_text é não confiável): nenhum Markdown/HTML.
+// `inNaturalDisclosure`: renderizada DENTRO da disclosure "Ver avaliação
+// completa" de `NaturalAnswerView` (mesmo espírito do `nested` de
+// `CompleteAnswerView`) -- sem o `<h2>`/título próprios (o `<summary>` que
+// a envolve já rotula o conteúdo) e sem `aria-labelledby` apontando pro id
+// já usado pelo `<h2>` externo, evitando um id de heading duplicado no
+// documento.
 function PrimaryAnswerView({
   finalAnswer,
   primary,
+  inNaturalDisclosure = false,
 }: {
   finalAnswer: FinalAnswerPublic
   primary: PrimaryAnswerPublic
+  inNaturalDisclosure?: boolean
 }) {
   return (
     <section
-      aria-labelledby="final-answer-heading"
+      {...(inNaturalDisclosure
+        ? { 'aria-label': 'Resposta principal (estruturada)' }
+        : { 'aria-labelledby': 'final-answer-heading' })}
       className="final-answer final-answer--primary"
     >
       <div className="final-answer__header">
-        <h2 id="final-answer-heading">Resposta</h2>
-        <CopyAnswerButton text={primary.rendered_text} />
+        {inNaturalDisclosure ? null : <h2 id="final-answer-heading">Resposta</h2>}
+        <CopyAnswerButton
+          text={primary.rendered_text}
+          label={inNaturalDisclosure ? 'Copiar resposta principal' : undefined}
+        />
       </div>
       <p className="final-answer__lead-in">{primary.lead_in}</p>
       <div className="final-answer__text">
@@ -348,14 +362,70 @@ function PrimaryAnswerView({
         </summary>
         <CompleteAnswerView finalAnswer={finalAnswer} nested />
       </details>
+      {inNaturalDisclosure ? null : (
+        <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
+      )}
+    </section>
+  )
+}
+
+// Resposta NATURAL -- leitura conversacional, determinística, do
+// PrimaryAnswer (backend: app/editor/natural_answer.py). Quando presente, é
+// o objeto visual dominante -- mais concisa/legível que a listagem por
+// papéis da resposta principal estruturada, mas nunca substitui o acesso a
+// ela nem à avaliação completa: uma disclosure exterior dá acesso à
+// resposta principal estruturada, que por sua vez mantém sua PRÓPRIA
+// disclosure "Ver avaliação completa (N afirmações avaliadas)" pra
+// avaliação completa -- o mesmo texto/afordance já existente, nunca
+// duplicado/renomeado. `rendered_text` é texto puro (claims não confiáveis
+// já estão embutidas nele verbatim, escritas pela aplicação) -- interpolado
+// como filho de texto do React, nunca via `dangerouslySetInnerHTML`. Copiar
+// copia EXATAMENTE `natural.rendered_text`, nunca `primary.rendered_text`.
+function NaturalAnswerView({
+  finalAnswer,
+  natural,
+  primary,
+}: {
+  finalAnswer: FinalAnswerPublic
+  natural: NaturalAnswerPublic
+  primary: PrimaryAnswerPublic
+}) {
+  return (
+    <section aria-labelledby="final-answer-heading" className="final-answer final-answer--natural">
+      <div className="final-answer__header">
+        <h2 id="final-answer-heading">Resposta</h2>
+        <CopyAnswerButton text={natural.rendered_text} />
+      </div>
+      <div className="final-answer__text">
+        {splitAnswerParagraphs(natural.rendered_text).map((paragraph, index) => (
+          <p key={index}>{paragraph}</p>
+        ))}
+      </div>
+      <details className="final-answer__inspect">
+        <summary>Ver resposta principal e avaliação completa</summary>
+        <PrimaryAnswerView finalAnswer={finalAnswer} primary={primary} inNaturalDisclosure />
+      </details>
       <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
     </section>
   )
 }
 
 export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
-  // Com resposta principal válida ela domina; sem ela, o comportamento de
-  // sempre (avaliação completa) é o fallback -- inclusive histórico.
+  // Ordem de fallback FIXA: NaturalAnswer -> resposta principal
+  // estruturada -> avaliação completa (comportamento de sempre, inclusive
+  // histórico). NaturalAnswer só é exibida quando também há uma resposta
+  // principal para embasar a disclosure de inspeção (garantido pelo
+  // backend -- ver FinalAnswer._natural_answer_requires_a_primary_answer
+  // -- mas a checagem aqui é defensiva, nunca assumida).
+  if (finalAnswer.natural_answer != null && finalAnswer.primary_answer != null) {
+    return (
+      <NaturalAnswerView
+        finalAnswer={finalAnswer}
+        natural={finalAnswer.natural_answer}
+        primary={finalAnswer.primary_answer}
+      />
+    )
+  }
   if (finalAnswer.primary_answer != null) {
     return <PrimaryAnswerView finalAnswer={finalAnswer} primary={finalAnswer.primary_answer} />
   }

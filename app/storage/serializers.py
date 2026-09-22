@@ -30,6 +30,7 @@ from app.debate.numeric_verification import ArithmeticAssertion, DeterministicVe
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.editor.answer_blocks import AnswerBlock
 from app.editor.attempt import EditorAttempt
+from app.editor.natural_answer import NaturalAnswer
 from app.editor.primary_answer import PrimaryAnswer
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
@@ -674,6 +675,19 @@ def _primary_answer_from_json(data: dict | None) -> PrimaryAnswer | None:
     return PrimaryAnswer.model_validate(data) if data is not None else None
 
 
+def _natural_answer_to_json(natural: NaturalAnswer | None) -> dict | None:
+    return natural.model_dump(mode="json") if natural is not None else None
+
+
+def _natural_answer_from_json(data: dict | None) -> NaturalAnswer | None:
+    """Reconstrução validada e FAIL-CLOSED: um blob malformado (campo
+    ausente/vazio) levanta `ValidationError` -- nunca é reparado nem
+    descartado em silêncio. `None` (coluna nunca populada, run anterior a
+    esta coluna, sem primary_answer, ou renderização não produzida)
+    permanece `None`, sem reconstrução."""
+    return NaturalAnswer.model_validate(data) if data is not None else None
+
+
 def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerRow:
     return FinalAnswerRow(
         id=fa.id,
@@ -682,6 +696,7 @@ def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerR
         answer_blocks_json=_answer_blocks_to_json(fa.answer_blocks),
         unevaluated_claims_json=_unevaluated_claims_to_json(fa.unevaluated_claims),
         primary_answer_json=_primary_answer_to_json(fa.primary_answer),
+        natural_answer_json=_natural_answer_to_json(fa.natural_answer),
         limitations_json=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -701,6 +716,7 @@ def final_answer_from_row(row: FinalAnswerRow) -> FinalAnswer:
         answer_blocks=_answer_blocks_from_json(row.answer_blocks_json),
         unevaluated_claims=_unevaluated_claims_from_json(row.unevaluated_claims_json),
         primary_answer=_primary_answer_from_json(row.primary_answer_json),
+        natural_answer=_natural_answer_from_json(row.natural_answer_json),
         limitations=list(row.limitations_json),
         status=row.status,
         editor_model=row.editor_model,

@@ -28,6 +28,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.debate.result import DebateResult
+from app.editor.natural_answer_coherence import (
+    NaturalAnswerCoherenceError,
+    validate_natural_answer_coherence,
+)
 from app.editor.primary_answer_coherence import (
     PrimaryAnswerCoherenceError,
     validate_primary_answer_coherence,
@@ -101,6 +105,14 @@ class CouncilRunResult(BaseModel):
                 self.debate_result, self.judge_result, self.editor_result
             )
         except PrimaryAnswerCoherenceError as exc:
+            raise ValueError(str(exc)) from exc
+        # Natural Answer -- depende do primary_answer JÁ coerente (checado
+        # acima, mesma ordem que app/storage/repository.py::save_success
+        # segue) -- confere `natural_answer` contra ele, nunca contra
+        # debate/judge diretamente (ver docstring do módulo).
+        try:
+            validate_natural_answer_coherence(self.editor_result.final_answer)
+        except NaturalAnswerCoherenceError as exc:
             raise ValueError(str(exc)) from exc
         return self
 

@@ -369,6 +369,16 @@ export interface PrimaryAnswerPublic {
   rendered_text: string
 }
 
+// Renderização conversacional, determinística e OPCIONAL do PrimaryAnswer
+// (ver app/editor/natural_answer.py). ADITIVA: nunca substitui
+// `primary_answer`/`answer_text`. `rendered_text` é EXATAMENTE o texto que
+// "Copiar resposta" copia quando este campo está presente.
+export interface NaturalAnswerPublic {
+  renderer_contract_version: string
+  based_on_verdict_id: string
+  rendered_text: string
+}
+
 export interface FinalAnswerPublic {
   answer_text: string
   // `null` pra runs persistidos antes da UI Slice 3, pro caminho sem
@@ -392,6 +402,10 @@ export interface FinalAnswerPublic {
   // Ausente/null em runs históricos, sem veredito, ou sem plano válido -- a
   // avaliação completa acima é sempre o fallback.
   primary_answer?: PrimaryAnswerPublic | null
+  // Ausente/null em runs históricos, sem `primary_answer`, ou quando a
+  // renderização determinística não foi produzida -- `primary_answer`/
+  // `answer_text` seguem sempre disponíveis como fallback.
+  natural_answer?: NaturalAnswerPublic | null
   limitations: string[]
   status: FinalAnswerStatus
   editor_model: string | null

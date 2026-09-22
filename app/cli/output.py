@@ -136,10 +136,22 @@ def human_run_result(run: CompletedRunResponse) -> str:
         f"confiança_do_juiz: {_fmt(run.final_answer.judge_confidence)}",
         "",
     ]
-    # Resposta principal (aditiva): quando existe, vem primeiro; a avaliação
-    # completa (`answer_text`) continua SEMPRE impressa logo depois. Mesmo
-    # tratamento de segurança de terminal: texto de claim é não confiável.
-    if run.final_answer.primary_answer is not None:
+    # Resposta (aditiva): ordem de fallback fixa -- Natural Answer (leitura
+    # conversacional) primeiro quando existe; senão a resposta principal
+    # estruturada; a avaliação completa (`answer_text`) continua SEMPRE
+    # impressa logo depois, em qualquer caso. Mesmo tratamento de segurança
+    # de terminal: texto de claim (verbatim dentro de qualquer uma das
+    # duas) é não confiável.
+    if run.final_answer.natural_answer is not None:
+        lines.append("resposta:")
+        lines.append(terminal_safe_text(run.final_answer.natural_answer.rendered_text))
+        lines.append("")
+        if run.final_answer.primary_answer is not None:
+            lines.append("resposta principal (estruturada):")
+            lines.append(terminal_safe_text(run.final_answer.primary_answer.rendered_text))
+            lines.append("")
+        lines.append("avaliação completa:")
+    elif run.final_answer.primary_answer is not None:
         lines.append("resposta principal:")
         lines.append(terminal_safe_text(run.final_answer.primary_answer.rendered_text))
         lines.append("")
@@ -371,6 +383,16 @@ def human_run_audit(audit: Any) -> str:
                 + (
                     f" ({audit.editor_outcome.primary_answer_fallback_reason})"
                     if audit.editor_outcome.primary_answer_fallback_reason
+                    else ""
+                )
+            ),
+            (
+                "resposta_natural: presente"
+                if audit.final_answer.natural_answer is not None
+                else "resposta_natural: ausente"
+                + (
+                    f" ({audit.editor_outcome.natural_answer_fallback_reason})"
+                    if audit.editor_outcome.natural_answer_fallback_reason
                     else ""
                 )
             ),
