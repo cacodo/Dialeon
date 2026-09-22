@@ -507,9 +507,11 @@ class NaturalAnswerPublic(BaseModel):
     """Renderização conversacional, ADITIVA e opcional, de
     `PrimaryAnswerPublic` (ver app/editor/natural_answer.py).
     `rendered_text` é EXATAMENTE o texto que o usuário vê e que
-    "Copiar resposta" copia quando este campo está presente -- consumidores
-    que não sabem renderizar isso podem ignorar o campo inteiramente e
-    continuar usando `primary_answer`/`answer_text`, inalterados."""
+    "Copiar resposta" copia quando este campo está presente E
+    `natural_answer_presentation_eligible` é verdadeiro. O objeto pode
+    continuar presente como histórico/auditoria quando a política atual
+    prefere `primary_answer`. Consumidores que não sabem renderizar isso
+    podem ignorá-lo inteiramente."""
 
     model_config = _CONFIG
 
@@ -546,6 +548,11 @@ class FinalAnswerPublic(BaseModel):
     # quando a renderização determinística não foi produzida -- `primary_answer`/
     # `answer_text` seguem sempre disponíveis como fallback.
     natural_answer: NaturalAnswerPublic | None = None
+    # Estado DERIVADO pela política de apresentação atual, nunca persistido
+    # nem confundido com validade histórica. Uma NaturalAnswer v1 pode ser
+    # byte-válida e preservada acima, mas não elegível para ser preferida hoje;
+    # nesse caso consumidores devem usar `primary_answer`.
+    natural_answer_presentation_eligible: bool = False
     limitations: list[str]
     # Etapa 17B -- "llm_planned" é o status de runs novos (LLM escolheu
     # EditorPlan, aplicação renderizou o texto); "llm_composed" segue

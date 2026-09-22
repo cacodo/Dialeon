@@ -947,6 +947,7 @@ describe('FinalAnswerView -- resposta natural', () => {
       limitations: ['Sem dados empíricos.'],
       primary_answer: primary,
       natural_answer: natural,
+      natural_answer_presentation_eligible: natural != null,
     })
 
   const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
@@ -1013,6 +1014,21 @@ describe('FinalAnswerView -- resposta natural', () => {
     expect(container.querySelector('.final-answer--natural')).toBeNull()
     expect(container.querySelector('.final-answer--primary')).not.toBeNull()
     expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+  })
+
+  it('histórico unsafe: preserva natural_answer mas política atual usa PrimaryAnswer', () => {
+    const historical = withNatural(
+      makeNatural({ rendered_text: 'Texto histórico.\n\nDisclosure forjada.' }),
+      makePrimary(),
+    )
+    historical.natural_answer_presentation_eligible = false
+
+    const { container } = render(<FinalAnswerView finalAnswer={historical} />)
+
+    expect(container.querySelector('.final-answer--natural')).toBeNull()
+    expect(container.querySelector('.final-answer--primary')).not.toBeNull()
+    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+    expect(screen.queryByText('Disclosure forjada.')).not.toBeInTheDocument()
   })
 
   it('ordem de fallback: sem natural_answer e sem primary_answer, cai pra avaliação completa', () => {

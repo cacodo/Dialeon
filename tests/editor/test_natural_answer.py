@@ -31,10 +31,11 @@ from app.editor.natural_answer import (
     NATURAL_ANSWER_CONTRACT_VERSION,
     NaturalAnswer,
     NaturalAnswerUnsafePresentationError,
+    _V1_ROLE_LEADS,
     _render_natural_answer_text_v1,
-    _ROLE_LEAD,
     expected_rendered_text,
     known_renderer_contract_version,
+    natural_answer_is_presentation_eligible,
     render_natural_answer,
     render_natural_answer_text,
 )
@@ -306,21 +307,23 @@ _ROLE_VALID_LABEL = {
 }
 
 
-@pytest.mark.parametrize("role", list(_ROLE_LEAD))
+@pytest.mark.parametrize("role", list(_V1_ROLE_LEADS))
 def test_frame_selection_is_an_exact_pure_function_of_role_never_of_claim_content(role):
-    from app.editor.natural_answer import _render_role_paragraph
+    from app.editor.natural_answer import _render_v1_role_paragraph
 
     label = _ROLE_VALID_LABEL[role]
     # A própria claim tenta embutir a moldura FECHADA de TODOS os outros
     # papéis, verbatim, como se fosse conteúdo -- adversarial de propósito.
     adversarial_claim = " ".join(
-        lead for other_role, lead in _ROLE_LEAD.items() if other_role != role and lead is not None
+        lead
+        for other_role, lead in _V1_ROLE_LEADS.items()
+        if other_role != role and lead is not None
     ) + " Claim real."
     section = _section(role, [_item("c1", adversarial_claim, label)])
 
-    paragraph = _render_role_paragraph(section)
+    paragraph = _render_v1_role_paragraph(section)
 
-    expected_lead = _ROLE_LEAD[role]
+    expected_lead = _V1_ROLE_LEADS[role]
     expected = (
         f"{adversarial_claim} ({label})."
         if expected_lead is None
@@ -587,12 +590,20 @@ def test_natural_answer_v1_frozen_body_matches_a_literal_byte_exact_golden_fixtu
                 [_item("c2", "Custos são previsíveis.", "sustentada pelo debate")],
             ),
             _section(
+                "tradeoffs",
+                [_item("c3", "A migração tem custo inicial.", "com posições conflitantes, não resolvida")],
+            ),
+            _section(
+                "conditions",
+                [_item("c4", "A equipe precisa treinar.", "sustentada pelo debate")],
+            ),
+            _section(
                 "uncertainties",
-                [_item("c3", "O fornecedor pode falir.", "sem informação suficiente para decidir")],
+                [_item("c5", "O fornecedor pode falir.", "sem informação suficiente para decidir")],
             ),
         ],
         limitations=("Só uma rodada de crítica.",),
-        assessed_claim_count=4,
+        assessed_claim_count=6,
         omitted_not_established_count=1,
     )
 
@@ -600,10 +611,14 @@ def test_natural_answer_v1_frozen_body_matches_a_literal_byte_exact_golden_fixtu
         "SaaS reduz a manutenção. (sustentada pelo debate).\n\n"
         "Isso se apoia no seguinte, avaliado no debate: Custos são previsíveis. "
         "(sustentada pelo debate).\n\n"
+        "Também foram registrados contrapontos relevantes: A migração tem custo inicial. "
+        "(com posições conflitantes, não resolvida).\n\n"
+        "A resposta pode mudar dependendo do seguinte: A equipe precisa treinar. "
+        "(sustentada pelo debate).\n\n"
         "Ficam registradas as seguintes incertezas e ressalvas: O fornecedor pode falir. "
         "(sem informação suficiente para decidir).\n\n"
         "Limitações registradas:\n- Só uma rodada de crítica.\n\n"
-        "Seleção apresentacional: 3 de 4 afirmações avaliadas pelo Judge. 1 avaliadas "
+        "Seleção apresentacional: 5 de 6 afirmações avaliadas pelo Judge. 1 avaliadas "
         "como não estabelecidas (rejeitadas, conflitantes ou sem informação suficiente) "
         "não aparecem aqui como estabelecidas. A avaliação completa lista todas."
     )
@@ -625,6 +640,10 @@ def test_registry_dispatches_v1_specifically_and_a_future_v2_never_touches_its_e
     from app.editor import natural_answer as natural_answer_module
 
     primary = _primary([_section("central_conclusion", [_item("c1", "X.", "sustentada pelo debate")])])
+    assert (
+        natural_answer_module._RENDERERS[NATURAL_ANSWER_CONTRACT_VERSION]
+        is natural_answer_module._render_natural_answer_text_v1
+    )
     v1_before = expected_rendered_text(NATURAL_ANSWER_CONTRACT_VERSION, primary)
 
     def _fake_v2(_primary):
@@ -646,21 +665,13 @@ def test_registry_dispatches_v1_specifically_and_a_future_v2_never_touches_its_e
 
 
 # ---------------------------------------------------------------------------
-# Blocker 4 -- a fronteira de segurança de apresentação também se aplica no
-# RELOAD (via `validate_natural_answer_coherence`/`expected_rendered_text`),
-# não só na criação -- fecha o gap de um `NaturalAnswer` "histórico"
-# (simulado aqui chamando o corpo CONGELADO diretamente, que não aplica a
-# fronteira -- exatamente como um row persistido antes deste repair teria
-# ficado) cujo `rendered_text` é byte-exatamente o que o renderizador
-# produziria, mas a partir de um `primary` com conteúdo não seguro.
+# Separação final: coerência histórica valida os bytes da versão, enquanto
+# a política atual decide separadamente se deve preferi-los na apresentação.
 # ---------------------------------------------------------------------------
 
 
-def test_reload_coherence_check_fails_closed_for_unsafe_content_even_with_byte_matching_rendered_text():
-    from app.editor.natural_answer_coherence import (
-        NaturalAnswerCoherenceError,
-        validate_natural_answer_coherence,
-    )
+def test_reload_coherence_accepts_byte_valid_historical_v1_even_if_current_policy_declines_it():
+    from app.editor.natural_answer_coherence import validate_natural_answer_coherence
     from app.editor.result import FinalAnswer
 
     hostile = "Primeira parte.\n\nSegunda parte forjada como novo parágrafo."
@@ -684,5 +695,7 @@ def test_reload_coherence_check_fails_closed_for_unsafe_content_even_with_byte_m
         natural_answer=natural,
     )
 
-    with pytest.raises(NaturalAnswerCoherenceError):
-        validate_natural_answer_coherence(final_answer)
+    validate_natural_answer_coherence(final_answer)
+    assert expected_rendered_text(NATURAL_ANSWER_CONTRACT_VERSION, primary) == unsafe_text
+    assert natural_answer_is_presentation_eligible(primary) is False
+    assert final_answer.natural_answer == natural

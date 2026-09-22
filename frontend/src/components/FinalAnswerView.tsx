@@ -411,13 +411,16 @@ function NaturalAnswerView({
 }
 
 export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
-  // Ordem de fallback FIXA: NaturalAnswer -> resposta principal
+  // Ordem de fallback FIXA: NaturalAnswer atualmente elegível -> resposta principal
   // estruturada -> avaliação completa (comportamento de sempre, inclusive
   // histórico). NaturalAnswer só é exibida quando também há uma resposta
-  // principal para embasar a disclosure de inspeção (garantido pelo
-  // backend -- ver FinalAnswer._natural_answer_requires_a_primary_answer
-  // -- mas a checagem aqui é defensiva, nunca assumida).
-  if (finalAnswer.natural_answer != null && finalAnswer.primary_answer != null) {
+  // principal e o sinal derivado da política atual é explicitamente true.
+  // O default defensivo pra payloads sem o sinal é PrimaryAnswer.
+  if (
+    finalAnswer.natural_answer != null &&
+    finalAnswer.primary_answer != null &&
+    finalAnswer.natural_answer_presentation_eligible === true
+  ) {
     return (
       <NaturalAnswerView
         finalAnswer={finalAnswer}

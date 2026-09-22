@@ -66,7 +66,7 @@ from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult
 from app.editor.answer_blocks import AnswerBlock, AnswerClaimSectionBlock, AnswerParagraphBlock
 from app.editor.attempt import EditorAttempt
-from app.editor.natural_answer import NaturalAnswer
+from app.editor.natural_answer import NaturalAnswer, natural_answer_is_presentation_eligible
 from app.editor.primary_answer import PrimaryAnswer
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
@@ -336,6 +336,11 @@ def natural_answer_public(natural: NaturalAnswer | None) -> NaturalAnswerPublic 
 
 
 def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
+    natural_presentation_eligible = (
+        fa.natural_answer is not None
+        and fa.primary_answer is not None
+        and natural_answer_is_presentation_eligible(fa.primary_answer)
+    )
     return FinalAnswerPublic(
         answer_text=fa.answer_text,
         answer_blocks=(
@@ -346,6 +351,7 @@ def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
         ),
         primary_answer=primary_answer_public(fa.primary_answer),
         natural_answer=natural_answer_public(fa.natural_answer),
+        natural_answer_presentation_eligible=natural_presentation_eligible,
         limitations=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,

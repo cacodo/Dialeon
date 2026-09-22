@@ -371,8 +371,8 @@ export interface PrimaryAnswerPublic {
 
 // Renderização conversacional, determinística e OPCIONAL do PrimaryAnswer
 // (ver app/editor/natural_answer.py). ADITIVA: nunca substitui
-// `primary_answer`/`answer_text`. `rendered_text` é EXATAMENTE o texto que
-// "Copiar resposta" copia quando este campo está presente.
+// `primary_answer`/`answer_text`. Quando a elegibilidade derivada abaixo é
+// true, `rendered_text` é EXATAMENTE o texto que "Copiar resposta" copia.
 export interface NaturalAnswerPublic {
   renderer_contract_version: string
   based_on_verdict_id: string
@@ -406,6 +406,10 @@ export interface FinalAnswerPublic {
   // renderização determinística não foi produzida -- `primary_answer`/
   // `answer_text` seguem sempre disponíveis como fallback.
   natural_answer?: NaturalAnswerPublic | null
+  // Estado derivado pela política atual (nunca persistido). `false` ou
+  // ausente significa que uma NaturalAnswer histórica pode continuar
+  // disponível para auditoria, mas não deve ser preferida para exibição.
+  natural_answer_presentation_eligible?: boolean
   limitations: string[]
   status: FinalAnswerStatus
   editor_model: string | null

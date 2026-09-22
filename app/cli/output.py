@@ -136,13 +136,15 @@ def human_run_result(run: CompletedRunResponse) -> str:
         f"confiança_do_juiz: {_fmt(run.final_answer.judge_confidence)}",
         "",
     ]
-    # Resposta (aditiva): ordem de fallback fixa -- Natural Answer (leitura
-    # conversacional) primeiro quando existe; senão a resposta principal
-    # estruturada; a avaliação completa (`answer_text`) continua SEMPRE
-    # impressa logo depois, em qualquer caso. Mesmo tratamento de segurança
-    # de terminal: texto de claim (verbatim dentro de qualquer uma das
-    # duas) é não confiável.
-    if run.final_answer.natural_answer is not None:
+    # Resposta (aditiva): ordem de fallback fixa -- Natural Answer primeiro
+    # quando existe E a política atual a considera elegível; senão a
+    # resposta principal estruturada. A avaliação completa (`answer_text`)
+    # continua SEMPRE impressa logo depois. Mesmo tratamento de segurança de
+    # terminal: texto de claim (verbatim nas duas) é não confiável.
+    if (
+        run.final_answer.natural_answer is not None
+        and run.final_answer.natural_answer_presentation_eligible
+    ):
         lines.append("resposta:")
         lines.append(terminal_safe_text(run.final_answer.natural_answer.rendered_text))
         lines.append("")
@@ -368,6 +370,19 @@ def human_run_audit(audit: Any) -> str:
     auditoria (isso é o que `--json` é para). Mostra só o que já é
     imediatamente útil de ler no terminal; o resto está no JSON."""
     if audit.status == "completed":
+        if audit.final_answer.natural_answer is None:
+            natural_answer_status = "resposta_natural: ausente" + (
+                f" ({audit.editor_outcome.natural_answer_fallback_reason})"
+                if audit.editor_outcome.natural_answer_fallback_reason
+                else ""
+            )
+        elif audit.final_answer.natural_answer_presentation_eligible:
+            natural_answer_status = "resposta_natural: presente"
+        else:
+            natural_answer_status = (
+                "resposta_natural: presente (preservada; não preferida pela política "
+                "de apresentação atual)"
+            )
         lines = [
             "status: concluída",
             f"run_id: {audit.id}",
@@ -386,16 +401,7 @@ def human_run_audit(audit: Any) -> str:
                     else ""
                 )
             ),
-            (
-                "resposta_natural: presente"
-                if audit.final_answer.natural_answer is not None
-                else "resposta_natural: ausente"
-                + (
-                    f" ({audit.editor_outcome.natural_answer_fallback_reason})"
-                    if audit.editor_outcome.natural_answer_fallback_reason
-                    else ""
-                )
-            ),
+            natural_answer_status,
             f"resposta_final_status: {audit.final_answer.status}",
             f"custo_estimado_usd: {audit.accounting.estimated_cost_usd:.6f}",
             f"contabilidade_completa: {'não' if audit.accounting.has_unknown_accounting_components else 'sim'}",

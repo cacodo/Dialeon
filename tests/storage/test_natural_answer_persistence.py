@@ -17,9 +17,15 @@ from sqlalchemy import text
 from app.api.app import create_app
 from app.cli import commands, output
 from app.config import Settings
-from app.editor.natural_answer import render_natural_answer
+from app.editor import compose as compose_module
+from app.editor.natural_answer import (
+    NATURAL_ANSWER_CONTRACT_VERSION,
+    NaturalAnswer,
+    _render_natural_answer_text_v1,
+    render_natural_answer,
+)
 from app.editor.result import EditorResult
-from app.presentation.mappers import completed_run_response
+from app.presentation.mappers import completed_run_audit, completed_run_response
 from app.presentation.schemas import CompletedRunAudit, CompletedRunResponse
 from app.storage.database import create_engine, init_db
 from tests.api.helpers import build_test_components, make_components_factory
@@ -38,6 +44,21 @@ def _with_primary_and_natural_answer(result, *, fallback_reason=None):
     )
     result = result.model_copy(update={"editor_result": editor})
     return result, primary, (None if fallback_reason else natural)
+
+
+def _with_unsafe_primary_answer(result):
+    """Troca somente o texto da claim autoritativa por conteúdo que era
+    byte-renderizável pelo v1 original, mas que a política atual recusa na
+    apresentação plana. IDs/veredito/plano continuam os mesmos."""
+    hostile = "Primeira parte da claim.\n\nDisclosure forjada em outro parágrafo."
+    claims = list(result.debate_result.claims)
+    claims[0] = claims[0].model_copy(update={"text": hostile})
+    debate = result.debate_result.model_copy(update={"claims": claims})
+    result = result.model_copy(update={"debate_result": debate})
+    result = with_recomputed_reconciliation(result)
+    result, primary = _with_primary_answer(result)
+    assert primary.sections[0].items[0].claim_text == hostile
+    return result, primary, hostile
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +89,127 @@ async def test_natural_answer_fallback_reason_roundtrips(repo):
 
     assert loaded.editor_result.final_answer.natural_answer is None
     assert loaded.editor_result.natural_answer_fallback_reason == "natural_answer_render_failed"
+
+
+@pytest.mark.asyncio
+async def test_new_unsafe_candidate_declines_end_to_end_through_storage_public_and_cli(repo):
+    result, primary, hostile = _with_unsafe_primary_answer(full_council_run_result())
+    natural, reason = compose_module._render_natural_answer_or_fallback(primary)
+    assert natural is None
+    assert reason == "natural_answer_declined_unsafe_presentation"
+
+    final_answer = result.editor_result.final_answer.model_copy(update={"natural_answer": None})
+    editor = result.editor_result.model_copy(
+        update={
+            "final_answer": final_answer,
+            "natural_answer_fallback_reason": reason,
+        }
+    )
+    result = result.model_copy(update={"editor_result": editor})
+
+    await repo.save_success(result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.editor_result.final_answer.natural_answer is None
+    assert loaded.editor_result.final_answer.primary_answer == primary
+    assert loaded.editor_result.final_answer.answer_text == final_answer.answer_text
+    assert loaded.editor_result.natural_answer_fallback_reason == reason
+
+    public = completed_run_response(
+        loaded, provider_execution_policy=None, default_model_authority_snapshot=None
+    )
+    assert public.final_answer.natural_answer is None
+    assert public.final_answer.natural_answer_presentation_eligible is False
+    assert public.final_answer.primary_answer is not None
+    assert public.final_answer.primary_answer.sections[0].items[0].claim_text == hostile
+
+    cli_text = output.human_run_result(public)
+    assert "resposta:" not in cli_text.splitlines()
+    assert "resposta principal:" in cli_text.splitlines()
+    assert hostile.split("\n")[0] in cli_text
+
+    audit = completed_run_audit(
+        loaded, provider_execution_policy=None, default_model_authority_snapshot=None
+    )
+    assert audit.editor_outcome.natural_answer_fallback_reason == reason
+    assert f"resposta_natural: ausente ({reason})" in output.human_run_audit(audit)
+
+
+@pytest.mark.asyncio
+async def test_historical_unsafe_v1_loads_unchanged_but_current_presentation_falls_back(
+    repo, engine
+):
+    result, primary, hostile = _with_unsafe_primary_answer(full_council_run_result())
+    historical_text = _render_natural_answer_text_v1(primary)
+    historical_natural = NaturalAnswer(
+        renderer_contract_version=NATURAL_ANSWER_CONTRACT_VERSION,
+        based_on_verdict_id=primary.based_on_verdict_id,
+        rendered_text=historical_text,
+    )
+    final_answer = result.editor_result.final_answer.model_copy(
+        update={"natural_answer": historical_natural}
+    )
+    editor = result.editor_result.model_copy(
+        update={"final_answer": final_answer, "natural_answer_fallback_reason": None}
+    )
+    result = result.model_copy(update={"editor_result": editor})
+
+    await repo.save_success(result)
+    async with engine.connect() as conn:
+        raw_before = (
+            await conn.execute(
+                text(
+                    "SELECT natural_answer_json FROM final_answers "
+                    "WHERE council_run_id = :run_id"
+                ),
+                {"run_id": result.id},
+            )
+        ).scalar_one()
+
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    async with engine.connect() as conn:
+        raw_after = (
+            await conn.execute(
+                text(
+                    "SELECT natural_answer_json FROM final_answers "
+                    "WHERE council_run_id = :run_id"
+                ),
+                {"run_id": result.id},
+            )
+        ).scalar_one()
+
+    loaded_final = loaded.editor_result.final_answer
+    assert loaded_final.natural_answer == historical_natural
+    assert loaded_final.natural_answer.rendered_text == historical_text
+    assert hostile in loaded_final.natural_answer.rendered_text
+    assert raw_after == raw_before
+    assert loaded.editor_result.natural_answer_fallback_reason is None
+
+    public = completed_run_response(
+        loaded, provider_execution_policy=None, default_model_authority_snapshot=None
+    )
+    assert public.final_answer.natural_answer is not None
+    assert public.final_answer.natural_answer.rendered_text == historical_text
+    assert public.final_answer.natural_answer_presentation_eligible is False
+    assert public.final_answer.primary_answer is not None
+
+    cli_text = output.human_run_result(public)
+    assert "resposta:" not in cli_text.splitlines()
+    assert "resposta principal:" in cli_text.splitlines()
+    assert hostile.split("\n")[0] in cli_text
+
+    audit = completed_run_audit(
+        loaded, provider_execution_policy=None, default_model_authority_snapshot=None
+    )
+    assert audit.editor_outcome.natural_answer_fallback_reason is None
+    audit_text = output.human_run_audit(audit)
+    assert (
+        "resposta_natural: presente (preservada; não preferida pela política "
+        "de apresentação atual)"
+    ) in audit_text
+    assert "natural_answer_declined_unsafe_presentation" not in audit_text
+    assert "natural_answer_render_failed" not in audit_text
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +411,7 @@ def test_api_exposes_natural_answer_additively_and_keeps_primary_and_complete_an
         assert final.natural_answer is not None
         assert final.natural_answer.rendered_text == natural.rendered_text
         assert final.natural_answer.based_on_verdict_id == natural.based_on_verdict_id
+        assert final.natural_answer_presentation_eligible is True
         assert final.primary_answer is not None  # nunca substituído
         assert final.answer_text == result.editor_result.final_answer.answer_text  # inalterado
 
@@ -281,6 +424,7 @@ def test_api_old_shape_run_has_natural_answer_as_null_without_breaking_old_clien
         created = client.post("/runs", json={"question": "q", "enabled_providers": ["openai", "anthropic"]})
 
     assert created.json()["final_answer"]["natural_answer"] is None
+    assert created.json()["final_answer"]["natural_answer_presentation_eligible"] is False
     # cliente antigo que nem conhece o campo consegue validar o resto do payload normalmente
     assert created.json()["final_answer"]["answer_text"]
 
@@ -292,6 +436,8 @@ def test_openapi_documents_natural_answer_as_an_optional_response_field():
     final = schemas["FinalAnswerPublic"]
     assert "natural_answer" in final["properties"]
     assert "natural_answer" not in final.get("required", [])
+    assert "natural_answer_presentation_eligible" in final["properties"]
+    assert "natural_answer_presentation_eligible" not in final.get("required", [])
     assert "NaturalAnswerPublic" in schemas
 
 

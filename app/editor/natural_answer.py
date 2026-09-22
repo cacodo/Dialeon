@@ -76,34 +76,38 @@ extensão pra segmentos tipados): quando o texto de uma claim selecionada OU
 de uma limitação contém um controle estrutural de apresentação não seguro
 (quebra de parágrafo forjada, caractere de controle bidirecional, ou
 caractere de controle não imprimível -- ver `_has_unsafe_structural_presentation_controls`
-abaixo), `natural_answer_v1` é RECUSADO inteiro (`NaturalAnswerUnsafePresentationError`,
-nunca uma sanitização/reescrita silenciosa do texto autoritativo) -- o
-chamador (`app/editor/compose.py::_render_natural_answer_or_fallback`) cai
-pra `PrimaryAnswer` estruturado (que nunca teve este problema) com um
-motivo verdadeiro e limitado (`natural_answer_declined_unsafe_presentation`).
-Por que esta é a repair MENOR/mais segura: nenhum schema novo, nenhuma
-mudança de contrato em `NaturalAnswer`/`rendered_text`, nenhuma mudança de
-frontend -- o fallback pra `PrimaryAnswer` já existe, já é exercitado, e já
-é a apresentação SEGURA (tipada) pro mesmo conteúdo; introduzir segmentos
+abaixo), a produção de uma NOVA `NaturalAnswer` é RECUSADA inteira
+(`NaturalAnswerUnsafePresentationError`, nunca uma sanitização/reescrita
+silenciosa do texto autoritativo) -- o chamador
+(`app/editor/compose.py::_render_natural_answer_or_fallback`) cai pra
+`PrimaryAnswer` estruturado (que nunca teve este problema) com um motivo
+verdadeiro e limitado (`natural_answer_declined_unsafe_presentation`).
+Por que esta é a repair MENOR/mais segura: nenhuma mudança no schema
+PERSISTIDO de `NaturalAnswer`/`rendered_text`; o fallback pra
+`PrimaryAnswer` já existe e é a apresentação SEGURA (tipada) pro mesmo
+conteúdo. Introduzir segmentos
 tipados pra `NaturalAnswer` duplicaria exatamente essa segurança que
 `PrimaryAnswer` já garante, só que com uma superfície nova (schema
 aditivo, versionamento, renderização de frontend) que este repair não
 precisa pra fechar a vulnerabilidade -- complexidade especulativa que o
-mandato desta repair pede pra evitar. O texto autoritativo NUNCA é
-sanitizado/reescrito/normalizado em nenhum dos dois casos (aceito ou
-recusado) -- só a DECISÃO de renderizar muda.
+mandato desta repair pede pra evitar. Na leitura, a recomputação histórica
+usa SOMENTE o contrato de bytes congelado; a política atual vira um sinal
+público derivado que faz CLI/frontend preferirem `PrimaryAnswer`, preservando
+a `NaturalAnswer` histórica como auditoria. O texto autoritativo NUNCA é
+sanitizado/reescrito/normalizado -- só a DECISÃO de produzir/preferir muda.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.editor.primary_answer import (
-    PRIMARY_ANSWER_LIMITATIONS_HEADING,
     PrimaryAnswer,
     PrimaryAnswerItem,
     PrimaryAnswerRole,
@@ -198,9 +202,7 @@ def _reject_if_unsafe_structural_presentation(primary: PrimaryAnswer) -> None:
     ameaça). Mensagem BOUNDED -- nunca ecoa o texto não confiável em si
     (mesma disciplina de `InvalidPrimaryAnswerPlanError.to_feedback`,
     app/editor/primary_answer.py)."""
-    texts = [item.claim_text for section in primary.sections for item in section.items]
-    texts.extend(primary.limitations)
-    if any(_has_unsafe_structural_presentation_controls(text) for text in texts):
+    if not natural_answer_is_presentation_eligible(primary):
         raise NaturalAnswerUnsafePresentationError(
             "natural_answer_v1 recusado: uma claim selecionada ou limitação contém um "
             "controle estrutural de apresentação não seguro (quebra de parágrafo forjada, "
@@ -209,6 +211,26 @@ def _reject_if_unsafe_structural_presentation(primary: PrimaryAnswer) -> None:
             "apresentação tipada nunca foi vulnerável a isso) continua disponível"
         )
 
+
+def natural_answer_is_presentation_eligible(primary: PrimaryAnswer) -> bool:
+    """Política ATUAL, derivada e não persistida, para preferir uma
+    `NaturalAnswer` como apresentação plana.
+
+    Esta decisão é deliberadamente separada do contrato histórico de bytes
+    de cada versão do renderizador. Ela é aplicada ao produzir respostas
+    novas e ao escolher o que apresentar hoje, mas NUNCA por
+    `expected_rendered_text`: uma v1 histórica byte-válida continua
+    reconstruível mesmo quando esta política atual prefere o
+    `PrimaryAnswer` estruturado.
+    """
+    texts = [item.claim_text for section in primary.sections for item in section.items]
+    texts.extend(primary.limitations)
+    return not any(_has_unsafe_structural_presentation_controls(text) for text in texts)
+
+
+# Contrato de bytes CONGELADO de natural_answer_v1. Tudo que pode alterar
+# bytes fica com nome v1, privado e imutável; uma futura redação/layout exige
+# natural_answer_v2 e não deve reutilizar/editar estas constantes/helpers.
 # Molduras conversacionais FIXAS, por PAPEL -- vocabulário fechado,
 # nunca escrito por LLM, nunca escolhido a partir de conteúdo de claim.
 # Cada frase descreve só a FUNÇÃO estrutural que o papel já tinha (o
@@ -216,27 +238,44 @@ def _reject_if_unsafe_structural_presentation(primary: PrimaryAnswer) -> None:
 # -- nunca uma relação causal/comparativa NOVA entre claims específicas.
 # `None` = primeiro parágrafo (conclusão central), sem moldura: é a
 # resposta direta, não uma "seção" à parte.
-_ROLE_LEAD: dict[PrimaryAnswerRole, str | None] = {
-    "central_conclusion": None,
-    "supporting_reasons": "Isso se apoia no seguinte, avaliado no debate:",
-    "tradeoffs": "Também foram registrados contrapontos relevantes:",
-    "conditions": "A resposta pode mudar dependendo do seguinte:",
-    "uncertainties": "Ficam registradas as seguintes incertezas e ressalvas:",
-}
+_V1_ROLE_LEADS: Mapping[PrimaryAnswerRole, str | None] = MappingProxyType(
+    {
+        "central_conclusion": None,
+        "supporting_reasons": "Isso se apoia no seguinte, avaliado no debate:",
+        "tradeoffs": "Também foram registrados contrapontos relevantes:",
+        "conditions": "A resposta pode mudar dependendo do seguinte:",
+        "uncertainties": "Ficam registradas as seguintes incertezas e ressalvas:",
+    }
+)
+_V1_ITEM_VERDICT_PREFIX = " ("
+_V1_ITEM_VERDICT_SUFFIX = ")."
+_V1_ITEM_SEPARATOR = " "
+_V1_FRAME_SEPARATOR = " "
+_V1_LIMITATIONS_HEADING = "Limitações registradas:"
+_V1_LIMITATION_PREFIX = "- "
+_V1_LINE_SEPARATOR = "\n"
+_V1_PARAGRAPH_SEPARATOR = "\n\n"
 
 
-def _render_item_sentence(item: PrimaryAnswerItem) -> str:
+def _render_v1_item_sentence(item: PrimaryAnswerItem) -> str:
     """Claim INTACTA + rótulo de veredito (vocabulário fechado, já
     validado em `PrimaryAnswer`) -- pontuação (espaço, parênteses, ponto
     final) é sempre acrescentada FORA do texto da claim, nunca inserida
     dentro dele."""
-    return f"{item.claim_text} ({item.verdict_label})."
+    return (
+        item.claim_text
+        + _V1_ITEM_VERDICT_PREFIX
+        + item.verdict_label
+        + _V1_ITEM_VERDICT_SUFFIX
+    )
 
 
-def _render_role_paragraph(section: PrimaryAnswerSection) -> str:
-    sentences = " ".join(_render_item_sentence(item) for item in section.items)
-    lead = _ROLE_LEAD[section.role]
-    return f"{lead} {sentences}" if lead else sentences
+def _render_v1_role_paragraph(section: PrimaryAnswerSection) -> str:
+    sentences = _V1_ITEM_SEPARATOR.join(
+        _render_v1_item_sentence(item) for item in section.items
+    )
+    lead = _V1_ROLE_LEADS[section.role]
+    return lead + _V1_FRAME_SEPARATOR + sentences if lead else sentences
 
 
 def _render_natural_answer_text_v1(primary: PrimaryAnswer) -> str:
@@ -251,9 +290,8 @@ def _render_natural_answer_text_v1(primary: PrimaryAnswer) -> str:
     fixture golden byte-exato em tests/editor/test_natural_answer.py
     (literal/estático, nunca gerado chamando esta própria função --
     existe só pra detectar deriva futura). Chamada só através de
-    `render_natural_answer_text` (que aplica a fronteira de segurança de
-    apresentação ANTES de despachar pra cá, ver Blocker 4 acima) --
-    nunca diretamente pelo caminho de composição/coerência.
+    `expected_rendered_text` para recomputação histórica e, depois da
+    política atual de elegibilidade, pelo caminho de composição novo.
 
     Nunca lê nada além de `primary` (que já foi validado internamente e
     contra os registros da execução em outro lugar, ver
@@ -266,12 +304,16 @@ def _render_natural_answer_text_v1(primary: PrimaryAnswer) -> str:
     de escopo/divulgação (`primary.scope_note`, já determinístico e
     validado) é preservado verbatim ao final -- nada é omitido em
     silêncio."""
-    paragraphs = [_render_role_paragraph(section) for section in primary.sections]
+    paragraphs = [_render_v1_role_paragraph(section) for section in primary.sections]
     if primary.limitations:
-        limitation_lines = "\n".join(f"- {text}" for text in primary.limitations)
-        paragraphs.append(f"{PRIMARY_ANSWER_LIMITATIONS_HEADING}\n{limitation_lines}")
+        limitation_lines = _V1_LINE_SEPARATOR.join(
+            _V1_LIMITATION_PREFIX + text for text in primary.limitations
+        )
+        paragraphs.append(
+            _V1_LIMITATIONS_HEADING + _V1_LINE_SEPARATOR + limitation_lines
+        )
     paragraphs.append(primary.scope_note)
-    return "\n\n".join(paragraphs)
+    return _V1_PARAGRAPH_SEPARATOR.join(paragraphs)
 
 
 def render_natural_answer_text(primary: PrimaryAnswer) -> str:
@@ -293,12 +335,12 @@ def render_natural_answer_text(primary: PrimaryAnswer) -> str:
 # Registro FECHADO {versão do contrato -> renderizador}. Cresce só quando
 # uma nova versão de renderizador for adicionada explicitamente aqui --
 # nunca implicitamente aceito por um "else" permissivo. `natural_answer_v1`
-# despacha especificamente pra `render_natural_answer_text` (que por sua
-# vez despacha pro corpo CONGELADO `_render_natural_answer_text_v1`, ver
-# Blocker 5) -- uma v2 futura precisaria de sua PRÓPRIA entrada aqui,
-# nunca reusar/editar esta.
+# despacha DIRETAMENTE pro corpo CONGELADO `_render_natural_answer_text_v1`:
+# recomputação histórica pergunta somente quais bytes a versão significa,
+# nunca se a política de apresentação atual ainda prefere exibi-los. Uma v2
+# futura precisa de sua PRÓPRIA entrada aqui, nunca reusar/editar esta.
 _RENDERERS: dict[str, Callable[[PrimaryAnswer], str]] = {
-    NATURAL_ANSWER_CONTRACT_VERSION: render_natural_answer_text,
+    NATURAL_ANSWER_CONTRACT_VERSION: _render_natural_answer_text_v1,
 }
 
 
