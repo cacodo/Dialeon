@@ -46,6 +46,7 @@ import type {
   AnswerClaimItemPublic,
   FinalAnswerPublic,
   FinalAnswerStatus,
+  LinguisticRealizationPublic,
   NaturalAnswerPublic,
   PrimaryAnswerPublic,
 } from '../api/types'
@@ -410,12 +411,69 @@ function NaturalAnswerView({
   )
 }
 
+function LinguisticRealizationView({
+  finalAnswer,
+  realization,
+  primary,
+}: {
+  finalAnswer: FinalAnswerPublic
+  realization: LinguisticRealizationPublic
+  primary: PrimaryAnswerPublic
+}) {
+  return (
+    <section aria-labelledby="final-answer-heading" className="final-answer final-answer--natural">
+      <div className="final-answer__header">
+        <h2 id="final-answer-heading">Resposta</h2>
+        <CopyAnswerButton text={realization.rendered_text} />
+      </div>
+      <div className="final-answer__text">
+        {realization.blocks.map((block, index) => (
+          <p key={index}>{block.text}</p>
+        ))}
+      </div>
+      <p className="final-answer__scope-note">
+        A redação foi gerada por modelo a partir de afirmações selecionadas e avaliadas pelo
+        Judge. A revisão indica consistência com essa resposta estruturada; não é verificação
+        externa nem garantia de verdade.
+      </p>
+      {finalAnswer.limitations.length > 0 && (
+        <div className="final-answer__limitations">
+          <h3>Limitações registradas</h3>
+          <ul>
+            {finalAnswer.limitations.map((limitation, index) => (
+              <li key={index}>{limitation}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <details className="final-answer__inspect">
+        <summary>Ver resposta principal estruturada e avaliação completa</summary>
+        <PrimaryAnswerView finalAnswer={finalAnswer} primary={primary} inNaturalDisclosure />
+      </details>
+      <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
+    </section>
+  )
+}
+
 export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
   // Ordem de fallback FIXA: NaturalAnswer atualmente elegível -> resposta principal
   // estruturada -> avaliação completa (comportamento de sempre, inclusive
   // histórico). NaturalAnswer só é exibida quando também há uma resposta
   // principal e o sinal derivado da política atual é explicitamente true.
   // O default defensivo pra payloads sem o sinal é PrimaryAnswer.
+  if (
+    finalAnswer.linguistic_realization != null &&
+    finalAnswer.primary_answer != null &&
+    finalAnswer.linguistic_realization_presentation_eligible === true
+  ) {
+    return (
+      <LinguisticRealizationView
+        finalAnswer={finalAnswer}
+        realization={finalAnswer.linguistic_realization}
+        primary={finalAnswer.primary_answer}
+      />
+    )
+  }
   if (
     finalAnswer.natural_answer != null &&
     finalAnswer.primary_answer != null &&

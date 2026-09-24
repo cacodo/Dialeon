@@ -124,3 +124,47 @@ class PrimaryAwareScriptedProvider(ScriptedProvider):
                 self.provider_name, "{}", input_tokens=0, output_tokens=0, cost_usd=0.0
             )
         return await super().complete(request, execution_policy=execution_policy)
+
+
+def is_realization_request(request) -> bool:
+    return "realiza linguisticamente" in (request.system_prompt or "")
+
+
+def is_semantic_review_request(request) -> bool:
+    return "revisa semanticamente" in (request.system_prompt or "")
+
+
+class RealizationAwareScriptedProvider(PrimaryAwareScriptedProvider):
+    """Estende `PrimaryAwareScriptedProvider` roteirizando também as duas
+    chamadas da Linguistic Realization: `realization_responses` (a
+    realização propriamente dita, editor_provider) e `review_responses` (a
+    revisão semântica independente, tipicamente judge_provider -- pode ser
+    o MESMO provider quando o teste quer exercitar identidade truthful de
+    "mesmo provider"). Sem roteiro, cada uma tem o mesmo default de custo
+    zero conhecido que as demais camadas opcionais desta fixture."""
+
+    def __init__(self, name, responses, primary_responses=None, realization_responses=None, review_responses=None, **kwargs):
+        super().__init__(name, responses, primary_responses=primary_responses, **kwargs)
+        self.realization_requests: list = []
+        self.review_requests: list = []
+        self._realization_responses = (
+            list(realization_responses) if realization_responses is not None else None
+        )
+        self._review_responses = list(review_responses) if review_responses is not None else None
+
+    async def complete(self, request, *, execution_policy=None):
+        if is_realization_request(request):
+            self.realization_requests.append(request)
+            if self._realization_responses:
+                return self._realization_responses.pop(0)
+            return text_response(
+                self.provider_name, "{}", input_tokens=0, output_tokens=0, cost_usd=0.0
+            )
+        if is_semantic_review_request(request):
+            self.review_requests.append(request)
+            if self._review_responses:
+                return self._review_responses.pop(0)
+            return text_response(
+                self.provider_name, "{}", input_tokens=0, output_tokens=0, cost_usd=0.0
+            )
+        return await super().complete(request, execution_policy=execution_policy)

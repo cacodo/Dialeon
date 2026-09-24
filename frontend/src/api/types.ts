@@ -379,6 +379,18 @@ export interface NaturalAnswerPublic {
   rendered_text: string
 }
 
+export interface LinguisticRealizationBlockPublic {
+  claim_ids: string[]
+  text: string
+}
+
+export interface LinguisticRealizationPublic {
+  contract_version: 'linguistic_realization_v1'
+  based_on_primary_answer_digest: string
+  blocks: LinguisticRealizationBlockPublic[]
+  rendered_text: string
+}
+
 export interface FinalAnswerPublic {
   answer_text: string
   // `null` pra runs persistidos antes da UI Slice 3, pro caminho sem
@@ -410,6 +422,8 @@ export interface FinalAnswerPublic {
   // ausente significa que uma NaturalAnswer histórica pode continuar
   // disponível para auditoria, mas não deve ser preferida para exibição.
   natural_answer_presentation_eligible?: boolean
+  linguistic_realization?: LinguisticRealizationPublic | null
+  linguistic_realization_presentation_eligible?: boolean
   limitations: string[]
   status: FinalAnswerStatus
   editor_model: string | null
@@ -565,6 +579,10 @@ export interface JudgeOutcome {
 export interface EditorOutcome {
   fallback_reason: string | null
   cumulative_budget_exceeded: boolean
+  primary_answer_fallback_reason?: string | null
+  natural_answer_fallback_reason?: string | null
+  linguistic_realization_fallback_reason?: string | null
+  linguistic_semantic_review_provider?: string | null
 }
 
 // Etapa 15 -- asserção aritmética normalizada exata que foi avaliada.
@@ -607,6 +625,9 @@ export interface CompletedRunAudit {
   judge_verdict: JudgeVerdictPublic | null
   judge_attempts: JudgeAttemptPublic[]
   editor_attempts: EditorAttemptPublic[]
+  primary_answer_attempts?: EditorAttemptPublic[]
+  linguistic_realization_attempts?: EditorAttemptPublic[]
+  linguistic_semantic_review_attempts?: EditorAttemptPublic[]
   final_answer: FinalAnswerPublic
   accounting: AccountingSummary
   provider_execution_policy: ProviderExecutionPolicy | null

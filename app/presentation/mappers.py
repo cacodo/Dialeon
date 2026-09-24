@@ -43,6 +43,8 @@ from app.presentation.schemas import (
     JudgeVerdictPublic,
     ModelResponsePublic,
     NaturalAnswerPublic,
+    LinguisticRealizationBlockPublic,
+    LinguisticRealizationPublic,
     QuorumFailureAudit,
     QuorumFailureRunResponse,
     QuorumPublic,
@@ -67,6 +69,10 @@ from app.debate.result import CritiqueResult
 from app.editor.answer_blocks import AnswerBlock, AnswerClaimSectionBlock, AnswerParagraphBlock
 from app.editor.attempt import EditorAttempt
 from app.editor.natural_answer import NaturalAnswer, natural_answer_is_presentation_eligible
+from app.editor.linguistic_realization import (
+    LinguisticRealization,
+    linguistic_realization_is_presentation_eligible,
+)
 from app.editor.primary_answer import PrimaryAnswer
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
@@ -335,11 +341,34 @@ def natural_answer_public(natural: NaturalAnswer | None) -> NaturalAnswerPublic 
     )
 
 
+def linguistic_realization_public(
+    realization: LinguisticRealization | None,
+) -> LinguisticRealizationPublic | None:
+    if realization is None:
+        return None
+    return LinguisticRealizationPublic(
+        contract_version=realization.contract_version,
+        based_on_primary_answer_digest=realization.based_on_primary_answer_digest,
+        blocks=[
+            LinguisticRealizationBlockPublic(claim_ids=list(block.claim_ids), text=block.text)
+            for block in realization.blocks
+        ],
+        rendered_text=realization.rendered_text,
+    )
+
+
 def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
     natural_presentation_eligible = (
         fa.natural_answer is not None
         and fa.primary_answer is not None
         and natural_answer_is_presentation_eligible(fa.primary_answer)
+    )
+    realization_presentation_eligible = (
+        fa.linguistic_realization is not None
+        and fa.primary_answer is not None
+        and linguistic_realization_is_presentation_eligible(
+            fa.linguistic_realization, fa.primary_answer
+        )
     )
     return FinalAnswerPublic(
         answer_text=fa.answer_text,
@@ -352,6 +381,8 @@ def final_answer_public(fa: FinalAnswer) -> FinalAnswerPublic:
         primary_answer=primary_answer_public(fa.primary_answer),
         natural_answer=natural_answer_public(fa.natural_answer),
         natural_answer_presentation_eligible=natural_presentation_eligible,
+        linguistic_realization=linguistic_realization_public(fa.linguistic_realization),
+        linguistic_realization_presentation_eligible=realization_presentation_eligible,
         limitations=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -636,6 +667,12 @@ def completed_run_audit(
             cumulative_budget_exceeded=editor.cumulative_budget_exceeded,
             primary_answer_fallback_reason=editor.primary_answer_fallback_reason,
             natural_answer_fallback_reason=editor.natural_answer_fallback_reason,
+            linguistic_realization_fallback_reason=(
+                editor.linguistic_realization_fallback_reason
+            ),
+            linguistic_semantic_review_provider=(
+                editor.linguistic_semantic_review_provider
+            ),
         ),
         source_analysis=source_analysis_outcome_public(result.source_analysis_result),
         initial_round=initial_round_audit(debate.initial_result),
@@ -652,6 +689,12 @@ def completed_run_audit(
         judge_attempts=[judge_attempt_public(a) for a in judge.attempts],
         editor_attempts=[editor_attempt_public(a) for a in editor.attempts],
         primary_answer_attempts=[editor_attempt_public(a) for a in editor.primary_answer_attempts],
+        linguistic_realization_attempts=[
+            editor_attempt_public(a) for a in editor.linguistic_realization_attempts
+        ],
+        linguistic_semantic_review_attempts=[
+            editor_attempt_public(a) for a in editor.linguistic_semantic_review_attempts
+        ],
         final_answer=final_answer_public(editor.final_answer),
         accounting=accounting_summary(result),
         provider_execution_policy=provider_execution_policy,

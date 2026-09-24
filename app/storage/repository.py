@@ -38,6 +38,9 @@ from app.orchestrator.config import RunConfig
 from app.orchestrator.errors import InsufficientQuorumError
 from app.orchestrator.result import InitialResponsesResult, RoundResult
 from app.editor.natural_answer_coherence import validate_natural_answer_coherence
+from app.editor.linguistic_realization_coherence import (
+    validate_linguistic_realization_coherence,
+)
 from app.editor.primary_answer_coherence import validate_primary_answer_coherence
 from app.reconciliation.errors import ReconciliationError
 from app.reconciliation.reconcile import validate_reconciliation_coherence
@@ -178,6 +181,8 @@ def _run_config_from_json(data: dict) -> RunConfig:
 
 # `EditorAttemptRow.purpose` das tentativas de planejamento da resposta principal.
 _PRIMARY_ANSWER_PURPOSE = "primary_answer_plan"
+_LINGUISTIC_REALIZATION_PURPOSE = "linguistic_realization"
+_LINGUISTIC_SEMANTIC_REVIEW_PURPOSE = "linguistic_semantic_review"
 
 
 class CouncilRepository:
@@ -318,6 +323,9 @@ class CouncilRepository:
         # (validator de `CouncilRunResult`); aqui cobre objetos montados
         # sem validação (ex. `model_copy`) antes de qualquer escrita.
         validate_natural_answer_coherence(editor.final_answer)
+        validate_linguistic_realization_coherence(
+            editor.final_answer, editor, question=result.run_config.question
+        )
 
         async with session_scope(self._session_factory) as session:
             accepted_row = await session.get(AcceptedRunRow, result.id)
@@ -353,6 +361,12 @@ class CouncilRepository:
                     editor_cumulative_budget_exceeded=editor.cumulative_budget_exceeded,
                     editor_primary_answer_fallback_reason=editor.primary_answer_fallback_reason,
                     editor_natural_answer_fallback_reason=editor.natural_answer_fallback_reason,
+                    editor_linguistic_realization_fallback_reason=(
+                        editor.linguistic_realization_fallback_reason
+                    ),
+                    editor_linguistic_semantic_review_provider=(
+                        editor.linguistic_semantic_review_provider
+                    ),
                     source_analyzer_provider=(
                         source_analysis.source_analyzer_provider
                         if source_analysis is not None
@@ -447,6 +461,22 @@ class CouncilRepository:
                 session.add(
                     editor_attempt_to_row(
                         attempt, council_run_id=result.id, purpose=_PRIMARY_ANSWER_PURPOSE
+                    )
+                )
+            for attempt in editor.linguistic_realization_attempts:
+                session.add(
+                    editor_attempt_to_row(
+                        attempt,
+                        council_run_id=result.id,
+                        purpose=_LINGUISTIC_REALIZATION_PURPOSE,
+                    )
+                )
+            for attempt in editor.linguistic_semantic_review_attempts:
+                session.add(
+                    editor_attempt_to_row(
+                        attempt,
+                        council_run_id=result.id,
+                        purpose=_LINGUISTIC_SEMANTIC_REVIEW_PURPOSE,
                     )
                 )
 
@@ -901,16 +931,32 @@ class CouncilRepository:
             attempts=[
                 editor_attempt_from_row(a)
                 for a in editor_attempt_rows
-                if a.purpose != _PRIMARY_ANSWER_PURPOSE
+                if a.purpose is None or a.purpose == "style_plan"
             ],
             primary_answer_attempts=[
                 editor_attempt_from_row(a)
                 for a in editor_attempt_rows
                 if a.purpose == _PRIMARY_ANSWER_PURPOSE
             ],
+            linguistic_realization_attempts=[
+                editor_attempt_from_row(a)
+                for a in editor_attempt_rows
+                if a.purpose == _LINGUISTIC_REALIZATION_PURPOSE
+            ],
+            linguistic_semantic_review_attempts=[
+                editor_attempt_from_row(a)
+                for a in editor_attempt_rows
+                if a.purpose == _LINGUISTIC_SEMANTIC_REVIEW_PURPOSE
+            ],
             fallback_reason=row.editor_fallback_reason,
             primary_answer_fallback_reason=row.editor_primary_answer_fallback_reason,
             natural_answer_fallback_reason=row.editor_natural_answer_fallback_reason,
+            linguistic_realization_fallback_reason=(
+                row.editor_linguistic_realization_fallback_reason
+            ),
+            linguistic_semantic_review_provider=(
+                row.editor_linguistic_semantic_review_provider
+            ),
             editor_provider=row.editor_provider,
             cumulative_budget_exceeded=row.editor_cumulative_budget_exceeded,
         )

@@ -31,6 +31,7 @@ from app.debate.processing_record import ClaimProcessingAttempt
 from app.editor.answer_blocks import AnswerBlock
 from app.editor.attempt import EditorAttempt
 from app.editor.natural_answer import NaturalAnswer
+from app.editor.linguistic_realization import LinguisticRealization
 from app.editor.primary_answer import PrimaryAnswer
 from app.editor.result import FinalAnswer
 from app.judge.attempt import JudgeAttempt
@@ -688,6 +689,14 @@ def _natural_answer_from_json(data: dict | None) -> NaturalAnswer | None:
     return NaturalAnswer.model_validate(data) if data is not None else None
 
 
+def _linguistic_realization_to_json(value: LinguisticRealization | None) -> dict | None:
+    return value.model_dump(mode="json") if value is not None else None
+
+
+def _linguistic_realization_from_json(data: dict | None) -> LinguisticRealization | None:
+    return LinguisticRealization.model_validate(data) if data is not None else None
+
+
 def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerRow:
     return FinalAnswerRow(
         id=fa.id,
@@ -697,6 +706,9 @@ def final_answer_to_row(fa: FinalAnswer, *, council_run_id: str) -> FinalAnswerR
         unevaluated_claims_json=_unevaluated_claims_to_json(fa.unevaluated_claims),
         primary_answer_json=_primary_answer_to_json(fa.primary_answer),
         natural_answer_json=_natural_answer_to_json(fa.natural_answer),
+        linguistic_realization_json=_linguistic_realization_to_json(
+            fa.linguistic_realization
+        ),
         limitations_json=list(fa.limitations),
         status=fa.status,
         editor_model=fa.editor_model,
@@ -717,6 +729,9 @@ def final_answer_from_row(row: FinalAnswerRow) -> FinalAnswer:
         unevaluated_claims=_unevaluated_claims_from_json(row.unevaluated_claims_json),
         primary_answer=_primary_answer_from_json(row.primary_answer_json),
         natural_answer=_natural_answer_from_json(row.natural_answer_json),
+        linguistic_realization=_linguistic_realization_from_json(
+            row.linguistic_realization_json
+        ),
         limitations=list(row.limitations_json),
         status=row.status,
         editor_model=row.editor_model,

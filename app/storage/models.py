@@ -101,6 +101,8 @@ class CouncilRunRow(Base):
     # `NULL` é honesto para todo run persistido antes desta coluna existir
     # e para "produzida / não se aplica" (ver `_upgrade_legacy_natural_answer`).
     editor_natural_answer_fallback_reason: Mapped[str | None]
+    editor_linguistic_realization_fallback_reason: Mapped[str | None]
+    editor_linguistic_semantic_review_provider: Mapped[str | None]
     # Idem -- ver FinalAnswerRow.council_run_id (1:1 no sentido inverso).
 
     # Etapa 16 -- TODAS nullable, diferente de debate/judge/editor acima:
@@ -677,6 +679,7 @@ class FinalAnswerRow(Base):
     # produzida. Nunca reconstruída retroativamente (ver
     # `_upgrade_legacy_natural_answer`).
     natural_answer_json: Mapped[dict | None] = mapped_column(JSON)
+    linguistic_realization_json: Mapped[dict | None] = mapped_column(JSON)
     limitations_json: Mapped[list] = mapped_column(JSON)
     status: Mapped[str]
     editor_model: Mapped[str | None]

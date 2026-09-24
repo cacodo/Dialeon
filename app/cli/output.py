@@ -142,6 +142,33 @@ def human_run_result(run: CompletedRunResponse) -> str:
     # continua SEMPRE impressa logo depois. Mesmo tratamento de segurança de
     # terminal: texto de claim (verbatim nas duas) é não confiável.
     if (
+        run.final_answer.linguistic_realization is not None
+        and run.final_answer.linguistic_realization_presentation_eligible
+    ):
+        lines.append("resposta:")
+        lines.append(
+            terminal_safe_text(run.final_answer.linguistic_realization.rendered_text)
+        )
+        lines.append("")
+        lines.append(
+            "nota: redação gerada por modelo a partir de afirmações selecionadas e "
+            "avaliadas pelo Judge; não é verificação externa."
+        )
+        if run.final_answer.limitations:
+            lines.append("")
+            lines.append("limitações:")
+            lines.extend(
+                f"  - {terminal_safe_text(item)}" for item in run.final_answer.limitations
+            )
+        if run.final_answer.primary_answer is not None:
+            lines.append("")
+            lines.append("resposta principal (estruturada):")
+            lines.append(
+                terminal_safe_text(run.final_answer.primary_answer.rendered_text)
+            )
+        lines.append("")
+        lines.append("avaliação completa:")
+    elif (
         run.final_answer.natural_answer is not None
         and run.final_answer.natural_answer_presentation_eligible
     ):
@@ -159,7 +186,13 @@ def human_run_result(run: CompletedRunResponse) -> str:
         lines.append("")
         lines.append("avaliação completa:")
     lines.append(terminal_safe_text(run.final_answer.answer_text))
-    if run.final_answer.limitations:
+    if (
+        run.final_answer.limitations
+        and not (
+            run.final_answer.linguistic_realization is not None
+            and run.final_answer.linguistic_realization_presentation_eligible
+        )
+    ):
         lines.append("")
         lines.append("limitações:")
         lines.extend(f"  - {terminal_safe_text(item)}" for item in run.final_answer.limitations)
@@ -383,6 +416,19 @@ def human_run_audit(audit: Any) -> str:
                 "resposta_natural: presente (preservada; não preferida pela política "
                 "de apresentação atual)"
             )
+        if audit.final_answer.linguistic_realization is None:
+            realization_status = "realização_linguística: ausente" + (
+                f" ({audit.editor_outcome.linguistic_realization_fallback_reason})"
+                if audit.editor_outcome.linguistic_realization_fallback_reason
+                else ""
+            )
+        elif audit.final_answer.linguistic_realization_presentation_eligible:
+            realization_status = "realização_linguística: presente"
+        else:
+            realization_status = (
+                "realização_linguística: presente (preservada; não preferida pela política "
+                "de apresentação atual)"
+            )
         lines = [
             "status: concluída",
             f"run_id: {audit.id}",
@@ -402,6 +448,7 @@ def human_run_audit(audit: Any) -> str:
                 )
             ),
             natural_answer_status,
+            realization_status,
             f"resposta_final_status: {audit.final_answer.status}",
             f"custo_estimado_usd: {audit.accounting.estimated_cost_usd:.6f}",
             f"contabilidade_completa: {'não' if audit.accounting.has_unknown_accounting_components else 'sim'}",

@@ -520,6 +520,22 @@ class NaturalAnswerPublic(BaseModel):
     rendered_text: str
 
 
+class LinguisticRealizationBlockPublic(BaseModel):
+    model_config = _CONFIG
+
+    claim_ids: list[str]
+    text: str
+
+
+class LinguisticRealizationPublic(BaseModel):
+    model_config = _CONFIG
+
+    contract_version: Literal["linguistic_realization_v1"]
+    based_on_primary_answer_digest: str
+    blocks: list[LinguisticRealizationBlockPublic]
+    rendered_text: str
+
+
 class FinalAnswerPublic(BaseModel):
     model_config = _CONFIG
 
@@ -553,6 +569,8 @@ class FinalAnswerPublic(BaseModel):
     # byte-válida e preservada acima, mas não elegível para ser preferida hoje;
     # nesse caso consumidores devem usar `primary_answer`.
     natural_answer_presentation_eligible: bool = False
+    linguistic_realization: LinguisticRealizationPublic | None = None
+    linguistic_realization_presentation_eligible: bool = False
     limitations: list[str]
     # Etapa 17B -- "llm_planned" é o status de runs novos (LLM escolheu
     # EditorPlan, aplicação renderizou o texto); "llm_composed" segue
@@ -856,6 +874,8 @@ class EditorOutcome(BaseModel):
     # Aditivo: por que não há renderização conversacional (Natural Answer)
     # apesar de existir resposta principal.
     natural_answer_fallback_reason: str | None = None
+    linguistic_realization_fallback_reason: str | None = None
+    linguistic_semantic_review_provider: str | None = None
 
 
 class SourceAnalysisOutcome(BaseModel):
@@ -946,6 +966,8 @@ class CompletedRunAudit(BaseModel):
     # Aditivo: tentativas do planejamento da resposta principal (mesmo formato
     # de `editor_attempts`, que segue significando só o plano de estilo).
     primary_answer_attempts: list[EditorAttemptPublic] = []
+    linguistic_realization_attempts: list[EditorAttemptPublic] = []
+    linguistic_semantic_review_attempts: list[EditorAttemptPublic] = []
     final_answer: FinalAnswerPublic
     accounting: AccountingSummary
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.

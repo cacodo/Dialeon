@@ -101,6 +101,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_unevaluated_claims)
         await conn.run_sync(_upgrade_legacy_primary_answer)
         await conn.run_sync(_upgrade_legacy_natural_answer)
+        await conn.run_sync(_upgrade_legacy_linguistic_realization)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -485,6 +486,22 @@ def _upgrade_legacy_natural_answer(sync_conn) -> None:  # noqa: ANN001
         if column in existing:
             continue
         sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} {ddl}"))
+
+
+def _upgrade_legacy_linguistic_realization(sync_conn) -> None:  # noqa: ANN001
+    """Add nullable realization fields without fabricating historical data."""
+    inspector = sa_inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+    for table_name, column, ddl in (
+        ("final_answers", "linguistic_realization_json", "TEXT"),
+        ("council_runs", "editor_linguistic_realization_fallback_reason", "TEXT"),
+        ("council_runs", "editor_linguistic_semantic_review_provider", "TEXT"),
+    ):
+        if table_name not in tables:
+            continue
+        existing = {col["name"] for col in inspector.get_columns(table_name)}
+        if column not in existing:
+            sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} {ddl}"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

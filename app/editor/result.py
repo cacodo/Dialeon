@@ -31,6 +31,7 @@ from app.editor.answer_blocks import (
     AnswerParagraphBlock,
 )
 from app.editor.attempt import EditorAttempt
+from app.editor.linguistic_realization import LinguisticRealization
 from app.editor.natural_answer import NaturalAnswer
 from app.editor.primary_answer import PrimaryAnswer
 from app.models.provider_models import ModelIdentitySource
@@ -134,6 +135,11 @@ class FinalAnswer(BaseModel):
     # tratado como falha do run, ver `EditorResult.natural_answer_fallback_reason`).
     # Nunca sintetizado retroativamente sobre um run histórico recarregado.
     natural_answer: NaturalAnswer | None = None
+    # Optional model-written wording over the authoritative PrimaryAnswer.
+    # It is usable only when the exact candidate received an accepting
+    # linguistic_semantic_review_v1 result; cross-record coherence enforces
+    # that binding. Historical rows remain None and are never backfilled.
+    linguistic_realization: LinguisticRealization | None = None
     # Quando há veredito: SEMPRE começa com cópia VERBATIM de
     # JudgeVerdict.debate_limitations, na mesma ordem -- o Editor nunca
     # reescreve/resume/escolhe o CONTEÚDO dessas entradas (ver
@@ -257,6 +263,17 @@ class FinalAnswer(BaseModel):
             raise ValueError(
                 "natural_answer.based_on_verdict_id diverge de primary_answer.based_on_verdict_id"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _linguistic_realization_requires_a_primary_answer(self) -> FinalAnswer:
+        realization = self.linguistic_realization
+        if realization is None:
+            return self
+        if self.status not in ("llm_planned", "deterministic_from_verdict"):
+            raise ValueError(f"status={self.status!r} nunca deve ter linguistic_realization")
+        if self.primary_answer is None:
+            raise ValueError("linguistic_realization exige primary_answer correspondente")
         return self
 
     @model_validator(mode="after")
@@ -457,10 +474,32 @@ class EditorResult(BaseModel):
         Literal["natural_answer_render_failed", "natural_answer_declined_unsafe_presentation"]
         | None
     ) = None
+    linguistic_realization_attempts: list[EditorAttempt] = Field(default_factory=list)
+    linguistic_semantic_review_attempts: list[EditorAttempt] = Field(default_factory=list)
+    linguistic_semantic_review_provider: str | None = None
+    linguistic_realization_fallback_reason: (
+        Literal[
+            "budget_exhausted_before_realization",
+            "realization_transport_failure",
+            "malformed_realization",
+            "structural_rejection",
+            "budget_exhausted_before_semantic_review",
+            "semantic_review_transport_failure",
+            "malformed_semantic_review",
+            "semantic_review_rejection",
+            "defensive_realization_persistence_failure",
+        ]
+        | None
+    ) = None
 
     @property
     def _all_editor_attempts(self) -> list[EditorAttempt]:
-        return [*self.attempts, *self.primary_answer_attempts]
+        return [
+            *self.attempts,
+            *self.primary_answer_attempts,
+            *self.linguistic_realization_attempts,
+            *self.linguistic_semantic_review_attempts,
+        ]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -585,12 +624,45 @@ class EditorResult(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _linguistic_realization_state_is_coherent(self) -> EditorResult:
+        realization = self.final_answer.linguistic_realization
+        reason = self.linguistic_realization_fallback_reason
+        realizer_attempts = self.linguistic_realization_attempts
+        review_attempts = self.linguistic_semantic_review_attempts
+        if realization is not None:
+            if reason is not None:
+                raise ValueError("linguistic_realization presente não deve ter fallback_reason")
+            if not realizer_attempts or realizer_attempts[-1].parse_status != "accepted":
+                raise ValueError("linguistic_realization exige tentativa de realização aceita")
+            if not review_attempts or review_attempts[-1].parse_status != "accepted":
+                raise ValueError("linguistic_realization exige revisão semântica estruturada aceita")
+        elif realizer_attempts or review_attempts:
+            if reason is None:
+                raise ValueError("tentativas de linguistic realization sem resultado exigem motivo")
+        if review_attempts and self.linguistic_semantic_review_provider is None:
+            raise ValueError("tentativas de revisão exigem semantic review provider")
+        if not review_attempts and self.linguistic_semantic_review_provider is not None:
+            raise ValueError("semantic review provider sem tentativa não é permitido")
+        return self
+
+    @model_validator(mode="after")
     def _all_attempts_use_declared_provider(self) -> EditorResult:
-        for attempt in self._all_editor_attempts:
+        for attempt in [
+            *self.attempts,
+            *self.primary_answer_attempts,
+            *self.linguistic_realization_attempts,
+        ]:
             if attempt.provider != self.editor_provider:
                 raise ValueError(
                     f"EditorAttempt.provider={attempt.provider!r} diverge de "
                     f"editor_provider={self.editor_provider!r} — nenhuma troca "
                     "silenciosa de provider é permitida"
+                )
+        for attempt in self.linguistic_semantic_review_attempts:
+            if attempt.provider != self.linguistic_semantic_review_provider:
+                raise ValueError(
+                    f"semantic review attempt provider={attempt.provider!r} diverge de "
+                    f"linguistic_semantic_review_provider="
+                    f"{self.linguistic_semantic_review_provider!r}"
                 )
         return self

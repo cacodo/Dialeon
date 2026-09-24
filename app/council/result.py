@@ -32,6 +32,10 @@ from app.editor.natural_answer_coherence import (
     NaturalAnswerCoherenceError,
     validate_natural_answer_coherence,
 )
+from app.editor.linguistic_realization_coherence import (
+    LinguisticRealizationCoherenceError,
+    validate_linguistic_realization_coherence,
+)
 from app.editor.primary_answer_coherence import (
     PrimaryAnswerCoherenceError,
     validate_primary_answer_coherence,
@@ -113,6 +117,14 @@ class CouncilRunResult(BaseModel):
         try:
             validate_natural_answer_coherence(self.editor_result.final_answer)
         except NaturalAnswerCoherenceError as exc:
+            raise ValueError(str(exc)) from exc
+        try:
+            validate_linguistic_realization_coherence(
+                self.editor_result.final_answer,
+                self.editor_result,
+                question=self.run_config.question,
+            )
+        except LinguisticRealizationCoherenceError as exc:
             raise ValueError(str(exc)) from exc
         return self
 

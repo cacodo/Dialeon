@@ -1067,3 +1067,168 @@ describe('FinalAnswerView -- resposta natural', () => {
     expect(container.querySelector('.final-answer--primary')).not.toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Linguistic Realization (redação model-written, apresentacional, sobre a
+// PrimaryAnswer autoritativa -- backend: app/editor/linguistic_realization.py)
+// ---------------------------------------------------------------------------
+
+import type { LinguisticRealizationPublic } from '../../api/types'
+
+function makeRealization(overrides: Partial<LinguisticRealizationPublic> = {}): LinguisticRealizationPublic {
+  return {
+    contract_version: 'linguistic_realization_v1',
+    based_on_primary_answer_digest: 'a'.repeat(64),
+    blocks: [
+      { claim_ids: ['c1'], text: 'Um SaaS é a melhor escolha (sustentada pelo debate).' },
+      { claim_ids: ['c2'], text: 'Fica registrada a ressalva de que o fornecedor pode falir.' },
+    ],
+    rendered_text:
+      'Um SaaS é a melhor escolha (sustentada pelo debate).\n\n' +
+      'Fica registrada a ressalva de que o fornecedor pode falir.',
+    ...overrides,
+  }
+}
+
+describe('FinalAnswerView -- realização linguística', () => {
+  const completeBlocks = sectionsBlocks(
+    [item('Claim da avaliação completa.', 'sustentada pelo debate')],
+    [item('Claim não estabelecida.', 'sem informação suficiente para decidir')],
+  )
+  const withRealization = (
+    realization: LinguisticRealizationPublic | null = makeRealization(),
+    primary: PrimaryAnswerPublic | null = makePrimary(),
+    natural: NaturalAnswerPublic | null = null,
+  ) =>
+    makeFinalAnswer({
+      answer_text: 'AVALIAÇÃO COMPLETA CANÔNICA',
+      answer_blocks: completeBlocks,
+      limitations: ['Sem dados empíricos.'],
+      primary_answer: primary,
+      linguistic_realization: realization,
+      linguistic_realization_presentation_eligible: realization != null,
+      natural_answer: natural,
+      natural_answer_presentation_eligible: natural != null,
+    })
+
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  afterEach(() => {
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+  })
+
+  it('quando presente e elegível, domina: título "Resposta", um parágrafo por bloco, disclosure de origem model-written', () => {
+    render(<FinalAnswerView finalAnswer={withRealization()} />)
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
+    expect(screen.getByText('Um SaaS é a melhor escolha (sustentada pelo debate).').tagName).toBe('P')
+    expect(
+      screen.getByText('Fica registrada a ressalva de que o fornecedor pode falir.').tagName,
+    ).toBe('P')
+    expect(screen.getByText(/redação foi gerada por modelo/)).toBeInTheDocument()
+    // frase completa -- distinta do lead_in da resposta principal aninhada
+    // (recolhida), que termina em "(não é verificação externa):"
+    expect(screen.getByText(/não é verificação externa nem garantia de verdade/)).toBeInTheDocument()
+  })
+
+  it('mostra as limitações registradas ao lado da redação', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withRealization()} />)
+
+    // A resposta principal aninhada (recolhida na disclosure) tem sua
+    // PRÓPRIA seção "Limitações registradas" -- pega só a de nível
+    // superior, que vem ANTES do <details> no documento.
+    const topLevelLimitations = container.querySelector(
+      '.final-answer > .final-answer__limitations',
+    ) as HTMLElement
+    expect(topLevelLimitations).not.toBeNull()
+    expect(within(topLevelLimitations).getByRole('heading', { name: 'Limitações registradas' })).toBeInTheDocument()
+    expect(within(topLevelLimitations).getByText('Sem dados empíricos.')).toBeInTheDocument()
+  })
+
+  it('preserva acesso à resposta principal estruturada e à avaliação completa via disclosure', async () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withRealization()} />)
+
+    const outer = container.querySelector('details.final-answer__inspect') as HTMLDetailsElement
+    expect(outer.open).toBe(false)
+    await userEvent.click(screen.getByText('Ver resposta principal estruturada e avaliação completa'))
+    expect(outer.open).toBe(true)
+
+    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+    const inner = container.querySelector('details.final-answer__complete') as HTMLDetailsElement
+    expect(inner.open).toBe(false)
+    await userEvent.click(screen.getByText(/Ver avaliação completa/))
+    expect(inner.open).toBe(true)
+    expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+  })
+
+  it('"Copiar resposta" copia EXATAMENTE linguistic_realization.rendered_text -- nunca primary/answer_text', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    render(<FinalAnswerView finalAnswer={withRealization()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
+    expect(writeText).toHaveBeenLastCalledWith(makeRealization().rendered_text)
+    expect(writeText).not.toHaveBeenLastCalledWith(makePrimary().rendered_text)
+  })
+
+  it('tem precedência sobre a resposta natural quando as duas estão presentes e elegíveis', () => {
+    const { container } = render(
+      <FinalAnswerView finalAnswer={withRealization(makeRealization(), makePrimary(), makeNatural())} />,
+    )
+
+    expect(screen.getByText(/redação foi gerada por modelo/)).toBeInTheDocument()
+    expect(container.querySelector('.final-answer__scope-note')).not.toBeNull()
+    expect(screen.queryByText('Ver resposta principal e avaliação completa')).not.toBeInTheDocument()
+  })
+
+  it('ordem de fallback: não elegível, cai pra resposta natural quando ela está presente e elegível', () => {
+    const withNatural = withRealization(makeRealization(), makePrimary(), makeNatural())
+    withNatural.linguistic_realization_presentation_eligible = false
+
+    render(<FinalAnswerView finalAnswer={withNatural} />)
+
+    expect(screen.queryByText(/redação foi gerada por modelo/)).not.toBeInTheDocument()
+    expect(screen.getByText('Um SaaS é a melhor escolha. (sustentada pelo debate).')).toBeInTheDocument()
+  })
+
+  it('ordem de fallback: sem realização, cai pra resposta principal estruturada', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withRealization(null)} />)
+
+    expect(container.querySelector('.final-answer--natural')).toBeNull()
+    expect(container.querySelector('.final-answer--primary')).not.toBeNull()
+    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+  })
+
+  it('defensivo: realização presente sem primary_answer nunca quebra -- cai pro próximo fallback', () => {
+    const { container } = render(<FinalAnswerView finalAnswer={withRealization(makeRealization(), null)} />)
+
+    expect(container.querySelector('.final-answer--natural')).toBeNull()
+    expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+  })
+
+  it('conteúdo não confiável dentro dos blocos permanece texto inerte (sem Markdown/HTML/links)', () => {
+    const evil = makeRealization({
+      blocks: [
+        {
+          claim_ids: ['c1'],
+          text: '<img src=x onerror=alert(1)> **negrito** [link](http://x) # título',
+        },
+      ],
+    })
+    const { container } = render(<FinalAnswerView finalAnswer={withRealization(evil)} />)
+
+    expect(container.querySelector('img, script, a, strong')).toBeNull()
+    expect(
+      screen.getByText('<img src=x onerror=alert(1)> **negrito** [link](http://x) # título'),
+    ).toBeInTheDocument()
+  })
+
+  it('histórico: sem linguistic_realization (undefined, payload anterior a este campo) cai com segurança pro comportamento existente', () => {
+    const { container } = render(
+      <FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: completeBlocks, primary_answer: makePrimary() })} />,
+    )
+
+    expect(screen.queryByText(/redação foi gerada por modelo/)).not.toBeInTheDocument()
+    expect(container.querySelector('.final-answer--primary')).not.toBeNull()
+  })
+})

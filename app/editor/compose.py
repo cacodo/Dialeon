@@ -229,6 +229,20 @@ from app.editor.limitations import (
     extraction_coverage_note,
     limitations_with_coverage_note,
 )
+from app.editor.linguistic_realization import (
+    LINGUISTIC_REALIZATION_CONTRACT_VERSION,
+    LINGUISTIC_SEMANTIC_REVIEW_CONTRACT_VERSION,
+    InvalidLinguisticRealizationError,
+    LinguisticRealization,
+    build_linguistic_realization,
+    build_linguistic_realization_request,
+    build_semantic_review_request,
+    candidate_digest,
+    parse_realization_proposal,
+    parse_semantic_review,
+    primary_answer_digest,
+    validate_realization_proposal,
+)
 from app.editor.natural_answer import (
     NaturalAnswer,
     NaturalAnswerUnsafePresentationError,
@@ -693,6 +707,44 @@ class Editor:
         # disponíveis.
         natural_answer, natural_reason = _render_natural_answer_or_fallback(primary_answer)
 
+        linguistic_realization = None
+        realization_attempts: list[EditorAttempt] = []
+        semantic_review_attempts: list[EditorAttempt] = []
+        realization_reason = None
+        semantic_review_provider = None
+        if primary_answer is not None:
+            all_before_realization = [*attempts, *primary_attempts]
+            extra_input, extra_output, extra_cost, _ = sum_usage_and_cost(all_before_realization)
+            try:
+                (
+                    linguistic_realization,
+                    realization_attempts,
+                    semantic_review_attempts,
+                    realization_reason,
+                    semantic_review_provider,
+                ) = await self._realize_primary_answer(
+                    editor_llm=editor_llm,
+                    run_config=run_config,
+                    primary_answer=primary_answer,
+                    input_before=input_before + extra_input,
+                    output_before=output_before + extra_output,
+                    cost_before=cost_before + extra_cost,
+                )
+            except Exception:
+                # This layer is optional and may never invalidate a successful Run.
+                linguistic_realization = None
+                realization_reason = "defensive_realization_persistence_failure"
+
+            optional_input, optional_output, optional_cost, _ = sum_usage_and_cost(
+                [*realization_attempts, *semantic_review_attempts]
+            )
+            cumulative_budget_exceeded = compute_budget_exceeded(
+                input_before + extra_input + optional_input,
+                output_before + extra_output + optional_output,
+                cost_before + extra_cost + optional_cost,
+                run_config,
+            )
+
         final_answer = FinalAnswer(
             answer_text=answer_text,
             answer_blocks=answer_blocks,
@@ -704,6 +756,7 @@ class Editor:
             judge_confidence=verdict.confidence,
             primary_answer=primary_answer,
             natural_answer=natural_answer,
+            linguistic_realization=linguistic_realization,
         )
 
         return EditorResult(
@@ -715,7 +768,208 @@ class Editor:
             primary_answer_attempts=primary_attempts,
             primary_answer_fallback_reason=primary_reason,
             natural_answer_fallback_reason=natural_reason,
+            linguistic_realization_attempts=realization_attempts,
+            linguistic_semantic_review_attempts=semantic_review_attempts,
+            linguistic_semantic_review_provider=semantic_review_provider,
+            linguistic_realization_fallback_reason=realization_reason,
         )
+
+    async def _realize_primary_answer(
+        self,
+        *,
+        editor_llm: LLMProvider,
+        run_config: RunConfig,
+        primary_answer: PrimaryAnswer,
+        input_before: int,
+        output_before: int,
+        cost_before: int | float,
+    ) -> tuple[
+        LinguisticRealization | None,
+        list[EditorAttempt],
+        list[EditorAttempt],
+        str | None,
+        str | None,
+    ]:
+        """Generate, structurally validate, then independently review wording."""
+        if compute_budget_exceeded(input_before, output_before, cost_before, run_config):
+            return None, [], [], "budget_exhausted_before_realization", None
+
+        realization_attempts: list[EditorAttempt] = []
+        proposal = None
+        feedback = None
+        last_failure = "malformed_realization"
+        for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
+            if attempt_number > 1:
+                used_in, used_out, used_cost, _ = sum_usage_and_cost(realization_attempts)
+                if compute_budget_exceeded(
+                    input_before + used_in,
+                    output_before + used_out,
+                    cost_before + used_cost,
+                    run_config,
+                ):
+                    break
+            request = build_linguistic_realization_request(
+                run_config.question,
+                primary_answer,
+                run_config.max_output_tokens_per_call,
+                rejection_feedback=feedback,
+            )
+            provenance = build_request_provenance(
+                LINGUISTIC_REALIZATION_CONTRACT_VERSION, request
+            )
+            response = await editor_llm.complete(request)
+            if response.status == "error":
+                realization_attempts.append(
+                    _transport_error_attempt(attempt_number, response, provenance)
+                )
+                return (
+                    None,
+                    realization_attempts,
+                    [],
+                    "realization_transport_failure",
+                    None,
+                )
+            try:
+                candidate = parse_realization_proposal(response.text)
+                validate_realization_proposal(
+                    candidate, primary=primary_answer, question=run_config.question
+                )
+            except MalformedEditorOutputError as exc:
+                feedback = (
+                    "A saída anterior não foi um único JSON fechado com blocks, claim_ids e text."
+                )
+                last_failure = "malformed_realization"
+                realization_attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number, response, "malformed", str(exc), provenance
+                    )
+                )
+                continue
+            except InvalidLinguisticRealizationError as exc:
+                feedback = exc.to_feedback()
+                last_failure = "structural_rejection"
+                realization_attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        response,
+                        "inconsistent_references",
+                        str(exc),
+                        provenance,
+                    )
+                )
+                continue
+            proposal = candidate
+            realization_attempts.append(_accepted_attempt(attempt_number, response, provenance))
+            break
+
+        if proposal is None:
+            return None, realization_attempts, [], last_failure, None
+
+        real_in, real_out, real_cost, _ = sum_usage_and_cost(realization_attempts)
+        if compute_budget_exceeded(
+            input_before + real_in,
+            output_before + real_out,
+            cost_before + real_cost,
+            run_config,
+        ):
+            return (
+                None,
+                realization_attempts,
+                [],
+                "budget_exhausted_before_semantic_review",
+                None,
+            )
+
+        review_provider_name = run_config.judge_provider
+        review_llm = self._providers.get(review_provider_name)
+        if review_llm is None:
+            return (
+                None,
+                realization_attempts,
+                [],
+                "defensive_realization_persistence_failure",
+                None,
+            )
+
+        digest = candidate_digest(
+            proposal, based_on_primary_answer_digest=primary_answer_digest(primary_answer)
+        )
+        review_attempts: list[EditorAttempt] = []
+        review = None
+        for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
+            if attempt_number > 1:
+                review_in, review_out, review_cost, _ = sum_usage_and_cost(review_attempts)
+                if compute_budget_exceeded(
+                    input_before + real_in + review_in,
+                    output_before + real_out + review_out,
+                    cost_before + real_cost + review_cost,
+                    run_config,
+                ):
+                    break
+            request = build_semantic_review_request(
+                run_config.question,
+                primary_answer,
+                proposal,
+                digest,
+                run_config.max_output_tokens_per_call,
+            )
+            provenance = build_request_provenance(
+                LINGUISTIC_SEMANTIC_REVIEW_CONTRACT_VERSION, request
+            )
+            response = await review_llm.complete(request)
+            if response.status == "error":
+                review_attempts.append(
+                    _transport_error_attempt(attempt_number, response, provenance)
+                )
+                return (
+                    None,
+                    realization_attempts,
+                    review_attempts,
+                    "semantic_review_transport_failure",
+                    review_provider_name,
+                )
+            try:
+                parsed_review = parse_semantic_review(response.text)
+                if parsed_review.candidate_digest != digest:
+                    raise MalformedEditorOutputError("candidate_digest diverge do candidato")
+            except MalformedEditorOutputError as exc:
+                review_attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number, response, "malformed", str(exc), provenance
+                    )
+                )
+                continue
+            review = parsed_review
+            review_attempts.append(_accepted_attempt(attempt_number, response, provenance))
+            break
+
+        if review is None:
+            return (
+                None,
+                realization_attempts,
+                review_attempts,
+                "malformed_semantic_review",
+                review_provider_name,
+            )
+        if review.decision == "reject":
+            return (
+                None,
+                realization_attempts,
+                review_attempts,
+                "semantic_review_rejection",
+                review_provider_name,
+            )
+        try:
+            realization = build_linguistic_realization(proposal, primary=primary_answer)
+        except Exception:
+            return (
+                None,
+                realization_attempts,
+                review_attempts,
+                "defensive_realization_persistence_failure",
+                review_provider_name,
+            )
+        return realization, realization_attempts, review_attempts, None, review_provider_name
 
     async def _plan_primary_answer(
         self,
