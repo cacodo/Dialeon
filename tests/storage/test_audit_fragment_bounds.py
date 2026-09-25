@@ -11,12 +11,14 @@ persistence boundary.
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 
 import pytest
 from pydantic import ValidationError
 
+from app.presentation.mappers import completed_run_audit
 from app.debate.numeric_verification import DeterministicVerificationAttempt, build_verification_attempt
 from app.source_analysis.analyzer import _build_claim_results
 from app.source_analysis.models import RejectedSourceEntry
@@ -258,53 +260,150 @@ async def test_legacy_database_gains_columns_as_null_without_reinterpretation(tm
     assert failed.failure_stage is None  # nunca registrado -> desconhecido, não inferido
 
 
-async def test_legacy_row_holding_a_fragment_over_the_contract_loads_degraded_and_stays_untouched(tmp_path):
-    """Antes do repair, em Python 3.13/3.14, fragmentos de centenas a
-    milhares de níveis chegavam a ser gravados (o save passava; só a
-    renderização do resultado quebrava). A leitura aplica o mesmo contrato:
-    o domínio/API expõem o fragmento como omitido, e a linha histórica no
-    banco nunca é reescrita."""
-    db_path = tmp_path / "legacy-deep.db"
+_LEGACY_TEXTS = {
+    # Gravável pelo baseline em 3.13/3.14; o decoder JSON genérico do
+    # SQLAlchemy estoura RecursionError relendo isto em 3.11.
+    "deep_1500": ("[" * 1500 + "]" * 1500, "complexity_limit_exceeded"),
+    "deep_200000": ("[" * 200_000 + "]" * 200_000, "complexity_limit_exceeded"),
+    "deep_300_dict": ('{"a": ' * 300 + "1" + "}" * 300, "complexity_limit_exceeded"),
+    # Escape de substituto isolado: é o que o bind grava (ensure_ascii).
+    "surrogate_value": ('{"x": "\\ud800"}', "non_json_value"),
+    "surrogate_key": ('{"\\udfff": 1}', "non_json_value"),
+    # Inteiro que só um processo com limite de dígitos elevado gravaria.
+    "int_5001_digits": ('{"x": 1' + "0" * 5000 + "}", "non_json_value"),
+    "int_above_int64": ('{"x": 100000000000000000000}', "non_json_value"),
+}
+
+
+async def _legacy_db_with_raw_texts(tmp_path, text: str, *, drop_reason_columns=("raw_proposal_omitted_reason", "raw_entry_omitted_reason")):
+    db_path = tmp_path / "legacy-raw.db"
     engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
     await init_db(engine)
-    repo = CouncilRepository(make_session_factory(engine))
     original = very_rich_council_run_result()
-    await repo.save_success(original)
+    await CouncilRepository(make_session_factory(engine)).save_success(original)
     await engine.dispose()
 
-    deep_text = "[" * 300 + "]" * 300
     conn = sqlite3.connect(db_path)
-    conn.execute("ALTER TABLE deterministic_verification_attempts DROP COLUMN raw_proposal_omitted_reason")
-    conn.execute("ALTER TABLE source_claim_analysis_results DROP COLUMN raw_entry_omitted_reason")
+    tables = {
+        "raw_proposal_omitted_reason": "deterministic_verification_attempts",
+        "raw_entry_omitted_reason": "source_claim_analysis_results",
+    }
+    for column in drop_reason_columns:
+        conn.execute(f"ALTER TABLE {tables[column]} DROP COLUMN {column}")
     conn.execute(
         "UPDATE deterministic_verification_attempts SET raw_proposal_json = ? WHERE state = 'invalid_proposal'",
-        (deep_text,),
+        (text,),
     )
     conn.execute(
         "UPDATE source_claim_analysis_results SET raw_entry_json = ? WHERE reason = 'invalid_entry'",
-        (deep_text,),
+        (text,),
     )
     conn.commit()
     conn.close()
+    return db_path, original
+
+
+def _raw_rows(db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        return (
+            conn.execute(
+                "SELECT id, raw_proposal_json, raw_proposal_omitted_reason FROM deterministic_verification_attempts ORDER BY id"
+            ).fetchall(),
+            conn.execute(
+                "SELECT id, raw_entry_json, raw_entry_omitted_reason FROM source_claim_analysis_results ORDER BY id"
+            ).fetchall(),
+        )
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("name", sorted(_LEGACY_TEXTS))
+async def test_legacy_row_outside_the_contract_is_read_degraded_and_never_rewritten(tmp_path, name):
+    """Antes do repair, fragmentos fora do contrato podiam estar gravados
+    (em 3.13/3.14 o save aceitava milhares de níveis). A leitura decodifica
+    sob controle da aplicação ANTES do json.loads recursivo: nenhum
+    RecursionError em nenhum Python, domínio válido, degradação explícita,
+    API renderizável -- e a linha histórica fica byte a byte como estava."""
+    text, reason = _LEGACY_TEXTS[name]
+    db_path, original = await _legacy_db_with_raw_texts(tmp_path, text)
 
     engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
     try:
+        await init_db(engine)
+        before = _raw_rows(db_path)
+        record = await CouncilRepository(make_session_factory(engine)).get_run(original.id)
+        await CouncilRepository(make_session_factory(engine)).list_runs()
+    finally:
+        await engine.dispose()
+
+    result = record.council_run_result
+    [attempt] = [a for a in result.debate_result.numeric_verification_attempts if a.state == "invalid_proposal"]
+    assert (attempt.raw_proposal, attempt.raw_proposal_omitted_reason) == (None, reason)
+    [entry] = [
+        c for c in result.source_analysis_result.claim_results if c.kind == "rejected" and c.reason == "invalid_entry"
+    ]
+    assert (entry.raw_entry, entry.raw_entry_omitted_reason) == (None, reason)
+    audit = completed_run_audit(result, provider_execution_policy=record.provider_execution_policy)
+    json.dumps(json.loads(audit.model_dump_json()), allow_nan=False)
+    # o resto do run histórico é equivalente ao original
+    assert result.total_cost_usd == pytest.approx(original.total_cost_usd)
+    assert len(result.debate_result.claims) == len(original.debate_result.claims)
+    # leitura nunca reescreve: o texto original continua lá, sem motivo inventado
+    after = _raw_rows(db_path)
+    assert after == before
+    assert {row[1] for row in after[0] if row[1] == text} == {text}
+    assert all(row[2] is None for row in after[0] + after[1])
+
+
+async def test_partially_migrated_database_upgrades_and_reads(tmp_path):
+    """Só uma das colunas de motivo existe (upgrade interrompido): o
+    upgrade idempotente completa a outra e a leitura funciona."""
+    text, reason = _LEGACY_TEXTS["deep_1500"]
+    db_path, original = await _legacy_db_with_raw_texts(
+        tmp_path, text, drop_reason_columns=("raw_entry_omitted_reason",)
+    )
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
         await init_db(engine)
         record = await CouncilRepository(make_session_factory(engine)).get_run(original.id)
     finally:
         await engine.dispose()
 
     result = record.council_run_result
-    [attempt] = [a for a in result.debate_result.numeric_verification_attempts if a.state == "invalid_proposal"]
-    assert (attempt.raw_proposal, attempt.raw_proposal_omitted_reason) == (None, "complexity_limit_exceeded")
-    [entry] = [c for c in result.source_analysis_result.claim_results if c.kind == "rejected" and c.reason == "invalid_entry"]
-    assert (entry.raw_entry, entry.raw_entry_omitted_reason) == (None, "complexity_limit_exceeded")
-    result.model_dump(mode="json")  # renderizável de novo
+    assert {a.raw_proposal_omitted_reason for a in result.debate_result.numeric_verification_attempts} >= {reason}
+
+
+async def test_new_writes_keep_the_exact_legacy_storage_representation(tmp_path):
+    """A escrita não mudou: mesmo DDL `JSON`, `None` como o texto 'null',
+    o mesmo texto de json.dumps."""
+    db_path = tmp_path / "repr.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+        await CouncilRepository(make_session_factory(engine)).save_success(very_rich_council_run_result())
+    finally:
+        await engine.dispose()
 
     conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT raw_proposal_json, raw_proposal_omitted_reason FROM deterministic_verification_attempts "
-        "WHERE state = 'invalid_proposal'"
+    ddl = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'deterministic_verification_attempts'"
+    ).fetchone()[0]
+    stored = conn.execute(
+        "SELECT state, typeof(raw_proposal_json), raw_proposal_json FROM deterministic_verification_attempts ORDER BY state"
     ).fetchall()
     conn.close()
-    assert rows == [(deep_text, None)]  # histórico intocado
+    assert "raw_proposal_json JSON" in ddl
+    assert ("supports", "text", "null") in stored
+    assert ("invalid_proposal", "text", json.dumps({"left": "2", "operator": "%%%", "right": "2", "asserted_result": "4"})) in stored
+
+
+async def test_the_read_sentinel_can_never_be_written_back():
+    from app.storage.audit_fragment_column import AuditFragmentJSON, OmittedStoredAuditFragment
+    from sqlalchemy.dialects import sqlite
+
+    bind = AuditFragmentJSON().bind_processor(sqlite.dialect())
+    with pytest.raises(TypeError):
+        bind(OmittedStoredAuditFragment("complexity_limit_exceeded"))

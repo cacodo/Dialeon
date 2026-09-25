@@ -63,6 +63,7 @@ from app.source_analysis.models import (
     SourceClaimAnalysisResult,
     ValidSourceRelation,
 )
+from app.storage.audit_fragment_column import stored_audit_fragment
 from app.storage.models import (
     ClaimAssessmentRow,
     ClaimMergeRow,
@@ -423,12 +424,15 @@ def deterministic_verification_attempt_from_row(
             right=row.assertion_right,
             asserted_result=row.assertion_asserted_result,
         )
+    raw_proposal, raw_proposal_omitted_reason = stored_audit_fragment(
+        row.raw_proposal_json, row.raw_proposal_omitted_reason
+    )
     return DeterministicVerificationAttempt(
         id=row.id,
         claim_id=row.claim_id,
         state=row.state,
-        raw_proposal=row.raw_proposal_json,
-        raw_proposal_omitted_reason=row.raw_proposal_omitted_reason,
+        raw_proposal=raw_proposal,
+        raw_proposal_omitted_reason=raw_proposal_omitted_reason,
         assertion=assertion,
         computed_result=row.computed_result,
         created_at=dt_from_naive_utc(row.created_at),
@@ -878,12 +882,15 @@ def source_claim_analysis_result_from_row(
             excerpt_end=row.excerpt_end,
             created_at=dt_from_naive_utc(row.created_at),
         )
+    raw_entry, raw_entry_omitted_reason = stored_audit_fragment(
+        row.raw_entry_json, row.raw_entry_omitted_reason
+    )
     return RejectedSourceEntry(
         id=row.id,
         claim_id=row.claim_id,
         reason=row.reason,
-        raw_entry=row.raw_entry_json,
-        raw_entry_omitted_reason=row.raw_entry_omitted_reason,
+        raw_entry=raw_entry,
+        raw_entry_omitted_reason=raw_entry_omitted_reason,
         created_at=dt_from_naive_utc(row.created_at),
     )
 

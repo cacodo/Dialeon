@@ -53,6 +53,8 @@ from datetime import datetime
 from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.storage.audit_fragment_column import AuditFragmentJSON
+
 
 class Base(DeclarativeBase):
     pass
@@ -418,8 +420,10 @@ class DeterministicVerificationAttemptRow(Base):
     # Preenchido SÓ quando state="invalid_proposal" -- o payload cru que
     # a LLM propôs (já JSON-safe, veio de json.loads()), pra auditoria
     # mostrar exatamente o que foi rejeitado. None nos outros 3 estados.
+    # Repair M2 -- mesma escrita `JSON` de sempre; leitura decodificada
+    # sob o contrato da aplicação (ver app/storage/audit_fragment_column.py).
     raw_proposal_json: Mapped[dict | list | str | float | int | bool | None] = mapped_column(
-        JSON
+        AuditFragmentJSON
     )
     # Repair M2 -- motivo estável quando o payload cru violou o contrato
     # de app/audit_fragment.py e não foi guardado (raw_proposal_json
@@ -513,7 +517,9 @@ class SourceClaimAnalysisResultRow(Base):
 
     # Só quando kind="rejected".
     reason: Mapped[str | None]
-    raw_entry_json: Mapped[dict | list | str | float | int | bool | None] = mapped_column(JSON)
+    raw_entry_json: Mapped[dict | list | str | float | int | bool | None] = mapped_column(
+        AuditFragmentJSON
+    )
     # Repair M2 -- mesma disciplina de
     # DeterministicVerificationAttemptRow.raw_proposal_omitted_reason.
     raw_entry_omitted_reason: Mapped[str | None]

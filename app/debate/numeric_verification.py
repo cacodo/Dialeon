@@ -188,7 +188,9 @@ class DeterministicVerificationAttempt(BaseModel):
     # extração correspondente (`raw_output_text`). O mesmo contrato vale na
     # leitura: uma linha gravada antes dele com fragmento fora do limite
     # (possível em 3.13/3.14, onde o save passava e só a renderização
-    # quebrava) é exposta como omitida; a linha no banco nunca é reescrita.
+    # quebrava) é decodificada sob controle da aplicação ANTES de qualquer
+    # `json.loads` recursivo (app/storage/audit_fragment_column.py) e
+    # exposta como omitida; a linha no banco nunca é reescrita.
     raw_proposal_omitted_reason: AuditFragmentOmittedReason | None = None
 
     # Só quando state != "invalid_proposal" -- a asserção normalizada
