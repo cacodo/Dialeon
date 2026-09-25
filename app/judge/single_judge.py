@@ -43,7 +43,11 @@ from app.debate.claims import get_current_claims
 from app.debate.result import DebateResult
 from app.judge.attempt import JudgeAttempt
 from app.judge.context import JUDGE_CONTRACT_VERSION, build_judge_request, get_participating_providers
-from app.judge.errors import InconsistentJudgeReferenceError, MalformedJudgeOutputError
+from app.judge.errors import (
+    MALFORMED_OUTPUT_FEEDBACK,
+    InconsistentJudgeReferenceError,
+    MalformedJudgeOutputError,
+)
 from app.judge.result import JudgeResult
 from app.judge.schemas import JudgeOutput
 from app.judge.strategy import JudgeStrategy
@@ -57,7 +61,7 @@ from app.providers.base import (
     is_known_output_truncation,
     transport_error_common_fields,
 )
-from app.structured_output import strip_single_json_code_fence
+from app.structured_output import INTERPRETATION_FAILURE_MESSAGE, strip_single_json_code_fence
 
 _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 
@@ -257,6 +261,28 @@ class SingleJudge(JudgeStrategy):
                 if is_known_output_truncation(provider_response.provider_finish_reason):
                     break
                 continue
+            except Exception:
+                # Repair H1 -- a chamada REALMENTE retornou, mas a
+                # interpretação levantou algo fora do vocabulário antecipado
+                # (ex.: `ValueError` puro de `json.loads` pra um inteiro além do
+                # limite de conversão, `RecursionError` pra aninhamento
+                # profundo). Registrado truthfully e tratado exatamente como
+                # saída malformada: mesmo feedback autorado pela aplicação,
+                # mesmo retry/fallback (`judge_output_invalid`/
+                # `judge_output_truncated`). Ver app/structured_output.py.
+                feedback = MALFORMED_OUTPUT_FEEDBACK
+                attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        provider_response,
+                        "interpretation_failed",
+                        INTERPRETATION_FAILURE_MESSAGE,
+                        request_provenance,
+                    )
+                )
+                if is_known_output_truncation(provider_response.provider_finish_reason):
+                    break
+                continue
 
             attempts.append(
                 _accepted_attempt(attempt_number, provider_response, request_provenance)
@@ -407,7 +433,7 @@ def _transport_error_attempt(
 def _parse_rejected_attempt(
     attempt_number: int,
     provider_response: ProviderResponse,
-    parse_status: Literal["malformed", "inconsistent_references"],
+    parse_status: Literal["malformed", "inconsistent_references", "interpretation_failed"],
     message: str,
     request_provenance: RequestProvenance | None = None,
 ) -> JudgeAttempt:

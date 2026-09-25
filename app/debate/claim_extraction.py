@@ -51,7 +51,7 @@ from app.providers.base import (
     is_known_output_truncation,
     transport_error_common_fields,
 )
-from app.structured_output import strip_single_json_code_fence
+from app.structured_output import INTERPRETATION_FAILURE_MESSAGE, strip_single_json_code_fence
 
 # Primeira tentativa + 1 retry por output malformado/inconsistente — constante
 # fixa pro MVP, sem campo novo em Settings.
@@ -241,6 +241,29 @@ async def extract_claims(
                     provider_response,
                     "inconsistent_references",
                     str(exc),
+                    target_model_response_id=response.id,
+                    request_provenance=request_provenance,
+                )
+            )
+            if is_known_output_truncation(provider_response.provider_finish_reason):
+                break
+            continue
+        except Exception:
+            # Repair H1 -- a chamada REALMENTE retornou, mas a interpretação
+            # levantou algo fora do vocabulário antecipado (ex.: `json.loads`
+            # levanta `ValueError` puro pra um inteiro além do limite de
+            # conversão, `RecursionError` pra aninhamento profundo). O attempt
+            # é registrado truthfully (nunca aceito, nunca perdido) e o fluxo
+            # segue exatamente o retry/fallback de uma saída malformada. Ver
+            # fronteira protegida em app/structured_output.py.
+            attempts.append(
+                _parse_rejected_attempt(
+                    "extraction",
+                    round_number,
+                    attempt_number,
+                    provider_response,
+                    "interpretation_failed",
+                    INTERPRETATION_FAILURE_MESSAGE,
                     target_model_response_id=response.id,
                     request_provenance=request_provenance,
                 )
@@ -683,7 +706,7 @@ def _parse_rejected_attempt(
     round_number: int,
     attempt_number: int,
     provider_response: ProviderResponse,
-    parse_status: Literal["malformed", "inconsistent_references"],
+    parse_status: Literal["malformed", "inconsistent_references", "interpretation_failed"],
     message: str,
     *,
     target_model_response_id: str | None = None,

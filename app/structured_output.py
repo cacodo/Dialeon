@@ -49,3 +49,35 @@ def strip_single_json_code_fence(raw_text: str) -> str:
     if match is None:
         return raw_text
     return match.group(1)
+
+
+# Audit-truth na fronteira response -> interpretation (repair H1 da
+# auditoria independente sobre 279d283; generaliza o padrão já aprovado
+# na LinguisticRealization, ver `_realize_primary_answer` em
+# app/editor/compose.py).
+#
+# FRONTEIRA PROTEGIDA: exatamente a chamada que interpreta o texto de um
+# `ProviderResponse` com `status="success"` JÁ RETORNADO -- parse JSON +
+# schema + validação de referências contra o contexto da aplicação
+# (ex.: `_parse_and_validate` do Judge, `validate_plan` da Primary
+# Answer). Uma exceção levantada DENTRO dessa chamada e FORA do
+# vocabulário de erro que o estágio já antecipa (ex.: `json.loads`
+# levanta `ValueError` puro -- não `json.JSONDecodeError` -- pra um
+# inteiro além do limite de conversão do Python, e `RecursionError` pra
+# aninhamento profundo) vira um attempt `parse_status="interpretation_failed"`
+# com o raw output/usage/custo/provenance verdadeiros, e o estágio segue
+# o MESMO retry/fallback que já aplica a uma saída malformada. Nada fora
+# dessa chamada é protegido: construção do request, a própria chamada ao
+# provider, construção de attempts/resultados e persistência continuam
+# propagando exceções normalmente (bug da aplicação, nunca "saída
+# inválida do modelo"). `BaseException` (ex.: cancelamento) nunca é
+# capturada.
+#
+# Mensagem BOUNDED/autorada pela aplicação -- NUNCA `str(exc)`: a exceção
+# inesperada pode carregar detalhes internos de implementação que não são
+# conteúdo autoritativo/do modelo; o status em si já registra a verdade
+# ("houve resposta, a interpretação falhou fora do vocabulário esperado").
+INTERPRETATION_FAILURE_MESSAGE = (
+    "A interpretação da saída retornada pelo provider falhou de forma "
+    "inesperada (fora do vocabulário de erro já antecipado pela aplicação)."
+)

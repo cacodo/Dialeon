@@ -58,7 +58,13 @@ class SourceAnalysisAttempt(BaseModel):
     transport_attempts: int = Field(ge=0)
 
     raw_output_text: str | None = None
-    parse_status: Literal["accepted", "malformed", "not_attempted"]
+    # Repair H1 (audit-truth na fronteira response -> interpretation) --
+    # "interpretation_failed": o transporte teve sucesso e `raw_output_text`
+    # é verdadeiro, mas a interpretação da saída levantou uma exceção FORA
+    # do vocabulário de erro antecipado (ver `INTERPRETATION_FAILURE_MESSAGE`,
+    # app/structured_output.py). Mesmo significado de
+    # `EditorAttempt.parse_status`; nunca tratado como aceito.
+    parse_status: Literal["accepted", "malformed", "interpretation_failed", "not_attempted"]
     parse_error_message: str | None = None
 
     usage: TokenUsage | None = None
@@ -108,6 +114,11 @@ class SourceAnalysisAttempt(BaseModel):
     def _parse_status_and_error_message_are_consistent(self) -> SourceAnalysisAttempt:
         if self.parse_status == "accepted" and self.parse_error_message is not None:
             raise ValueError("parse_status='accepted' não deve ter parse_error_message")
-        if self.parse_status == "malformed" and not self.parse_error_message:
-            raise ValueError("parse_status='malformed' exige parse_error_message preenchido")
+        if self.parse_status in ("malformed", "interpretation_failed") and not (
+            self.parse_error_message
+        ):
+            raise ValueError(
+                "parse_status em {'malformed','interpretation_failed'} exige "
+                "parse_error_message preenchido"
+            )
         return self

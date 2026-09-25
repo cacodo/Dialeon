@@ -684,7 +684,7 @@ export interface SourceAnalysisAttemptPublic {
   transport_status: 'success' | 'error'
   transport_error: ProviderErrorInfo | null
   raw_output_text: string | null
-  parse_status: 'accepted' | 'malformed' | 'not_attempted'
+  parse_status: 'accepted' | 'malformed' | 'interpretation_failed' | 'not_attempted'
   parse_error_message: string | null
   usage: TokenUsage | null
   cost_usd: number | null

@@ -277,7 +277,7 @@ from app.reconciliation.models import (
 )
 from app.source_analysis.models import SourceClaimAnalysisResult, ValidSourceRelation
 from app.source_analysis.result import SourceAnalysisResult
-from app.structured_output import strip_single_json_code_fence
+from app.structured_output import INTERPRETATION_FAILURE_MESSAGE, strip_single_json_code_fence
 
 _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 
@@ -288,11 +288,11 @@ _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 # mensagem do limite de conversão inteiro do Python) que não são
 # conteúdo autoritativo/do modelo nem precisam ser expostos verbatim --
 # o CAMPO em si já comunica a verdade truthfully ("houve resposta, a
-# interpretação falhou de um jeito inesperado").
-_INTERPRETATION_FAILURE_MESSAGE = (
-    "A interpretação da saída retornada pelo provider falhou de forma "
-    "inesperada (fora do vocabulário de erro já antecipado pela aplicação)."
-)
+# interpretação falhou de um jeito inesperado"). Repair H1 -- o texto
+# (inalterado) passou a morar em app/structured_output.py, compartilhado
+# com extração, Source Analysis e Judge: um único vocabulário pra mesma
+# classe de evento.
+_INTERPRETATION_FAILURE_MESSAGE = INTERPRETATION_FAILURE_MESSAGE
 
 _VERDICT_LABELS: dict[str, str] = {
     "supported": "sustentada pelo debate",
@@ -631,6 +631,23 @@ class Editor:
                         provider_response,
                         "malformed",
                         str(exc),
+                        request_provenance,
+                    )
+                )
+                continue
+            except Exception:
+                # Repair H1 -- mesma proteção da LinguisticRealization
+                # (`_realize_primary_answer`): a chamada REALMENTE retornou,
+                # mas a interpretação levantou algo fora do vocabulário
+                # antecipado. Registrado truthfully e tratado exatamente como
+                # saída malformada (mesmo retry, mesmo fallback
+                # `editor_output_invalid`). Ver app/structured_output.py.
+                attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        provider_response,
+                        "interpretation_failed",
+                        _INTERPRETATION_FAILURE_MESSAGE,
                         request_provenance,
                     )
                 )
@@ -1115,6 +1132,24 @@ class Editor:
                         if isinstance(exc, MalformedEditorOutputError)
                         else "inconsistent_references",
                         str(exc),
+                        request_provenance,
+                    )
+                )
+                continue
+            except Exception:
+                # Repair H1 -- a chamada REALMENTE retornou, mas o parse ou a
+                # validação do plano (`parse_primary_answer_plan`/`validate_plan`)
+                # levantou algo fora do vocabulário antecipado. Registrado
+                # truthfully e tratado exatamente como plano malformado (mesmo
+                # feedback, mesmo retry, mesmo fallback
+                # `primary_answer_output_invalid`). Ver app/structured_output.py.
+                feedback = MALFORMED_PLAN_FEEDBACK
+                attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        provider_response,
+                        "interpretation_failed",
+                        _INTERPRETATION_FAILURE_MESSAGE,
                         request_provenance,
                     )
                 )

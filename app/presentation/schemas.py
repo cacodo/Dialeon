@@ -292,7 +292,7 @@ class SourceAnalysisAttemptPublic(BaseModel):
     transport_status: Literal["success", "error"]
     transport_error: ProviderErrorInfo | None
     raw_output_text: str | None
-    parse_status: Literal["accepted", "malformed", "not_attempted"]
+    parse_status: Literal["accepted", "malformed", "interpretation_failed", "not_attempted"]
     parse_error_message: str | None
     usage: TokenUsage | None
     cost_usd: float | None

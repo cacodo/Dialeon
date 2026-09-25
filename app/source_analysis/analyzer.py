@@ -37,7 +37,7 @@ from app.models.request_provenance import RequestProvenance, build_request_prove
 from app.orchestrator.budget import compute_budget_exceeded, sum_usage_and_cost
 from app.orchestrator.config import RunConfig
 from app.providers.base import LLMProvider, transport_error_common_fields
-from app.structured_output import strip_single_json_code_fence
+from app.structured_output import INTERPRETATION_FAILURE_MESSAGE, strip_single_json_code_fence
 from app.source_analysis.attempt import SourceAnalysisAttempt
 from app.source_analysis.context import SOURCE_ANALYSIS_CONTRACT_VERSION, build_source_analysis_request
 from app.source_analysis.errors import MalformedSourceAnalysisOutputError
@@ -129,6 +129,24 @@ class SourceAnalyzer:
                 attempts.append(
                     _parse_rejected_attempt(
                         attempt_number, provider_response, str(exc), request_provenance
+                    )
+                )
+                continue
+            except Exception:
+                # Repair H1 -- a chamada REALMENTE retornou, mas a
+                # interpretação levantou algo fora do vocabulário antecipado
+                # (ex.: `ValueError` puro de `json.loads` pra um inteiro além do
+                # limite de conversão, `RecursionError` pra aninhamento
+                # profundo). Registrado truthfully e tratado exatamente como
+                # saída malformada (mesmo retry, mesmo fallback
+                # `source_analysis_output_invalid`). Ver app/structured_output.py.
+                attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        provider_response,
+                        INTERPRETATION_FAILURE_MESSAGE,
+                        request_provenance,
+                        parse_status="interpretation_failed",
                     )
                 )
                 continue
@@ -272,6 +290,8 @@ def _parse_rejected_attempt(
     provider_response: ProviderResponse,
     message: str,
     request_provenance: RequestProvenance | None = None,
+    *,
+    parse_status: Literal["malformed", "interpretation_failed"] = "malformed",
 ) -> SourceAnalysisAttempt:
     return SourceAnalysisAttempt(
         attempt_number=attempt_number,
@@ -283,7 +303,7 @@ def _parse_rejected_attempt(
         transport_error=None,
         transport_attempts=provider_response.attempts,
         raw_output_text=provider_response.text,
-        parse_status="malformed",
+        parse_status=parse_status,
         parse_error_message=message,
         usage=provider_response.usage,
         cost_usd=provider_response.cost_usd,
