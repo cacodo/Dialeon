@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from packaging.version import Version
 
 from app.api.app import create_app
 from app.api.routes import RunCreationRoute
@@ -199,7 +198,7 @@ def test_routed_run_creation_accepts_json_media(root_path, content_type):
 def test_floor_without_app_guard_would_dispatch_headerless_json(root_path, monkeypatch):
     # This control makes the floor job discriminatory: older FastAPI parses
     # headerless JSON, so removing our route guard must make the probe unsafe.
-    if Version(version("fastapi")) >= Version("0.132.0"):
+    if tuple(int(part) for part in version("fastapi").split(".")[:2]) >= (0, 132):
         pytest.skip("FastAPI itself rejects headerless JSON in this environment")
     monkeypatch.setattr(RunCreationRoute, "get_route_handler", APIRoute.get_route_handler)
     result = full_council_run_result()

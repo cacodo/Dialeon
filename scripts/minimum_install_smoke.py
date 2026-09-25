@@ -6,16 +6,18 @@ Run from another working directory, with this repository absent from PYTHONPATH.
 import asyncio
 import importlib.metadata as metadata
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tomllib
 from unittest.mock import AsyncMock
 
 import app
+import httpx
+import uvicorn
 from fastapi.testclient import TestClient
-from packaging.requirements import Requirement
-from packaging.version import Version
 
 from app.api.app import create_app
 from app.bootstrap import build_app_components
@@ -46,17 +48,35 @@ minimum_pins = [
     if line.strip() and not line.startswith("#")
 ]
 assert len(minimum_pins) == len(declared)
-declared_requirements = {Requirement(value).name: Requirement(value) for value in declared}
+
+# Stdlib only: the declared requirements are all `name[extras]>=X.Y[.Z]` and
+# the pins `name[extras]==X.Y[.Z]`; anything else fails loudly here.
+_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([a-z0-9,_-]+)\])?(==|>=)([0-9]+(?:\.[0-9]+)*)$")
+
+
+def parse_requirement(text):
+    match = _REQUIREMENT.match(text)
+    assert match, f"unsupported requirement syntax: {text!r}"
+    name, extras, operator, version = match.groups()
+    return name.lower(), frozenset((extras or "").split(",")) - {""}, operator, release(version)
+
+
+def release(version):
+    assert re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", version), f"not a plain release: {version!r}"
+    parts = [int(part) for part in version.split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+declared_requirements = {parse_requirement(value)[0]: parse_requirement(value) for value in declared}
 for pin in minimum_pins:
-    pinned = Requirement(pin)
-    required = declared_requirements[pinned.name]
-    assert pinned.extras == required.extras, pin
-    assert len(required.specifier) == len(pinned.specifier) == 1, pin
-    floor = next(iter(pinned.specifier))
-    declared_floor = next(iter(required.specifier))
-    assert floor.operator == "==" and declared_floor.operator == ">=", pin
-    assert Version(floor.version) == Version(declared_floor.version), pin
-    assert Version(metadata.version(pinned.name)) == Version(floor.version), pin
+    name, extras, operator, floor = parse_requirement(pin)
+    _, required_extras, required_operator, declared_floor = declared_requirements[name]
+    assert extras == required_extras, pin
+    assert operator == "==" and required_operator == ">=", pin
+    assert floor == declared_floor, pin
+    assert release(metadata.version(name)) == floor, pin
 
 
 def settings(**keys):
@@ -145,10 +165,54 @@ for root_path in ("", "/", "/api", "/api/"):
         service.run.assert_not_called()
         assert client.get("/runs").json()["runs"] == []
 
+
+async def uvicorn_smoke():
+    """Real uvicorn serving the documented target
+    (`uvicorn app.api.app:create_app --factory`) on an ephemeral loopback
+    port: starts, answers, rejects a simple POST before any Run exists, and
+    shuts down cleanly. No provider can be called: keys are blank and the
+    database is in memory."""
+    os.environ.update(
+        DATABASE_URL="sqlite+aiosqlite:///:memory:",
+        OPENAI_API_KEY="",
+        ANTHROPIC_API_KEY="",
+        GOOGLE_API_KEY="",
+    )
+    server = uvicorn.Server(
+        uvicorn.Config(
+            "app.api.app:create_app", factory=True, host="127.0.0.1", port=0, log_level="warning"
+        )
+    )
+    serving = asyncio.create_task(server.serve())
+    try:
+        async with asyncio.timeout(15):
+            while not server.started:
+                assert not serving.done(), "uvicorn exited during startup"
+                await asyncio.sleep(0.05)
+        host, port = server.servers[0].sockets[0].getsockname()[:2]
+        assert host == "127.0.0.1", host
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=10) as client:
+            providers = await client.get("/providers")
+            assert providers.status_code == 200, providers.text
+            assert set(providers.json()["providers"]) == {"openai", "anthropic", "gemini"}
+            rejected = await client.post(
+                "/runs", content='{"question": "q"}', headers={"Content-Type": "text/plain"}
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert (await client.get("/runs")).json()["runs"] == []
+    finally:
+        server.should_exit = True
+        async with asyncio.timeout(15):
+            await serving
+    assert serving.exception() is None
+
+
+asyncio.run(uvicorn_smoke())
+
 print(
     "minimum wheel smoke passed",
     {
         name: metadata.version(name)
-        for name in ("fastapi", "starlette", "pydantic", "pydantic-settings", "SQLAlchemy", "google-genai", "openai", "httpx")
+        for name in ("fastapi", "starlette", "uvicorn", "pydantic", "pydantic-settings", "SQLAlchemy", "google-genai", "openai", "httpx")
     },
 )
