@@ -215,3 +215,31 @@ async def test_judge_override_completion_leaves_sdk_retry_config_untouched():
     assert anthropic._client.max_retries == 0
     assert anthropic._timeout_seconds == 60.0
     assert anthropic._max_retries == 2
+
+
+# ---------------------------------------------------------------------------
+# Pré-requisitos locais dos 3 adapters reais, a partir do Settings resolvido
+# (sem rede: só construção).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "openai_key, anthropic_key, google_key, expected",
+    [
+        ("sk-o", "sk-a", "g", {"openai": "met", "anthropic": "met", "gemini": "met"}),
+        (None, "", "   ", {"openai": "missing", "anthropic": "missing", "gemini": "missing"}),
+        ("sk-o", "\t", None, {"openai": "met", "anthropic": "missing", "gemini": "missing"}),
+    ],
+)
+def test_real_adapters_report_local_prerequisites_from_resolved_settings(
+    openai_key, anthropic_key, google_key, expected
+):
+    settings = _settings(openai_api_key=openai_key, anthropic_api_key=anthropic_key, google_api_key=google_key)
+    policy = ProviderExecutionPolicy(attempt_timeout_seconds=5.0, max_transport_attempts_per_completion=1)
+
+    providers = build_all_providers(settings, policy)
+
+    assert {name: p.local_prerequisite_state() for name, p in providers.items()} == expected
+    for name, state in expected.items():
+        # o cliente do SDK só existe quando há credencial -- mesma decisão
+        assert (providers[name]._client is not None) == (state == "met"), name

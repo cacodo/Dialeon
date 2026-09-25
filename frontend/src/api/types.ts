@@ -672,8 +672,16 @@ export type RunAuditResponse =
   | RunningRunResponse
   | FailedRunResponse
 
+// Estado dos pré-requisitos LOCAIS de um provider, como o backend o conhece
+// a partir da configuração com que foi iniciado (sem rede): "met" não é
+// credencial válida nem serviço disponível; "unknown" não é "missing".
+export type LocalPrerequisiteState = 'met' | 'missing' | 'unknown'
+
 export interface ProvidersResponse {
   providers: string[]
+  // Aditivo: ausente em servidores anteriores a este campo (e um provider
+  // sem entrada) = nada se sabe = "unknown".
+  local_prerequisites?: Record<string, LocalPrerequisiteState>
 }
 
 export interface CreateRunRequest {

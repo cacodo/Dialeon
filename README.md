@@ -1,6 +1,14 @@
 # LLM Council (Dialeon)
 
-Sistema que envia uma pergunta para vários modelos de linguagem
+Dialeon é uma aplicação local para fazer uma pergunta a vários modelos de
+linguagem ao mesmo tempo (hoje GPT, Claude e Gemini, cada um pela API do seu
+fornecedor) e receber uma resposta organizada: onde os modelos concordam, onde
+divergem, o que foi avaliado e o que continua incerto. Você usa pelo navegador
+(ou pela CLI `dialeon`), com as suas próprias chaves de API; cada pergunta faz
+chamadas pagas aos fornecedores. Para começar, veja
+[Primeiros passos](#primeiros-passos-release-publicada).
+
+Em detalhe: sistema que envia uma pergunta para vários modelos de linguagem
 independentemente, faz eles debaterem em rodadas, extrai as
 afirmações (claims) resultantes, e submete o resultado do debate a um
 juiz (outro modelo). Quando uma fonte textual opcional é fornecida
@@ -22,6 +30,7 @@ abaixo.
 
 ## Sumário
 
+- [Primeiros passos (release publicada)](#primeiros-passos-release-publicada)
 - [O que já está implementado](#o-que-já-está-implementado)
 - [Como o pipeline funciona](#como-o-pipeline-funciona)
 - [Escopo epistêmico](#escopo-epistêmico)
@@ -29,12 +38,107 @@ abaixo.
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Notas de versão](CHANGELOG.md)
 - [Estrutura do repositório](#estrutura-do-repositório)
-- [Rodando o projeto](#rodando-o-projeto)
+- [Rodando a partir do código-fonte (desenvolvimento)](#rodando-a-partir-do-código-fonte-desenvolvimento)
 - [Empacotamento de release](#empacotamento-de-release)
 - [Configuração](#configuração)
 - [Testes](#testes)
 - [Possíveis direções futuras](#possíveis-direções-futuras)
 - [Licença](#licença)
+
+## Primeiros passos (release publicada)
+
+Para usar o Dialeon não é preciso clonar o repositório, nem ter Node: o wheel
+publicado em cada [release](https://github.com/cacodo/Dialeon/releases) já
+inclui a API, a CLI e a interface web compilada. É preciso Python 3.11 ou mais
+novo.
+
+**1. Instale num diretório de trabalho fixo.** A API e a CLI leem o `.env` do
+diretório ATUAL e criam o banco (`llm_council.db`) nele; use sempre o mesmo
+diretório (ver [Configuração](#configuração)).
+
+```bash
+mkdir dialeon && cd dialeon
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install https://github.com/cacodo/Dialeon/releases/download/v1.1.0/llm_council-1.1.0-py3-none-any.whl
+```
+
+A página da release mostra o SHA-256 de cada arquivo, se você quiser conferir
+o que baixou.
+
+**2. Configure as chaves.** Crie um arquivo `.env` nesse diretório com as
+chaves de API dos fornecedores que você vai usar (as que não tiver podem
+ficar de fora):
+
+```dotenv
+OPENAI_API_KEY=sua-chave-da-openai
+ANTHROPIC_API_KEY=sua-chave-da-anthropic
+GOOGLE_API_KEY=sua-chave-do-google-gemini
+```
+
+Por padrão, as etapas internas de cada pergunta (extração das afirmações,
+juiz, editor e análise da fonte) usam a Anthropic. Sem `ANTHROPIC_API_KEY`,
+as respostas dos modelos escolhidos ainda são coletadas, mas as afirmações
+não são extraídas nem avaliadas. Para usar outro fornecedor nessas etapas,
+defina no mesmo `.env` `DEFAULT_CLAIM_PROCESSOR_PROVIDER`,
+`DEFAULT_JUDGE_PROVIDER`, `DEFAULT_EDITOR_PROVIDER` e
+`DEFAULT_SOURCE_ANALYZER_PROVIDER` (`openai`, `anthropic` ou `gemini`). A
+interface não mostra a situação dessas etapas internas; ela só indica a
+configuração local dos modelos que você escolhe.
+
+**3. Inicie a API**, a partir do mesmo diretório:
+
+```bash
+uvicorn app.api.app:create_app --factory
+```
+
+**4. Abra <http://localhost:8000/app>**, escreva a pergunta, confira em
+“Modelos” quais vão responder e clique em **Perguntar** (ou Ctrl/⌘ + Enter).
+Uma resposta pode levar alguns minutos.
+
+### O que a lista de modelos indica
+
+Na versão em desenvolvimento desta árvore (ainda não publicada em release; na
+v1.1.0 a lista mostra os modelos sem essa indicação), cada modelo aparece com
+o estado da **configuração local** que o servidor encontrou ao iniciar:
+
+- **presente** (`met`, sem nenhuma marca na tela): tudo que o Dialeon sabe
+  verificar localmente está lá, por exemplo uma chave não vazia. Não quer
+  dizer que a chave seja válida, que o serviço esteja no ar, que haja cota ou
+  que o modelo configurado exista: nada disso é testado antes de uma pergunta
+  de verdade.
+- **ausente** (`missing`, “Falta configuração local nesta instalação”): o
+  modelo continua na lista, mas não pode ser escolhido. Uma chave vazia ou só
+  com espaços conta como ausente.
+- **não verificável** (`unknown`, “Não foi possível verificar a configuração
+  local”): o Dialeon não consegue decidir localmente. O modelo não é
+  pré-selecionado, mas você pode escolhê-lo.
+
+Só modelos com configuração local presente vêm pré-selecionados. Se nenhum
+estiver, a tela explica o que falta.
+
+A mesma informação está em `GET /providers`, no campo `local_prerequisites`
+(ao lado da lista `providers`, que não mudou). Ela nunca inclui chaves,
+partes delas, tamanhos, nomes de variáveis ou caminhos. `dialeon providers
+--json` continua devolvendo só a lista.
+
+### Mudou o `.env`? Reinicie a API
+
+A configuração é lida quando a API inicia. Depois de editar o `.env`, pare a
+API (Ctrl+C) e inicie de novo; só então recarregue a página ou use
+“Recarregar lista de modelos”. Recarregar a lista só consulta o que o
+servidor já carregou: não relê o `.env` nem testa os fornecedores.
+
+### Custo
+
+Cada pergunta faz chamadas reais e pagas aos modelos escolhidos e ao
+fornecedor das etapas internas. `DEFAULT_MAX_COST_USD` (padrão 1,00 dólar) é
+um limite de interrupção **flexível**, baseado no custo já conhecido: ele é
+verificado entre chamadas, e uma pergunta pode terminar acima dele. Uso sem
+preço conhecido pelo Dialeon não entra nessa conta. Não é
+uma estimativa prévia, nem um teto garantido de cobrança. O custo mostrado
+depois da resposta é uma estimativa calculada a partir do uso reportado. Ver
+[Orçamento e contabilização](#orçamento-e-contabilização).
 
 ## O que já está implementado
 
@@ -226,7 +330,10 @@ llm-council/
 └── pyproject.toml
 ```
 
-## Rodando o projeto
+## Rodando a partir do código-fonte (desenvolvimento)
+
+Caminho para quem vai alterar o Dialeon, a partir de um clone do repositório.
+Para só usar, veja [Primeiros passos](#primeiros-passos-release-publicada).
 
 ### Backend
 
@@ -370,7 +477,10 @@ Isso só lista os identificadores de provider que a aplicação conhece
 próprias chaves), e não chama nenhum provider real pra montar essa
 lista. Não confirma se uma API key específica é válida — isso só é
 verificável executando uma pergunta de verdade, o que chama os
-providers reais. As chaves configuradas continuam sendo carregadas
+providers reais. Com a API rodando, `GET /providers` mostra também, por
+provider, se a configuração local está presente (`local_prerequisites`,
+ver [O que a lista de modelos indica](#o-que-a-lista-de-modelos-indica)) --
+o mesmo limite vale: presente não é válida. As chaves configuradas continuam sendo carregadas
 normalmente na memória do processo durante o bootstrap da CLI; este
 comando especificamente só nunca as imprime, serializa ou transmite.
 

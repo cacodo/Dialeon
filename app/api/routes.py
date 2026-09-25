@@ -93,9 +93,18 @@ def _components(request: Request) -> AppComponents:
 async def get_providers(request: Request) -> ProvidersResponse:
     """Etapa 12 — único seam HTTP novo autorizado. Só os identificadores
     (chaves de `AppComponents.providers`, já montado no bootstrap) --
-    nunca a instância do provider, nunca Settings/credenciais."""
+    nunca a instância do provider, nunca Settings/credenciais -- e o estado
+    LOCAL de pré-requisitos que cada provider já montado reporta sobre a
+    configuração com que foi construído (sem reler ambiente/.env, sem
+    rede): mudar a configuração exige reiniciar o processo."""
     components = _components(request)
-    return ProvidersResponse(providers=sorted(components.providers))
+    names = sorted(components.providers)
+    return ProvidersResponse(
+        providers=names,
+        local_prerequisites={
+            name: components.providers[name].local_prerequisite_state() for name in names
+        },
+    )
 
 
 @run_creation_router.post(

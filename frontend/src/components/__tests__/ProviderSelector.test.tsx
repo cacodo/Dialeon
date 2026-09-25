@@ -7,11 +7,11 @@ import userEvent from '@testing-library/user-event'
 import { ModelSelectionPanel, ModelSummaryButton, type ModelOption } from '../ProviderSelector'
 
 const OPTIONS: ModelOption[] = [
-  { id: 'openai', label: 'GPT' },
-  { id: 'anthropic', label: 'Claude' },
-  { id: 'gemini', label: 'Gemini' },
-  { id: 'novo-a', label: 'Novo-a' },
-  { id: 'novo-b', label: 'Novo-b' },
+  { id: 'openai', label: 'GPT', prerequisite: 'met' },
+  { id: 'anthropic', label: 'Claude', prerequisite: 'met' },
+  { id: 'gemini', label: 'Gemini', prerequisite: 'met' },
+  { id: 'novo-a', label: 'Novo-a', prerequisite: 'met' },
+  { id: 'novo-b', label: 'Novo-b', prerequisite: 'met' },
 ]
 
 function renderSummary(selected: string[], expanded = false) {

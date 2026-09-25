@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
+import type { LocalPrerequisiteState } from '../api/types'
 import { formatErrorCode, formatInvalidRequest } from '../api/formatting'
 import { parseReuseInput } from '../lib/reuseInput'
 import { completedRunState } from '../lib/completedRunState'
@@ -29,6 +30,7 @@ export function Home() {
   const navigate = useNavigate()
   const [initialInput] = useState(() => parseReuseInput(location.state))
   const [providers, setProviders] = useState<string[]>([])
+  const [localPrerequisites, setLocalPrerequisites] = useState<Record<string, LocalPrerequisiteState>>({})
   const [providersLoading, setProvidersLoading] = useState(true)
   const [providersError, setProvidersError] = useState<string | null>(null)
   const [providersAttempt, setProvidersAttempt] = useState(0)
@@ -39,7 +41,9 @@ export function Home() {
     apiClient
       .getProviders()
       .then((response) => {
-        if (!cancelled) setProviders(response.providers)
+        if (cancelled) return
+        setProviders(response.providers)
+        setLocalPrerequisites(response.local_prerequisites ?? {})
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -54,7 +58,9 @@ export function Home() {
     }
   }, [providersAttempt])
 
-  // GET /providers é seguro de repetir (nenhuma execução, nenhum custo).
+  // GET /providers é seguro de repetir (nenhuma execução, nenhum custo). Só
+  // relê o que o servidor JÁ carregou ao iniciar: não relê a configuração
+  // nem testa os serviços -- uma configuração nova exige reiniciar a API.
   function retryProviders() {
     setProvidersLoading(true)
     setProvidersError(null)
@@ -98,6 +104,7 @@ export function Home() {
     <main className="home" id="main-content">
       <RunComposer
         providers={providers}
+        localPrerequisites={localPrerequisites}
         providersLoading={providersLoading}
         providersError={providersError}
         submitting={submission.phase === 'submitting'}
@@ -119,7 +126,7 @@ export function Home() {
           <div role="alert" className="notice notice--validation">
             <p>{submission.message}</p>
             <button type="button" onClick={retryProviders}>
-              Recarregar modelos
+              Recarregar lista de modelos
             </button>
           </div>
         )}

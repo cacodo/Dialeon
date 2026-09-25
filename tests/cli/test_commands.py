@@ -930,3 +930,15 @@ async def test_no_secrets_leak_in_providers_output(capsys):
     await commands.cmd_providers(components, as_json=True)
     out = capsys.readouterr()
     assert "sk-outra-secreta" not in out.out
+
+
+@pytest.mark.asyncio
+async def test_cmd_providers_json_contract_is_unchanged_ids_only(capsys):
+    """O JSON da CLI continua sendo EXATAMENTE `{"providers": [...]}` -- o
+    estado de pré-requisitos locais é um campo só da resposta HTTP."""
+    components = await _components(provider_names=("openai", "anthropic"))
+
+    await commands.cmd_providers(components, as_json=True)
+
+    body = json.loads(capsys.readouterr().out)
+    assert body == {"providers": ["anthropic", "openai"]}

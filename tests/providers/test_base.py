@@ -1145,3 +1145,74 @@ async def test_concurrent_override_and_default_calls_do_not_interfere():
     assert with_override.status == "success"
     assert without_override.status == "error"  # default 0.02s ainda estoura
     assert without_override.error.type.value == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# Pré-requisitos locais: o sinal exposto e o bloqueio local da chamada são a
+# MESMA decisão; ausente, vazia e só-espaços contam como credencial ausente.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", [None, "", " ", "  \t\n"])
+@pytest.mark.asyncio
+async def test_absent_empty_or_whitespace_only_key_is_missing_and_never_calls_api(key):
+    provider = _ScriptedProvider(script=[("não deveria", TokenUsage(), "m")], timeout_seconds=5, max_retries=1)
+    provider._api_key = key
+
+    assert provider.local_prerequisite_state() == "missing"
+    result = await provider.complete(_request())
+
+    assert provider.call_count == 0
+    assert result.status == "error"
+    assert result.error.type.value == "auth"
+    assert result.cost_usd == 0.0
+    assert result.attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_present_key_is_met_and_is_used_verbatim():
+    provider = _ScriptedProvider(script=[("ok", TokenUsage(), "m")], timeout_seconds=5, max_retries=1)
+    provider._api_key = "  chave-com-espaços-nas-bordas  "
+
+    assert provider.local_prerequisite_state() == "met"
+    result = await provider.complete(_request())
+
+    assert result.status == "success"
+    assert provider._api_key == "  chave-com-espaços-nas-bordas  "  # nunca alterada
+
+
+class _UnknownPrerequisitesProvider(_ScriptedProvider):
+    """Um adapter que não consegue avaliar seus pré-requisitos localmente."""
+
+    def local_prerequisite_state(self):
+        return "unknown"
+
+
+@pytest.mark.asyncio
+async def test_unknown_prerequisites_do_not_block_the_call():
+    provider = _UnknownPrerequisitesProvider(script=[("ok", TokenUsage(), "m")], timeout_seconds=5, max_retries=1)
+    provider._api_key = None
+
+    result = await provider.complete(_request())
+
+    assert provider.call_count == 1
+    assert result.status == "success"
+
+
+class _KeylessLocalProvider(_ScriptedProvider):
+    """Um adapter sem credencial de nuvem cujos próprios pré-requisitos
+    locais estão satisfeitos -- a abstração não exige uma API key."""
+
+    def local_prerequisite_state(self):
+        return "met"
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_provider_can_report_met_and_be_called():
+    provider = _KeylessLocalProvider(script=[("ok", TokenUsage(), "m")], timeout_seconds=5, max_retries=1)
+    provider._api_key = None
+
+    result = await provider.complete(_request())
+
+    assert provider.call_count == 1
+    assert result.status == "success"

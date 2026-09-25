@@ -38,6 +38,7 @@ from abc import ABC, abstractmethod
 
 from app.models.provider_models import (
     CompletionRequest,
+    LocalPrerequisiteState,
     ModelIdentitySource,
     PricingProvenance,
     ProviderErrorInfo,
@@ -147,6 +148,13 @@ def transport_error_common_fields(provider_response: ProviderResponse) -> dict:
     }
 
 
+def credential_is_present(value: str | None) -> bool:
+    """Presença LOCAL de uma credencial: ausente, vazia ou só espaço em
+    branco contam como ausentes. Decide só presença/ausência -- o valor
+    nunca é alterado (quem o usa recebe exatamente o que foi configurado)."""
+    return value is not None and value.strip() != ""
+
+
 class LLMProvider(ABC):
     """Classe base. Cada provider concreto só precisa implementar `_call_api`."""
 
@@ -219,9 +227,22 @@ class LLMProvider(ABC):
             return observed_model, ModelIdentitySource.PROVIDER_REPORTED
         return requested_model, ModelIdentitySource.REQUESTED_FALLBACK
 
-    def _require_api_key(self) -> None:
-        if not self._api_key:
-            raise ProviderAuthError(f"{self.provider_name}: API key não configurada")
+    def local_prerequisite_state(self) -> LocalPrerequisiteState:
+        """Estado dos pré-requisitos LOCAIS deste provider (ver
+        `LocalPrerequisiteState`), derivado só do que ele recebeu na
+        construção -- nunca de uma releitura do ambiente/.env, nunca de
+        rede. Default dos adapters atuais: o único pré-requisito local
+        verificável é a credencial passada a esta classe base. Um adapter
+        com outros requisitos (ou nenhum) sobrescreve; um que não consegue
+        se avaliar localmente devolve "unknown"."""
+        return "met" if credential_is_present(self._api_key) else "missing"
+
+    def _require_local_prerequisites(self) -> None:
+        # A MESMA decisão exposta em `local_prerequisite_state()` -- o sinal
+        # mostrado ao usuário e o bloqueio local da chamada nunca divergem.
+        # "unknown" não bloqueia: só uma ausência conhecida impede a chamada.
+        if self.local_prerequisite_state() == "missing":
+            raise ProviderAuthError(f"{self.provider_name}: configuração local obrigatória ausente")
 
     def _price_usage(
         self, model: str, usage: TokenUsage | None
@@ -272,7 +293,7 @@ class LLMProvider(ABC):
         requested_model = request.model or self.default_model
 
         try:
-            self._require_api_key()
+            self._require_local_prerequisites()
         except ProviderAuthError as exc:
             # Falha 100% local — nenhuma chamada de rede foi sequer
             # tentada, `_call_api()` nunca chega a ser invocado.

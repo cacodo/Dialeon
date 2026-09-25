@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { Home } from '../Home'
+import type { LocalPrerequisiteState, ProvidersResponse } from '../../api/types'
 import { RunDetail } from '../RunDetail'
 import { apiClient, ApiError } from '../../api/client'
 
@@ -42,6 +43,18 @@ function renderHome(initialEntry: string | { pathname: string; state: unknown } 
 }
 
 const currentPath = () => screen.getByTestId('location').textContent
+
+// Resposta de GET /providers: por padrão, todo provider com a configuração
+// local presente ("met"); `states` sobrescreve por provider.
+function listed(
+  providers: string[],
+  states: Record<string, LocalPrerequisiteState> = {},
+): ProvidersResponse {
+  return {
+    providers,
+    local_prerequisites: Object.fromEntries(providers.map((id) => [id, states[id] ?? 'met'])),
+  }
+}
 
 const completedResult = {
   status: 'completed' as const,
@@ -102,13 +115,11 @@ describe('Home', () => {
     )
     renderHome()
 
-    expect(await screen.findByText(/não foi possível carregar os modelos/i)).toBeInTheDocument()
+    expect(await screen.findByText(/não foi possível carregar a lista de modelos/i)).toBeInTheDocument()
   })
 
   it('pré-seleciona todos os providers retornados por GET /providers após discovery bem-sucedido', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({
-      providers: ['openai', 'anthropic', 'gemini'],
-    })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic', 'gemini']))
     renderHome()
 
     const toggle = await screen.findByRole('button', { name: 'Modelos: GPT, Claude, Gemini' })
@@ -120,7 +131,7 @@ describe('Home', () => {
   })
 
   it('permite submit sem o usuário precisar abrir o seletor (seleção padrão já é suficiente)', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic']))
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
@@ -135,9 +146,7 @@ describe('Home', () => {
   })
 
   it('envia exatamente os IDs retornados por GET /providers, sem hardcode', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({
-      providers: ['openai', 'anthropic', 'gemini'],
-    })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic', 'gemini']))
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
@@ -154,7 +163,7 @@ describe('Home', () => {
   })
 
   it('envia a question VERBATIM, com espaço em branco significativo ao redor preservado (repair F1)', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
@@ -174,7 +183,7 @@ describe('Home', () => {
   })
 
   it('espaço-em-branco-só continua bloqueando submit mesmo com forwarding verbatim (repair F1)', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     renderHome()
 
     await screen.findByRole('button', { name: 'Modelos: GPT' })
@@ -186,7 +195,7 @@ describe('Home', () => {
   })
 
   it('usuário ainda pode desmarcar um provider pré-selecionado', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic']))
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
@@ -208,7 +217,7 @@ describe('Home', () => {
   })
 
   it('zero providers selecionados continua bloqueando submit', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic']))
     renderHome()
 
     const toggle = await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })
@@ -223,7 +232,7 @@ describe('Home', () => {
   })
 
   it('resposta vazia de GET /providers mantém seleção vazia e submit bloqueado', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: [] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed([]))
     renderHome()
 
     const toggle = await screen.findByRole('button', { name: 'Modelos: nenhum' })
@@ -235,7 +244,7 @@ describe('Home', () => {
   })
 
   it('mostra loading honesto (sem progresso falso) durante a execução', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
     renderHome()
 
@@ -254,7 +263,7 @@ describe('Home', () => {
   })
 
   it('ao completar, abre a página estável da pergunta (/runs/:id) com o resultado em mãos -- sem novo GET', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
@@ -275,7 +284,7 @@ describe('Home', () => {
   })
 
   it('quórum insuficiente com details.run_id abre o registro persistido da pergunta', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic']))
     vi.mocked(apiClient.getRun).mockImplementation(() => new Promise(() => {}))
     vi.mocked(apiClient.createRun).mockRejectedValue(
       new ApiError(409, 'insufficient_quorum', 'Quórum insuficiente.', {
@@ -299,7 +308,7 @@ describe('Home', () => {
   })
 
   it('quórum insuficiente sem run_id: aviso neutro (não erro), sem navegação', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic']))
     vi.mocked(apiClient.createRun).mockRejectedValue(
       new ApiError(409, 'insufficient_quorum', 'Quórum insuficiente.', null),
     )
@@ -316,7 +325,7 @@ describe('Home', () => {
   })
 
   it('invalid_provider: aviso de validação com recarga (segura) da lista de modelos', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockRejectedValue(
       new ApiError(422, 'invalid_provider', 'provider inválido', null),
     )
@@ -332,13 +341,13 @@ describe('Home', () => {
     expect(notice).toHaveClass('notice--validation')
 
     // recarregar refaz só GET /providers -- nunca reenvia a pergunta
-    await userEvent.click(screen.getByRole('button', { name: 'Recarregar modelos' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Recarregar lista de modelos' }))
     await waitFor(() => expect(apiClient.getProviders).toHaveBeenCalledTimes(2))
     expect(apiClient.createRun).toHaveBeenCalledTimes(1)
   })
 
   it('500: desfecho incerto -- aponta o Histórico, NUNCA oferece reenvio de um clique, sem vazar detalhes', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockRejectedValue(
       new ApiError(500, 'internal_error', 'stack trace secreta aqui', null),
     )
@@ -364,7 +373,7 @@ describe('Home', () => {
   })
 
   it('erro de rede depois do envio também é desfecho incerto (nunca "falhou, tente de novo")', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockRejectedValue(new TypeError('Failed to fetch'))
     renderHome()
 
@@ -381,7 +390,7 @@ describe('Home', () => {
   it('falha ao carregar modelos: erro com "Tentar novamente", que refaz só GET /providers', async () => {
     vi.mocked(apiClient.getProviders)
       .mockRejectedValueOnce(new ApiError(500, 'internal_error', 'falhou', null))
-      .mockResolvedValueOnce({ providers: ['openai', 'anthropic'] })
+      .mockResolvedValueOnce(listed(['openai', 'anthropic']))
     renderHome()
 
     const alert = await screen.findByRole('alert')
@@ -389,13 +398,13 @@ describe('Home', () => {
     await userEvent.click(within(alert).getByRole('button', { name: 'Tentar novamente' }))
 
     expect(await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })).toBeInTheDocument()
-    expect(screen.queryByText(/não foi possível carregar os modelos/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/não foi possível carregar a lista de modelos/i)).not.toBeInTheDocument()
     expect(apiClient.getProviders).toHaveBeenCalledTimes(2)
     expect(apiClient.createRun).not.toHaveBeenCalled()
   })
 
   it('Ctrl/⌘+Enter envia; Enter sozinho só insere nova linha', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
     renderHome()
 
@@ -412,7 +421,7 @@ describe('Home', () => {
   })
 
   it('Meta+Enter (⌘) também envia', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
     renderHome()
 
@@ -423,7 +432,7 @@ describe('Home', () => {
   })
 
   it('Ctrl+Enter não envia quando o envio está bloqueado (pergunta em branco)', async () => {
-    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
     renderHome()
 
     await screen.findByRole('button', { name: 'Modelos: GPT' })
@@ -433,8 +442,8 @@ describe('Home', () => {
 
   it('invalid_provider → "Recarregar modelos" com lista menor: o reenvio deliberado leva só os modelos que ainda existem', async () => {
     vi.mocked(apiClient.getProviders)
-      .mockResolvedValueOnce({ providers: ['openai', 'anthropic', 'gemini'] })
-      .mockResolvedValueOnce({ providers: ['openai', 'gemini'] })
+      .mockResolvedValueOnce(listed(['openai', 'anthropic', 'gemini']))
+      .mockResolvedValueOnce(listed(['openai', 'gemini']))
     vi.mocked(apiClient.createRun)
       .mockRejectedValueOnce(new ApiError(422, 'invalid_provider', 'provider inválido', null))
       .mockImplementationOnce(() => new Promise(() => {}))
@@ -443,7 +452,7 @@ describe('Home', () => {
     await screen.findByRole('button', { name: 'Modelos: GPT, Claude, Gemini' })
     await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
     await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Recarregar modelos' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Recarregar lista de modelos' }))
 
     expect(await screen.findByRole('button', { name: 'Modelos: GPT, Gemini' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
@@ -453,8 +462,8 @@ describe('Home', () => {
 
   it('invalid_provider → recarga sem nenhum dos modelos escolhidos: envio bloqueado', async () => {
     vi.mocked(apiClient.getProviders)
-      .mockResolvedValueOnce({ providers: ['openai'] })
-      .mockResolvedValueOnce({ providers: ['gemini'] })
+      .mockResolvedValueOnce(listed(['openai']))
+      .mockResolvedValueOnce(listed(['gemini']))
     vi.mocked(apiClient.createRun).mockRejectedValueOnce(
       new ApiError(422, 'invalid_provider', 'provider inválido', null),
     )
@@ -463,11 +472,42 @@ describe('Home', () => {
     await screen.findByRole('button', { name: 'Modelos: GPT' })
     await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
     await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Recarregar modelos' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Recarregar lista de modelos' }))
 
     expect(await screen.findByRole('button', { name: 'Modelos: nenhum' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
     expect(apiClient.createRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('estados de pré-requisito local vindos de GET /providers: pré-seleção só "met", envio nunca leva "missing"', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue(
+      listed(['anthropic', 'gemini', 'openai'], { anthropic: 'missing', gemini: 'unknown' }),
+    )
+    vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
+    renderHome()
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Modelos: GPT' }))
+    expect(screen.getByLabelText('Claude')).toBeDisabled()
+    await userEvent.click(screen.getByLabelText('Gemini'))
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+
+    expect(vi.mocked(apiClient.createRun).mock.calls[0][0].enabled_providers).toEqual(['openai', 'gemini'])
+  })
+
+  it('primeira execução sem nenhum "met": orienta, e "Recarregar lista de modelos" só repete GET /providers', async () => {
+    vi.mocked(apiClient.getProviders)
+      .mockResolvedValueOnce(listed(['openai', 'anthropic'], { openai: 'missing', anthropic: 'missing' }))
+      .mockResolvedValueOnce(listed(['openai', 'anthropic'], { anthropic: 'missing' }))
+    renderHome()
+
+    const notice = await screen.findByRole('region', { name: 'Falta a configuração local dos modelos' })
+    expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
+    await userEvent.click(within(notice).getByRole('button', { name: 'Recarregar lista de modelos' }))
+
+    expect(await screen.findByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
+    expect(apiClient.getProviders).toHaveBeenCalledTimes(2)
+    expect(apiClient.createRun).not.toHaveBeenCalled()
   })
 
   describe('Reutilizar pergunta (prefill de ENTRADA do usuário)', () => {
@@ -476,7 +516,7 @@ describe('Home', () => {
     }
 
     it('preenche pergunta, fonte e participantes; o envio usa ids canônicos e nenhum campo extra', async () => {
-      vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic', 'gemini'] })
+      vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic', 'gemini']))
       vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
       renderHomeWithState({
         reuseInput: {
@@ -500,7 +540,7 @@ describe('Home', () => {
     })
 
     it('ignora participantes que não existem mais; se nenhum restar, volta ao padrão (todos)', async () => {
-      vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+      vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai', 'anthropic']))
       renderHomeWithState({
         reuseInput: { question: 'q', sourceText: null, enabledProviders: ['provider-removido'] },
       })
@@ -509,14 +549,14 @@ describe('Home', () => {
     })
 
     it('state malformado é ignorado (composer vazio, comportamento normal)', async () => {
-      vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+      vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
       renderHomeWithState({ reuseInput: { question: 42, enabledProviders: 'x' } })
 
       expect(await screen.findByLabelText(/faça uma pergunta/i)).toHaveValue('')
     })
 
     it('sem fonte no reuso, o painel de fonte continua recolhido', async () => {
-      vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+      vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
       renderHomeWithState({ reuseInput: { question: 'q', sourceText: null, enabledProviders: ['openai'] } })
 
       await screen.findByLabelText(/faça uma pergunta/i)
@@ -526,7 +566,7 @@ describe('Home', () => {
 
   describe('Limites de entrada e erros de validação', () => {
     async function ready() {
-      vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+      vi.mocked(apiClient.getProviders).mockResolvedValue(listed(['openai']))
       renderHome()
       return await screen.findByLabelText(/faça uma pergunta/i)
     }

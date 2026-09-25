@@ -6,10 +6,23 @@
 // uma contagem abstrata) e continua curto com muitos modelos ("+N"). Nada
 // aqui afirma prontidão/credenciais de um modelo -- isso não é conhecido
 // pela interface.
+//
+// Pré-requisitos LOCAIS (vindos do backend, sem rede): "missing" continua
+// visível, mas desabilitado e explicado; "unknown" é escolhível, com uma
+// nota neutra; "met" não ganha selo nenhum -- configuração local presente
+// não é serviço disponível nem credencial válida.
+
+import type { LocalPrerequisiteState } from '../api/types'
 
 export interface ModelOption {
   id: string
   label: string
+  prerequisite: LocalPrerequisiteState
+}
+
+const PREREQUISITE_NOTES: Partial<Record<LocalPrerequisiteState, string>> = {
+  missing: 'Falta configuração local nesta instalação',
+  unknown: 'Não foi possível verificar a configuração local',
 }
 
 const SUMMARY_NAME_LIMIT = 3
@@ -79,19 +92,36 @@ export function ModelSelectionPanel({
     <fieldset id={panelId} className="composer__panel model-selection">
       <legend>Modelos que vão responder</legend>
       <div className="model-selection__options">
-        {options.map((option) => (
-          <label key={option.id} className="model-selection__option">
-            <input
-              type="checkbox"
-              checked={selected.includes(option.id)}
-              onChange={() => toggle(option.id)}
-              disabled={disabled}
-            />
-            <span>{option.label}</span>
-          </label>
-        ))}
+        {options.map((option) => {
+          const note = PREREQUISITE_NOTES[option.prerequisite]
+          const noteId = `${panelId}-${option.id}-note`
+          // A nota fica FORA do <label>: o nome acessível é só o do modelo; a
+          // nota é a descrição do controle.
+          return (
+            <div
+              key={option.id}
+              className={`model-selection__item model-selection__item--${option.prerequisite}`}
+            >
+              <label className="model-selection__option">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(option.id)}
+                  onChange={() => toggle(option.id)}
+                  disabled={disabled || option.prerequisite === 'missing'}
+                  aria-describedby={note ? noteId : undefined}
+                />
+                <span>{option.label}</span>
+              </label>
+              {note && (
+                <span id={noteId} className="model-selection__note">
+                  {note}
+                </span>
+              )}
+            </div>
+          )
+        })}
       </div>
-      {selected.length === 0 && (
+      {selected.length === 0 && options.some((option) => option.prerequisite !== 'missing') && (
         <p className="model-selection__hint">Escolha pelo menos um modelo para perguntar.</p>
       )}
     </fieldset>

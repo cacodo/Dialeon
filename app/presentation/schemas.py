@@ -31,6 +31,7 @@ from app.audit_fragment import AuditFragmentOmittedReason
 from app.editor.answer_blocks import AnswerSectionHeading, AnswerVerdictLabel
 from app.models.provider_models import (
     DefaultModelAuthoritySnapshot,
+    LocalPrerequisiteState,
     ModelIdentitySource,
     PricingProvenance,
     ProviderErrorInfo,
@@ -712,9 +713,31 @@ class RunSummaryResponse(BaseModel):
 
 
 class ProvidersResponse(BaseModel):
-    """`GET /providers` -- Etapa 12. Só identificadores selecionáveis
-    atualmente válidos, vindos de `AppComponents.providers` (bootstrap
-    real) -- nunca hardcoded, nunca expõe instância/config/segredo."""
+    """`GET /providers` (HTTP) -- Etapa 12. `providers`: identificadores
+    selecionáveis atualmente válidos, vindos de `AppComponents.providers`
+    (bootstrap real) -- nunca hardcoded, nunca expõe instância/config/
+    segredo. Aparecer aqui significa só que o adapter existe neste
+    deployment.
+
+    `local_prerequisites` (aditivo): por identificador, SÓ o estado dos
+    pré-requisitos locais (`met`/`missing`/`unknown`, ver
+    `LocalPrerequisiteState`) derivado da configuração já resolvida com que
+    este processo construiu os providers. Nunca valor, fragmento ou tamanho
+    de credencial, nome de variável ou caminho de configuração; nunca
+    resultado de chamada de rede -- "met" não é credencial válida nem
+    serviço disponível."""
+
+    model_config = _CONFIG
+
+    providers: list[str]
+    local_prerequisites: dict[str, LocalPrerequisiteState]
+
+
+class ProviderIdsResponse(BaseModel):
+    """`dialeon providers --json` -- formato ESTÁVEL da CLI, inalterado: só
+    os identificadores. Separado de `ProvidersResponse` (HTTP) de propósito,
+    pra que um campo novo da resposta HTTP nunca mude sem querer o JSON
+    documentado da CLI."""
 
     model_config = _CONFIG
 

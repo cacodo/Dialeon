@@ -14,6 +14,7 @@ function renderComposer() {
   return render(
     <RunComposer
       providers={['openai', 'anthropic']}
+      localPrerequisites={{ openai: 'met', anthropic: 'met' }}
       providersLoading={false}
       providersError={null}
       submitting={false}
@@ -112,11 +113,14 @@ describe('RunComposer -- seleção reconciliada a cada descoberta de modelos', (
       submitting: false,
       onSubmit,
     }
-    const view = render(<RunComposer {...props} providers={providers} />)
+    const met = (ids: string[]) => Object.fromEntries(ids.map((id) => [id, 'met' as const]))
+    const view = render(<RunComposer {...props} providers={providers} localPrerequisites={met(providers)} />)
     return {
       onSubmit,
       rediscover: (next: string[], overrides: Partial<typeof props> = {}) =>
-        view.rerender(<RunComposer {...props} {...overrides} providers={next} />),
+        view.rerender(
+          <RunComposer {...props} {...overrides} providers={next} localPrerequisites={met(next)} />,
+        ),
     }
   }
 
@@ -177,5 +181,179 @@ describe('RunComposer -- seleção reconciliada a cada descoberta de modelos', (
     rediscover(['openai'])
     expect(screen.getByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Perguntar' })).toBeEnabled()
+  })
+})
+
+// Pré-requisitos LOCAIS por modelo (GET /providers): "met" normal,
+// "missing" visível mas desabilitado e explicado, "unknown" escolhível só
+// por escolha explícita. Nada afirma que um serviço está disponível.
+describe('RunComposer -- pré-requisitos locais dos modelos', () => {
+  const STATES = { openai: 'met', anthropic: 'missing', gemini: 'unknown' } as const
+
+  function renderStates(
+    states: Record<string, 'met' | 'missing' | 'unknown'> = STATES,
+    extra: { initialInput?: { question: string; sourceText: string | null; enabledProviders: string[] } } = {},
+  ) {
+    const onSubmit = vi.fn()
+    const onRetryProviders = vi.fn()
+    const props = {
+      providersLoading: false,
+      providersError: null as string | null,
+      submitting: false,
+      onSubmit,
+      onRetryProviders,
+      ...extra,
+    }
+    const providers = Object.keys(states)
+    const view = render(<RunComposer {...props} providers={providers} localPrerequisites={states} />)
+    return {
+      onSubmit,
+      onRetryProviders,
+      reload: (next: Record<string, 'met' | 'missing' | 'unknown'>) =>
+        view.rerender(<RunComposer {...props} providers={Object.keys(next)} localPrerequisites={next} />),
+    }
+  }
+
+  const openPanel = (name: string | RegExp) => userEvent.click(screen.getByRole('button', { name }))
+
+  it('pré-seleciona só os modelos com configuração local presente', () => {
+    renderStates()
+    expect(screen.getByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
+  })
+
+  it('"met": visível e escolhível, sem selo de prontidão', async () => {
+    renderStates()
+    await openPanel('Modelos: GPT')
+
+    const gpt = screen.getByLabelText('GPT')
+    expect(gpt).toBeEnabled()
+    expect(gpt).toBeChecked()
+    expect(gpt).not.toHaveAccessibleDescription()
+  })
+
+  it('"missing": visível, desabilitado e explicado como falta de configuração local', async () => {
+    renderStates()
+    await openPanel('Modelos: GPT')
+
+    const claude = screen.getByLabelText('Claude')
+    expect(claude).toBeDisabled()
+    expect(claude).not.toBeChecked()
+    expect(claude).toHaveAccessibleDescription('Falta configuração local nesta instalação')
+  })
+
+  it('"unknown": visível, não pré-selecionado, escolhível manualmente, sem selo positivo', async () => {
+    const { onSubmit } = renderStates()
+    await openPanel('Modelos: GPT')
+
+    const gemini = screen.getByLabelText('Gemini')
+    expect(gemini).toBeEnabled()
+    expect(gemini).not.toBeChecked()
+    expect(gemini).toHaveAccessibleDescription('Não foi possível verificar a configuração local')
+
+    await userEvent.click(gemini)
+    expect(screen.getByRole('button', { name: 'Modelos: GPT, Gemini' })).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+    expect(onSubmit).toHaveBeenCalledWith('pergunta', ['openai', 'gemini'], null)
+  })
+
+  it('o envio nunca leva um modelo sem configuração local -- nem vindo de um reuso', async () => {
+    const { onSubmit } = renderStates(STATES, {
+      initialInput: { question: 'q', sourceText: null, enabledProviders: ['anthropic', 'gemini'] },
+    })
+
+    // reuso: a escolha explícita anterior de "gemini" (unknown) volta; "anthropic" (missing) não
+    expect(screen.getByRole('button', { name: 'Modelos: Gemini' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+    expect(onSubmit).toHaveBeenCalledWith('q', ['gemini'], null)
+  })
+
+  it('reuso só com modelos sem configuração local cai pra pré-seleção padrão ("met")', () => {
+    renderStates(STATES, { initialInput: { question: 'q', sourceText: null, enabledProviders: ['anthropic'] } })
+    expect(screen.getByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
+  })
+
+  it('recarregar: um modelo que passa a "missing" sai da seleção e não volta sozinho', async () => {
+    const { reload } = renderStates({ openai: 'met', anthropic: 'met' })
+    expect(screen.getByRole('button', { name: 'Modelos: GPT, Claude' })).toBeInTheDocument()
+
+    reload({ openai: 'met', anthropic: 'missing' })
+    expect(screen.getByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
+
+    reload({ openai: 'met', anthropic: 'met' })
+    expect(screen.getByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
+  })
+
+  describe('primeira execução sem nenhum modelo com configuração local', () => {
+    const NONE_MET = { openai: 'missing', anthropic: 'missing', gemini: 'missing' } as const
+
+    it('explica com calma o que falta, que é preciso reiniciar o servidor e recarregar', async () => {
+      const { onRetryProviders } = renderStates(NONE_MET)
+
+      const notice = screen.getByRole('region', { name: 'Falta a configuração local dos modelos' })
+      expect(notice).toHaveTextContent(/oferece suporte a GPT, Claude e Gemini/)
+      expect(notice).toHaveTextContent(/ainda não tem a configuração local necessária/)
+      expect(notice).toHaveTextContent(/reinicie o servidor e recarregue a lista/)
+      expect(notice).toHaveTextContent(/não garante que o serviço de cada modelo aceite as credenciais/)
+      expect(notice).not.toHaveTextContent(/API_KEY|\.env|OPENAI|ANTHROPIC|GOOGLE/)
+      expect(notice).not.toHaveAttribute('role', 'alert')
+
+      expect(screen.getByRole('button', { name: 'Modelos: nenhum' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
+
+      await userEvent.click(screen.getByRole('button', { name: 'Recarregar lista de modelos' }))
+      expect(onRetryProviders).toHaveBeenCalledTimes(1)
+    })
+
+    it('com modelos "unknown", diz que eles podem ser escolhidos mesmo assim', () => {
+      renderStates({ openai: 'missing', gemini: 'unknown' })
+
+      const notice = screen.getByRole('region', { name: 'Falta a configuração local dos modelos' })
+      expect(notice).toHaveTextContent(/oferece suporte a GPT,/)
+      expect(notice).toHaveTextContent(/podem ser escolhidos mesmo assim/)
+      expect(screen.getByRole('button', { name: 'Modelos: nenhum' })).toBeInTheDocument()
+    })
+
+    it('depois de reiniciar e recarregar, os modelos "met" são pré-selecionados e o aviso some', () => {
+      const { reload } = renderStates(NONE_MET)
+
+      reload({ openai: 'met', anthropic: 'met', gemini: 'missing' })
+
+      expect(screen.getByRole('button', { name: 'Modelos: GPT, Claude' })).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Falta a configuração local dos modelos' })).toBeNull()
+    })
+
+    it('uma escolha manual feita antes do recarregamento não é substituída pela pré-seleção', async () => {
+      const { reload } = renderStates({ openai: 'missing', gemini: 'unknown' })
+      await openPanel('Modelos: nenhum')
+      await userEvent.click(screen.getByLabelText('Gemini'))
+
+      reload({ openai: 'met', gemini: 'unknown' })
+
+      expect(screen.getByRole('button', { name: 'Modelos: Gemini' })).toBeInTheDocument()
+    })
+  })
+
+  it('sem estado informado pelo servidor, nada é tratado como "met" (nada pré-selecionado)', () => {
+    render(
+      <RunComposer
+        providers={['openai']}
+        providersLoading={false}
+        providersError={null}
+        submitting={false}
+        onSubmit={() => {}}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Modelos: nenhum' })).toBeInTheDocument()
+  })
+
+  it('nenhum texto sugere disponibilidade, saúde ou validação remota', async () => {
+    const { reload } = renderStates()
+    await openPanel('Modelos: GPT')
+    const banned = /pront[oa]s?\b|dispon[ií]ve|indispon|online|offline|funcionando|saud[aá]ve|quebrad|v[aá]lid[ao]|configurad[oa]/i
+    expect(document.body.textContent).not.toMatch(banned)
+
+    reload({ openai: 'missing', anthropic: 'missing', gemini: 'unknown' })
+    expect(document.body.textContent).not.toMatch(banned)
   })
 })

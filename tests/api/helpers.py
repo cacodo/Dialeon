@@ -27,8 +27,13 @@ class _FakeRegistryProvider:
     então precisou virar este fake mínimo assim que o snapshot passou a
     ser construído de verdade a partir do registry."""
 
-    def __init__(self, default_model: str):
+    def __init__(self, default_model: str, local_prerequisite: str = "met"):
         self.default_model = default_model
+        self._local_prerequisite = local_prerequisite
+
+    def local_prerequisite_state(self) -> str:
+        # `GET /providers` também lê o estado de pré-requisitos locais.
+        return self._local_prerequisite
 
 
 class SelfMutatingRegistryProvider:
@@ -55,6 +60,9 @@ class SelfMutatingRegistryProvider:
         self.read_count += 1
         return self._first_value if self.read_count == 1 else self._later_value
 
+    def local_prerequisite_state(self) -> str:
+        return "met"
+
 
 async def build_test_components(
     settings,
@@ -73,8 +81,9 @@ async def build_test_components(
     em memória isolado, e CouncilRunner recebendo os fakes já existentes
     de tests/council/fakes.py. `providers` é um dict de fakes mínimos
     (`_FakeRegistryProvider`) -- a única coisa que o router/service
-    usam deles é `nome in providers`/`.default_model`, nunca chamam
-    método nenhum. `provider_default_models` (opcional) permite a um
+    usam deles é `nome in providers`/`.default_model`/
+    `.local_prerequisite_state()`, nunca chamam um provider de verdade.
+    `provider_default_models` (opcional) permite a um
     teste escolher explicitamente o `default_model` de cada provider
     (default `f"{name}-fake-model"` quando omitido). `provider_instances`
     (opcional, F1 -- Provider Default-Model Snapshot Provenance V1)

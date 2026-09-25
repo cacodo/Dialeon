@@ -35,6 +35,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 from app.config import Settings
 
 
+# Pré-requisitos LOCAIS de um provider -- só o que este processo consegue
+# saber sem nenhuma comunicação externa, a partir da configuração JÁ
+# resolvida com que o provider foi construído:
+#
+# - "met": todos os pré-requisitos locais que o adapter sabe verificar estão
+#   presentes. NÃO significa credencial válida, serviço acessível, cota,
+#   modelo existente/acessível nem que uma chamada vai funcionar.
+# - "missing": falta pelo menos um pré-requisito local obrigatório (ex.:
+#   credencial ausente, vazia ou só com espaços). Uma chamada nem é tentada.
+# - "unknown": o adapter não consegue decidir localmente. Não é "missing"
+#   nem "met"; a chamada é tentada normalmente.
+LocalPrerequisiteState = Literal["met", "missing", "unknown"]
+
+
 class Message(BaseModel):
     """Um turno de uma conversa, no formato genérico usado por todos os providers."""
 

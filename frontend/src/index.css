@@ -521,6 +521,22 @@ main {
   margin-top: var(--space-3);
 }
 
+/* Primeira execução sem nenhum modelo com configuração local: explicação
+   calma (aviso neutro), nunca um botão desabilitado sem contexto. Fica ANTES
+   da moldura do composer, pra ser lida primeiro (inclusive no celular). */
+.composer__first-run {
+  margin: 0 0 var(--space-4);
+}
+
+.composer__first-run h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-md);
+}
+
+.composer__first-run p {
+  margin: 0 0 var(--space-2);
+}
+
 .composer__providers-error p {
   margin-bottom: var(--space-2);
 }
@@ -532,10 +548,13 @@ main {
   margin-bottom: var(--space-2);
 }
 
+/* Uma opção por linha: a nota de pré-requisito local fica inequivocamente
+   junto do modelo a que se refere. */
 .model-selection__options {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
 }
 
 .model-selection__option {
@@ -551,6 +570,29 @@ main {
   height: 1.125rem;
   margin: 0;
   accent-color: var(--color-action-bg);
+}
+
+/* Estado de pré-requisito local: nota em texto (nunca só cor/ícone). A
+   opção sem configuração local continua legível -- só o controle fica
+   desabilitado. */
+.model-selection__note {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.model-selection__item {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-2);
+}
+
+.model-selection__item--missing .model-selection__option {
+  color: var(--color-fg-muted);
+}
+
+.model-selection__item--missing input {
+  cursor: not-allowed;
 }
 
 .model-selection__hint {

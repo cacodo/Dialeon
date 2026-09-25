@@ -16,8 +16,9 @@
 // `aria-keyshortcuts` e por uma dica discreta ligada ao campo por
 // `aria-describedby` -- nunca só visual.
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { formatProviderName } from '../api/formatting'
+import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { formatModelList, formatProviderName } from '../api/formatting'
+import type { LocalPrerequisiteState } from '../api/types'
 import { ModelSelectionPanel, ModelSummaryButton, type ModelOption } from './ProviderSelector'
 import {
   MAX_QUESTION_CHARACTERS,
@@ -30,6 +31,9 @@ import type { ReuseInput } from '../lib/reuseInput'
 
 interface RunComposerProps {
   providers: string[]
+  // Estado dos pré-requisitos LOCAIS por provider (GET /providers). Sem
+  // entrada (ou valor desconhecido) = "unknown": nunca tratado como "met".
+  localPrerequisites?: Readonly<Record<string, LocalPrerequisiteState>>
   providersLoading: boolean
   providersError: string | null
   submitting: boolean
@@ -41,8 +45,48 @@ interface RunComposerProps {
 const SOURCE_PANEL_ID = 'run-composer-source-panel'
 const MODELS_PANEL_ID = 'provider-selector-panel'
 
+type PrerequisiteStates = Readonly<Record<string, LocalPrerequisiteState>> | undefined
+
+function prerequisiteOf(states: PrerequisiteStates, id: string): LocalPrerequisiteState {
+  const state = states !== undefined && Object.hasOwn(states, id) ? states[id] : undefined
+  return state === 'met' || state === 'missing' ? state : 'unknown'
+}
+
+interface Selection {
+  ids: string[]
+  // A pré-seleção já aconteceu (ou o usuário já escolheu): daqui em diante
+  // uma nova lista só pode REMOVER escolhas, nunca acrescentar.
+  settled: boolean
+}
+
+// Seleção diante de uma lista de modelos recém-recebida. A pré-seleção
+// acontece UMA vez, na primeira lista que tenha algo a pré-selecionar: os
+// modelos do reuso que ainda existem e não estão sem configuração local ou,
+// sem reuso, só os com configuração local presente ("met" -- nunca "unknown"
+// nem "missing" automaticamente). Numa primeira execução sem nenhum "met",
+// ela espera: depois de configurar, reiniciar a API e recarregar a lista, os
+// "met" são pré-selecionados. Depois disso (ou de uma escolha do usuário),
+// uma lista nova mantém só as escolhas que ainda existem e não estão sem
+// configuração local; as que saíram deixam a seleção de vez.
+function reconcileSelection(
+  current: Selection,
+  providers: readonly string[],
+  states: PrerequisiteStates,
+  reuse: readonly string[],
+): Selection {
+  const choosable = (id: string) => providers.includes(id) && prerequisiteOf(states, id) !== 'missing'
+  if (current.settled) {
+    const kept = current.ids.filter(choosable)
+    return kept.length === current.ids.length ? current : { ids: kept, settled: true }
+  }
+  const reused = reuse.filter(choosable)
+  const initial = reused.length > 0 ? reused : providers.filter((id) => prerequisiteOf(states, id) === 'met')
+  return initial.length > 0 ? { ids: initial, settled: true } : current
+}
+
 export function RunComposer({
   providers,
+  localPrerequisites,
   providersLoading,
   providersError,
   submitting,
@@ -51,38 +95,58 @@ export function RunComposer({
   onRetryProviders,
 }: RunComposerProps) {
   const [question, setQuestion] = useState(initialInput?.question ?? '')
-  const [selected, setSelected] = useState<string[]>([])
-  // A pré-seleção (todos, ou os do reuso que ainda existem) acontece UMA vez,
-  // na primeira lista de modelos recebida -- nunca reverte uma escolha do
-  // usuário depois.
-  const hasInitializedSelection = useRef(false)
+  const [selection, setSelection] = useState<Selection>({ ids: [], settled: false })
+  // Lista de modelos com que a seleção foi reconciliada por último. Uma lista
+  // nova (resposta de GET /providers) reconcilia durante o render -- sem
+  // efeito, sem render intermediário com uma seleção desatualizada.
+  const [reconciledWith, setReconciledWith] = useState<{
+    providers: string[]
+    states: PrerequisiteStates
+  } | null>(null)
+  if (
+    reconciledWith === null ||
+    reconciledWith.providers !== providers ||
+    reconciledWith.states !== localPrerequisites
+  ) {
+    setReconciledWith({ providers, states: localPrerequisites })
+    setSelection((current) =>
+      reconcileSelection(current, providers, localPrerequisites, initialInput?.enabledProviders ?? []),
+    )
+  }
+  const selected = selection.ids
   const [sourceExpanded, setSourceExpanded] = useState(initialInput?.sourceText != null)
   const [sourceText, setSourceText] = useState(initialInput?.sourceText ?? '')
   const [modelsExpanded, setModelsExpanded] = useState(false)
 
-  useEffect(() => {
-    if (providers.length > 0 && !hasInitializedSelection.current) {
-      const reused = (initialInput?.enabledProviders ?? []).filter((p) => providers.includes(p))
-      setSelected(reused.length > 0 ? reused : providers)
-      hasInitializedSelection.current = true
-    } else if (hasInitializedSelection.current) {
-      // Nova descoberta (ex.: "Recarregar modelos"): mantém só as escolhas
-      // que ainda existem na lista devolvida. As que sumiram saem da seleção
-      // de vez -- nunca voltam sozinhas se reaparecerem depois.
-      setSelected((current) => {
-        const kept = current.filter((id) => providers.includes(id))
-        return kept.length === current.length ? current : kept
-      })
-    }
-  }, [providers, initialInput])
+  function chooseModels(next: string[]) {
+    setSelection({ ids: next, settled: true })
+  }
 
-  const modelOptions: ModelOption[] = providers.map((id) => ({ id, label: formatProviderName(id) }))
+  const modelOptions: ModelOption[] = providers.map((id) => ({
+    id,
+    label: formatProviderName(id),
+    prerequisite: prerequisiteOf(localPrerequisites, id),
+  }))
   // O que é mostrado, o que habilita o envio e o que é enviado são SEMPRE o
   // mesmo conjunto: a seleção restrita às opções que esta tela expõe agora
-  // (inclusive no render entre uma nova lista e a reconciliação acima). Sem
-  // lista exposta (carregando ou com erro), não há escolha válida.
+  // (inclusive no render entre uma nova lista e a reconciliação acima), sem
+  // nenhuma sem configuração local. Sem lista exposta (carregando ou com
+  // erro), não há escolha válida.
   const exposedProviders = providersLoading || providersError ? [] : providers
-  const validSelected = selected.filter((id) => exposedProviders.includes(id))
+  const validSelected = selected.filter(
+    (id) => exposedProviders.includes(id) && prerequisiteOf(localPrerequisites, id) !== 'missing',
+  )
+  // Primeira execução: a lista chegou, mas nenhum modelo tem a configuração
+  // local presente.
+  const withoutLocalConfiguration =
+    exposedProviders.length > 0 &&
+    !exposedProviders.some((id) => prerequisiteOf(localPrerequisites, id) === 'met')
+  const missingProviders = exposedProviders.filter(
+    (id) => prerequisiteOf(localPrerequisites, id) === 'missing',
+  )
+  const hasUnknownProviders = exposedProviders.some(
+    (id) => prerequisiteOf(localPrerequisites, id) === 'unknown',
+  )
 
   // Limites estáticos (espelham o backend -- ver lib/inputLimits.ts). O
   // backend segue a autoridade; isto só evita um round-trip inútil. A fonte
@@ -132,6 +196,40 @@ export function RunComposer({
         Os modelos escolhidos respondem de forma independente; o Dialeon organiza a resposta e
         mostra onde eles concordam, onde divergem e o que continua incerto.
       </p>
+
+      {withoutLocalConfiguration && (
+        // Explicação calma de primeira execução -- nunca "offline",
+        // "indisponível" ou "quebrado": só o fato local que o servidor
+        // conhece. Nomes de variável/configuração ficam na documentação.
+        <section
+          aria-labelledby="first-run-heading"
+          className="notice notice--neutral composer__first-run"
+        >
+          <h2 id="first-run-heading">Falta a configuração local dos modelos</h2>
+          {missingProviders.length > 0 && (
+            <p>
+              O Dialeon oferece suporte a {formatModelList(missingProviders)}, mas esta instalação
+              ainda não tem a configuração local necessária para usá-los.
+            </p>
+          )}
+          {hasUnknownProviders && (
+            <p>
+              Para os modelos marcados com “Não foi possível verificar a configuração local”, não
+              dá para saber daqui se ela está presente; eles podem ser escolhidos mesmo assim.
+            </p>
+          )}
+          <p>
+            A configuração é lida quando o servidor do Dialeon inicia: depois de ajustá-la (veja o
+            README), reinicie o servidor e recarregue a lista. Configuração presente não garante que
+            o serviço de cada modelo aceite as credenciais.
+          </p>
+          {onRetryProviders && (
+            <button type="button" onClick={onRetryProviders}>
+              Recarregar lista de modelos
+            </button>
+          )}
+        </section>
+      )}
 
       <div className="composer__frame">
         <label htmlFor="question-input" className="sr-only">
@@ -223,7 +321,7 @@ export function RunComposer({
           <ModelSelectionPanel
             options={modelOptions}
             selected={validSelected}
-            onChange={setSelected}
+            onChange={chooseModels}
             disabled={submitting}
             panelId={MODELS_PANEL_ID}
           />
@@ -261,7 +359,7 @@ export function RunComposer({
 
       {providersError && (
         <div role="alert" className="notice notice--error composer__providers-error">
-          <p>Não foi possível carregar os modelos disponíveis: {providersError}</p>
+          <p>Não foi possível carregar a lista de modelos: {providersError}</p>
           {onRetryProviders && (
             <button type="button" onClick={onRetryProviders}>
               Tentar novamente

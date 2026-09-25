@@ -46,7 +46,7 @@ from app.presentation.mappers import (
     running_run_response,
     run_summary_response,
 )
-from app.presentation.schemas import CreateRunRequest, ProvidersResponse, RunListResponse
+from app.presentation.schemas import CreateRunRequest, ProviderIdsResponse, RunListResponse
 from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
 
 EXIT_OK = 0
@@ -300,7 +300,7 @@ async def cmd_audit(components: AppComponents, *, run_id: str, as_json: bool) ->
 
 
 async def cmd_providers(components: AppComponents, *, as_json: bool) -> int:
-    response = ProvidersResponse(providers=sorted(components.providers))
+    response = ProviderIdsResponse(providers=sorted(components.providers))
     if as_json:
         output.emit_json(response)
     else:

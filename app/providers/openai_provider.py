@@ -25,7 +25,7 @@ from openai import (
 )
 
 from app.models.provider_models import CompletionRequest, TokenUsage
-from app.providers.base import LLMProvider
+from app.providers.base import LLMProvider, credential_is_present
 from app.providers.errors import (
     ProviderAPIError,
     ProviderAuthError,
@@ -53,7 +53,9 @@ class OpenAIProvider(LLMProvider):
         # controlado por LLMProvider.complete() (base.py) — ver correção
         # pós-Etapa-2 sobre retry duplicado. Doc oficial confirma que
         # max_retries=0 desabilita completamente o retry do client.
-        self._client = AsyncOpenAI(api_key=api_key, max_retries=0) if api_key else None
+        self._client = (
+            AsyncOpenAI(api_key=api_key, max_retries=0) if credential_is_present(api_key) else None
+        )
 
     @property
     def default_model(self) -> str:
@@ -62,7 +64,7 @@ class OpenAIProvider(LLMProvider):
     async def _call_api(
         self, request: CompletionRequest
     ) -> tuple[str, TokenUsage, str | None, str | None]:
-        # _require_api_key() NÃO é mais chamado aqui — LLMProvider.complete()
+        # _require_local_prerequisites() NÃO é chamado aqui — LLMProvider.complete()
         # (base.py) já garante que _call_api() nunca é invocado sem API key
         # configurada (Etapa 9 — permite distinguir estruturalmente falha
         # local, conhecido-zero, de falha depois do request já ter saído).

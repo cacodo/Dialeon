@@ -20,7 +20,7 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from app.models.provider_models import CompletionRequest, TokenUsage
-from app.providers.base import LLMProvider
+from app.providers.base import LLMProvider, credential_is_present
 from app.providers.errors import (
     ProviderAPIError,
     ProviderAuthError,
@@ -57,7 +57,9 @@ class GeminiProvider(LLMProvider):
             retry_options=genai_types.HttpRetryOptions(attempts=1)
         )
         self._client = (
-            genai.Client(api_key=api_key, http_options=no_retry_options) if api_key else None
+            genai.Client(api_key=api_key, http_options=no_retry_options)
+            if credential_is_present(api_key)
+            else None
         )
 
     @property
@@ -67,7 +69,7 @@ class GeminiProvider(LLMProvider):
     async def _call_api(
         self, request: CompletionRequest
     ) -> tuple[str, TokenUsage, str | None, str | None]:
-        # _require_api_key() NÃO é mais chamado aqui — LLMProvider.complete()
+        # _require_local_prerequisites() NÃO é chamado aqui — LLMProvider.complete()
         # (base.py) já garante isso antes de chegar aqui (Etapa 9).
         model = request.model or self._default_model_name
 

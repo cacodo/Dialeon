@@ -338,3 +338,37 @@ def test_sdk_retry_is_disabled_on_client_construction():
             pricing=PricingRegistry({}),
         )
         mock_client_cls.assert_called_once_with(api_key="test-key", max_retries=0)
+
+
+@pytest.mark.parametrize("key", ["", "   ", "\t\n"])
+@pytest.mark.asyncio
+async def test_whitespace_only_or_empty_key_is_missing_no_client_no_sdk_call(key):
+    with patch("app.providers.openai_provider.AsyncOpenAI") as mock_client_cls:
+        provider = OpenAIProvider(
+            api_key=key,
+            timeout_seconds=5,
+            max_retries=0,
+            default_model="gpt-test",
+            pricing=PricingRegistry({}),
+        )
+        result = await provider.complete(_request())
+
+    mock_client_cls.assert_not_called()
+    assert provider.local_prerequisite_state() == "missing"
+    assert result.status == "error"
+    assert result.error.type.value == "auth"
+    assert result.attempts == 0
+
+
+def test_present_key_reaches_the_sdk_client_unmodified():
+    with patch("app.providers.openai_provider.AsyncOpenAI") as mock_client_cls:
+        provider = OpenAIProvider(
+            api_key=" test-key ",
+            timeout_seconds=5,
+            max_retries=0,
+            default_model="gpt-test",
+            pricing=PricingRegistry({}),
+        )
+
+    mock_client_cls.assert_called_once_with(api_key=" test-key ", max_retries=0)
+    assert provider.local_prerequisite_state() == "met"
