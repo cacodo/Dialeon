@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { useLayoutEffect } from 'react'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { RunDetail } from '../RunDetail'
 import { apiClient, ApiError } from '../../api/client'
 
@@ -621,6 +622,12 @@ describe('RunDetail', () => {
       expect(details.open).toBe(false)
       expect(screen.getByText(/fonte fornecida/i)).toBeInTheDocument()
       expect(screen.getByText(/não é verificado como verdadeiro/i)).toBeInTheDocument()
+      // a fonte foi comparada com as afirmações do DEBATE (antes e à parte da
+      // avaliação), não com as afirmações da resposta
+      const note = container.querySelector('.run-detail__source-note')
+      expect(note).toHaveTextContent(/afirmações\s+identificadas durante o debate/)
+      expect(note).toHaveTextContent(/separadamente da avaliação/)
+      expect(note).not.toHaveTextContent(/afirmações da resposta/)
 
       await userEvent.click(screen.getByText(/fonte fornecida/i))
 
@@ -711,5 +718,220 @@ describe('RunDetail — resultado entregue pela Home', () => {
     expect(screen.getByText(/carregando pergunta/i)).toBeInTheDocument()
     await screen.findByText('Brasília é a capital do Brasil.')
     expect(apiClient.getRun).toHaveBeenCalledWith('run-9')
+  })
+
+  it('handover incompleto (campo que o renderizador usa ausente) é ignorado: busca pela URL', async () => {
+    const { limitations: _omitted, ...answerWithoutLimitations } = completedRun.final_answer
+    vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
+    renderDetailWithRawState('run-1', { completedRun: { ...completedRun, final_answer: answerWithoutLimitations } })
+
+    expect(screen.getByText(/carregando pergunta/i)).toBeInTheDocument()
+    expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
+    expect(apiClient.getRun).toHaveBeenCalledWith('run-1')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Autoridade da URL: a página nunca mostra, sob /runs/X, nada que não seja
+// de X -- nem por um único render -- e nenhuma resposta atrasada de GET
+// sobrescreve a Run atual.
+// ---------------------------------------------------------------------------
+
+describe('RunDetail — o id da URL é a autoridade (navegação rápida e respostas atrasadas)', () => {
+  const runOf = (id: string) => ({
+    ...completedRun,
+    id,
+    final_answer: { ...completedRun.final_answer, answer_text: `Resposta de ${id}.` },
+    config: { ...completedRun.config, question: `Pergunta de ${id}?` },
+  })
+
+  // Cada GET fica pendente até o teste decidir; `pending(id)` devolve o
+  // mais recente pra aquela Run.
+  type Deferred = { resolve: (value: unknown) => void; reject: (error: unknown) => void }
+  let calls: Map<string, Deferred[]>
+  function pending(id: string): Deferred {
+    const list = calls.get(id)
+    if (!list || list.length === 0) throw new Error(`nenhum GET pendente pra ${id}`)
+    return list[list.length - 1]
+  }
+  async function respond(id: string) {
+    await act(async () => pending(id).resolve(runOf(id)))
+  }
+
+  // Registra, a CADA commit, o caminho atual e o texto em tela -- pega até
+  // um único render com conteúdo de outra Run.
+  let commits: { path: string; text: string }[]
+  function CommitSpy() {
+    const path = useLocation().pathname
+    useLayoutEffect(() => {
+      commits.push({ path, text: document.body.textContent ?? '' })
+    })
+    return null
+  }
+
+  function Nav() {
+    const navigate = useNavigate()
+    return (
+      <nav>
+        {['A', 'B', 'C'].map((id) => (
+          <button key={id} type="button" onClick={() => navigate(`/runs/${id}`)}>
+            ir {id}
+          </button>
+        ))}
+        <button type="button" onClick={() => navigate(-1)}>
+          voltar
+        </button>
+        <button type="button" onClick={() => navigate(1)}>
+          avançar
+        </button>
+      </nav>
+    )
+  }
+
+  function renderAt(entry: string | { pathname: string; state: unknown }) {
+    return render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Nav />
+        <Routes>
+          <Route
+            path="/runs/:runId"
+            element={
+              <>
+                <RunDetail />
+                <CommitSpy />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  const go = (label: string) => userEvent.click(screen.getByRole('button', { name: label }))
+
+  function expectNoForeignContent() {
+    for (const { path, text } of commits) {
+      const current = path.split('/').pop()
+      for (const other of ['A', 'B', 'C'].filter((id) => id !== current)) {
+        expect(text, `commit em ${path} mostrou conteúdo de ${other}`).not.toContain(`Resposta de ${other}.`)
+        expect(text, `commit em ${path} mostrou conteúdo de ${other}`).not.toContain(`Pergunta de ${other}?`)
+      }
+    }
+  }
+
+  beforeEach(() => {
+    calls = new Map()
+    commits = []
+    vi.mocked(apiClient.getRun).mockImplementation(
+      (id: string) =>
+        new Promise((resolve, reject) => {
+          const list = calls.get(id) ?? []
+          list.push({ resolve: resolve as (value: unknown) => void, reject })
+          calls.set(id, list)
+        }) as ReturnType<typeof apiClient.getRun>,
+    )
+  })
+
+  it('A → B: nem por um render mostra A sob /runs/B; carrega e mostra B', async () => {
+    renderAt('/runs/A')
+    await respond('A')
+    expect(screen.getByText('Resposta de A.')).toBeInTheDocument()
+
+    await go('ir B')
+    expect(screen.getByText(/carregando pergunta/i)).toBeInTheDocument()
+    expect(screen.queryByText('Resposta de A.')).not.toBeInTheDocument()
+
+    await respond('B')
+    expect(screen.getByText('Resposta de B.')).toBeInTheDocument()
+    expectNoForeignContent()
+  })
+
+  it('A → B (GET pendente) → A: mostra A de novo, nunca fica preso em "Carregando"', async () => {
+    renderAt('/runs/A')
+    await respond('A')
+
+    await go('ir B')
+    expect(screen.getByText(/carregando pergunta/i)).toBeInTheDocument()
+    await go('voltar')
+
+    expect(screen.getByText('Resposta de A.')).toBeInTheDocument()
+    expect(screen.queryByText(/carregando pergunta/i)).not.toBeInTheDocument()
+    expectNoForeignContent()
+  })
+
+  it('resposta atrasada de B, chegando depois de voltar pra A, não substitui A', async () => {
+    renderAt('/runs/A')
+    await respond('A')
+    await go('ir B')
+    const lateB = pending('B')
+    await go('voltar')
+    await respond('A')
+
+    await act(async () => lateB.resolve(runOf('B')))
+
+    expect(screen.getByText('Resposta de A.')).toBeInTheDocument()
+    expect(screen.queryByText('Resposta de B.')).not.toBeInTheDocument()
+    expectNoForeignContent()
+  })
+
+  it('B lento, C rápido: a resposta atrasada de B não substitui C', async () => {
+    renderAt('/runs/A')
+    await respond('A')
+    await go('ir B')
+    const lateB = pending('B')
+    await go('ir C')
+    await respond('C')
+
+    await act(async () => lateB.resolve(runOf('B')))
+
+    expect(screen.getByText('Resposta de C.')).toBeInTheDocument()
+    expect(screen.queryByText('Resposta de B.')).not.toBeInTheDocument()
+    expectNoForeignContent()
+  })
+
+  it('GET com falha em B não contamina a volta pra A, nem uma nova visita a B', async () => {
+    renderAt('/runs/A')
+    await respond('A')
+    await go('ir B')
+    await act(async () => pending('B').reject(new ApiError(500, 'internal_error', 'falhou', null)))
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+
+    await go('ir A')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await respond('A')
+    expect(screen.getByText('Resposta de A.')).toBeInTheDocument()
+
+    await go('ir B')
+    await respond('B')
+    expect(screen.getByText('Resposta de B.')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expectNoForeignContent()
+  })
+
+  it('voltar/avançar: A (entregue pela Home) volta sem GET; B é buscado de novo', async () => {
+    renderAt({ pathname: '/runs/A', state: { completedRun: runOf('A') } })
+    expect(screen.getByText('Resposta de A.')).toBeInTheDocument()
+
+    await go('ir B')
+    await respond('B')
+    await go('voltar')
+    expect(screen.getByText('Resposta de A.')).toBeInTheDocument()
+
+    await go('avançar')
+    expect(screen.queryByText('Resposta de A.')).not.toBeInTheDocument()
+    await respond('B')
+    expect(screen.getByText('Resposta de B.')).toBeInTheDocument()
+
+    expect(vi.mocked(apiClient.getRun).mock.calls.map(([id]) => id)).toEqual(['B', 'B'])
+    expectNoForeignContent()
+  })
+
+  it('handover de A sob /runs/B nunca é mostrado: busca B', async () => {
+    renderAt({ pathname: '/runs/B', state: { completedRun: runOf('A') } })
+
+    expect(screen.getByText(/carregando pergunta/i)).toBeInTheDocument()
+    await respond('B')
+    expect(screen.getByText('Resposta de B.')).toBeInTheDocument()
+    expectNoForeignContent()
   })
 })

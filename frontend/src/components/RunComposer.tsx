@@ -65,10 +65,24 @@ export function RunComposer({
       const reused = (initialInput?.enabledProviders ?? []).filter((p) => providers.includes(p))
       setSelected(reused.length > 0 ? reused : providers)
       hasInitializedSelection.current = true
+    } else if (hasInitializedSelection.current) {
+      // Nova descoberta (ex.: "Recarregar modelos"): mantém só as escolhas
+      // que ainda existem na lista devolvida. As que sumiram saem da seleção
+      // de vez -- nunca voltam sozinhas se reaparecerem depois.
+      setSelected((current) => {
+        const kept = current.filter((id) => providers.includes(id))
+        return kept.length === current.length ? current : kept
+      })
     }
   }, [providers, initialInput])
 
   const modelOptions: ModelOption[] = providers.map((id) => ({ id, label: formatProviderName(id) }))
+  // O que é mostrado, o que habilita o envio e o que é enviado são SEMPRE o
+  // mesmo conjunto: a seleção restrita às opções que esta tela expõe agora
+  // (inclusive no render entre uma nova lista e a reconciliação acima). Sem
+  // lista exposta (carregando ou com erro), não há escolha válida.
+  const exposedProviders = providersLoading || providersError ? [] : providers
+  const validSelected = selected.filter((id) => exposedProviders.includes(id))
 
   // Limites estáticos (espelham o backend -- ver lib/inputLimits.ts). O
   // backend segue a autoridade; isto só evita um round-trip inútil. A fonte
@@ -82,7 +96,7 @@ export function RunComposer({
 
   const canSubmit =
     question.trim().length > 0 &&
-    selected.length > 0 &&
+    validSelected.length > 0 &&
     !questionTooLong &&
     !sourceTooLong &&
     !submitting &&
@@ -96,7 +110,7 @@ export function RunComposer({
     // `canSubmit` é só detecção de "em branco" pra UX. Fonte: whitespace só
     // decide se ela está vazia; conteúdo não vazio segue VERBATIM, igual à
     // API e à CLI.
-    onSubmit(question, selected, sourceBlank ? null : sourceText)
+    onSubmit(question, validSelected, sourceBlank ? null : sourceText)
   }
 
   function handleSubmit(event: FormEvent) {
@@ -160,7 +174,7 @@ export function RunComposer({
           {!providersLoading && !providersError && (
             <ModelSummaryButton
               options={modelOptions}
-              selected={selected}
+              selected={validSelected}
               expanded={modelsExpanded}
               onToggle={() => setModelsExpanded((expanded) => !expanded)}
               disabled={submitting}
@@ -183,7 +197,7 @@ export function RunComposer({
               className="composer__source-input"
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
-              placeholder="Cole um trecho de texto para comparar com a resposta…"
+              placeholder="Cole um trecho de texto para comparar com as afirmações do debate…"
               rows={4}
               disabled={submitting}
               aria-invalid={sourceTooLong}
@@ -197,9 +211,10 @@ export function RunComposer({
               caracteres
             </p>
             <p id="source-hint" className="composer__hint">
-              O Dialeon compara as afirmações da resposta com este texto e mostra onde ele apoia ou
-              contradiz cada uma. A fonte não é verificada como verdadeira e não muda a avaliação das
-              afirmações.
+              O Dialeon compara este texto com as afirmações identificadas durante o debate entre os
+              modelos e indica se ele apoia, contradiz ou não permite decidir cada uma. A comparação é
+              mostrada à parte: não altera a avaliação das afirmações, e a fonte não é verificada como
+              verdadeira.
             </p>
           </div>
         )}
@@ -207,7 +222,7 @@ export function RunComposer({
         {modelsExpanded && !providersLoading && !providersError && (
           <ModelSelectionPanel
             options={modelOptions}
-            selected={selected}
+            selected={validSelected}
             onChange={setSelected}
             disabled={submitting}
             panelId={MODELS_PANEL_ID}

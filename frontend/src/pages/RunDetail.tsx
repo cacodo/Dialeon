@@ -48,6 +48,16 @@ type RefreshState =
   | { phase: 'still_without_outcome' }
   | { phase: 'error'; message: string }
 
+// O id da Run na URL é a ÚNICA autoridade sobre o que esta página mostra.
+// Todo estado renderizável carrega o id a que pertence, e só é usado quando
+// esse id é o da URL atual -- qualquer outra coisa (inclusive o resultado de
+// um GET antigo, ou de uma Run anterior ainda em tela durante a troca de
+// rota) é tratada como "ainda não há nada pra esta Run": carregando.
+interface ForRun<T> {
+  runId: string
+  value: T
+}
+
 function NextActions({ config }: { config: RunConfigPublic }) {
   return (
     <div className="run-actions">
@@ -68,18 +78,24 @@ export function RunDetail() {
   const location = useLocation()
   const backHref = historyBackHref(location.state)
   // Resposta que a Home acabou de receber (ver lib/completedRunState.ts):
-  // mostrada direto, sem segundo GET nem tela de carregamento.
+  // mostrada direto, sem segundo GET nem tela de carregamento -- só quando é
+  // da MESMA Run da URL e está completa o bastante pra ser renderizada.
   const handedOver = readCompletedRunState(location.state, runId)
-  const [state, setState] = useState<DetailState>(() =>
-    handedOver !== null ? { phase: 'loaded', run: handedOver } : { phase: 'loading' },
-  )
-  // Id da Run que está na tela. Evita um GET pra resposta que já chegou em
-  // mãos -- inclusive com os efeitos invocados duas vezes do StrictMode --, e
-  // qualquer troca de Run na URL busca a nova normalmente.
-  const displayedRunId = useRef<string | null>(handedOver?.id ?? null)
-  const [refresh, setRefresh] = useState<RefreshState>({ phase: 'idle' })
+  // Último desfecho de GET (ou "Atualizar registro"), marcado com a Run a
+  // que pertence.
+  const [fetched, setFetched] = useState<ForRun<DetailState> | null>(null)
+  const [refreshFor, setRefreshFor] = useState<ForRun<RefreshState> | null>(null)
+
+  let state: DetailState
+  if (fetched !== null && fetched.runId === runId) state = fetched.value
+  else if (handedOver !== null) state = { phase: 'loaded', run: handedOver }
+  else state = { phase: 'loading' }
+  const refresh: RefreshState =
+    refreshFor !== null && refreshFor.runId === runId ? refreshFor.value : { phase: 'idle' }
+
   // Uma resposta de "Atualizar registro" que chega depois que o usuário já
-  // navegou pra outra Run nunca pode sobrescrever a Run atual.
+  // navegou pra outra Run é descartada (o GET inicial usa o cancelamento do
+  // próprio efeito, abaixo).
   const activeRunId = useRef<string | undefined>(runId)
   useEffect(() => {
     activeRunId.current = runId
@@ -91,48 +107,58 @@ export function RunDetail() {
   async function handleRefresh() {
     if (!runId) return
     const requested = runId
-    setRefresh({ phase: 'refreshing' })
+    setRefreshFor({ runId: requested, value: { phase: 'refreshing' } })
     try {
       const run = await apiClient.getRun(requested)
       if (activeRunId.current !== requested) return
-      setState({ phase: 'loaded', run })
-      setRefresh(run.status === 'running' ? { phase: 'still_without_outcome' } : { phase: 'idle' })
+      setFetched({ runId: requested, value: { phase: 'loaded', run } })
+      setRefreshFor({
+        runId: requested,
+        value: run.status === 'running' ? { phase: 'still_without_outcome' } : { phase: 'idle' },
+      })
     } catch (error) {
       if (activeRunId.current !== requested) return
-      setRefresh({
-        phase: 'error',
-        message: error instanceof ApiError ? formatErrorCode(error.code) : 'Erro inesperado.',
+      setRefreshFor({
+        runId: requested,
+        value: {
+          phase: 'error',
+          message: error instanceof ApiError ? formatErrorCode(error.code) : 'Erro inesperado.',
+        },
       })
     }
   }
 
+  // Busca a Run da URL sempre que ela muda -- a menos que o resultado já
+  // esteja em mãos (handover válido pra ESTA Run). Sem cache entre Runs:
+  // voltar pra uma Run já vista busca de novo (e, enquanto isso, mostra o
+  // último desfecho DELA, se ainda for o mais recente gravado).
+  const hasHandover = handedOver !== null
   useEffect(() => {
-    if (!runId) return
-    if (displayedRunId.current === runId) return
+    if (!runId || hasHandover) return
     let cancelled = false
-    setState({ phase: 'loading' })
     apiClient
       .getRun(runId)
       .then((run) => {
         if (cancelled) return
-        displayedRunId.current = runId
-        setState({ phase: 'loaded', run })
+        setFetched({ runId, value: { phase: 'loaded', run } })
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        if (error instanceof ApiError && error.code === 'run_not_found') {
-          setState({ phase: 'not_found' })
-        } else {
-          setState({
-            phase: 'error',
-            message: error instanceof ApiError ? formatErrorCode(error.code) : 'Erro inesperado.',
-          })
-        }
+        setFetched({
+          runId,
+          value:
+            error instanceof ApiError && error.code === 'run_not_found'
+              ? { phase: 'not_found' }
+              : {
+                  phase: 'error',
+                  message: error instanceof ApiError ? formatErrorCode(error.code) : 'Erro inesperado.',
+                },
+        })
       })
     return () => {
       cancelled = true
     }
-  }, [runId])
+  }, [runId, hasHandover])
 
   if (state.phase === 'loading') {
     return (
@@ -183,8 +209,9 @@ export function RunDetail() {
             caracteres)
           </summary>
           <p className="run-detail__source-note">
-            Texto que você forneceu para esta pergunta. Ele é comparado com as afirmações da
-            resposta; não é verificado como verdadeiro.
+            Texto que você forneceu para esta pergunta. Ele foi comparado com as afirmações
+            identificadas durante o debate, separadamente da avaliação delas; não é verificado como
+            verdadeiro.
           </p>
           <pre className="run-detail__source-text">{run.config.source_text}</pre>
         </details>

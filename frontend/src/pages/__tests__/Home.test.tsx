@@ -431,6 +431,45 @@ describe('Home', () => {
     expect(apiClient.createRun).not.toHaveBeenCalled()
   })
 
+  it('invalid_provider → "Recarregar modelos" com lista menor: o reenvio deliberado leva só os modelos que ainda existem', async () => {
+    vi.mocked(apiClient.getProviders)
+      .mockResolvedValueOnce({ providers: ['openai', 'anthropic', 'gemini'] })
+      .mockResolvedValueOnce({ providers: ['openai', 'gemini'] })
+    vi.mocked(apiClient.createRun)
+      .mockRejectedValueOnce(new ApiError(422, 'invalid_provider', 'provider inválido', null))
+      .mockImplementationOnce(() => new Promise(() => {}))
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT, Claude, Gemini' })
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Recarregar modelos' }))
+
+    expect(await screen.findByRole('button', { name: 'Modelos: GPT, Gemini' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+    expect(apiClient.createRun).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(apiClient.createRun).mock.calls[1][0].enabled_providers).toEqual(['openai', 'gemini'])
+  })
+
+  it('invalid_provider → recarga sem nenhum dos modelos escolhidos: envio bloqueado', async () => {
+    vi.mocked(apiClient.getProviders)
+      .mockResolvedValueOnce({ providers: ['openai'] })
+      .mockResolvedValueOnce({ providers: ['gemini'] })
+    vi.mocked(apiClient.createRun).mockRejectedValueOnce(
+      new ApiError(422, 'invalid_provider', 'provider inválido', null),
+    )
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Recarregar modelos' }))
+
+    expect(await screen.findByRole('button', { name: 'Modelos: nenhum' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
+    expect(apiClient.createRun).toHaveBeenCalledTimes(1)
+  })
+
   describe('Reutilizar pergunta (prefill de ENTRADA do usuário)', () => {
     function renderHomeWithState(state: unknown) {
       return renderHome({ pathname: '/', state })
