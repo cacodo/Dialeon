@@ -307,6 +307,17 @@ aparecem lá); consulte `app/config.py` pra lista completa. Copie
 `.env.example` para `.env` e preencha suas próprias chaves — `.env` já
 está no `.gitignore` deste repositório e nunca deve ser commitado.
 
+**Diretório de trabalho.** Tanto a CLI (`dialeon`) quanto a API
+(`uvicorn app.api.app:create_app --factory`) procuram o `.env` no
+diretório de trabalho ATUAL, e o `DATABASE_URL` padrão
+(`sqlite+aiosqlite:///./llm_council.db`) é relativo a esse mesmo
+diretório. Rodar os comandos a partir de diretórios diferentes usa
+configurações e bancos diferentes (um banco vazio novo é criado se não
+existir). Para um histórico único, rode sempre do mesmo diretório ou
+defina `DATABASE_URL` com caminho absoluto (ex.:
+`sqlite+aiosqlite:////home/voce/dialeon/llm_council.db`) — variáveis de
+ambiente têm precedência sobre o `.env`.
+
 **Nunca** imprima, logue ou serialize o objeto de configurações inteiro
 (por exemplo `Settings().model_dump()`) — isso inclui as API keys em
 texto plano quando configuradas. Para confirmar que a instalação/CLI
