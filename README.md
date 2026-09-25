@@ -10,7 +10,7 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Versão do pacote nesta árvore: **1.0.0**. O número de versão no código
+Versão do pacote nesta árvore: **1.1.0**. O número de versão no código
 não indica, por si só, que uma tag ou release já foi publicada. A política
 da linha 1.x está em
 [Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
@@ -27,7 +27,7 @@ abaixo.
 - [Escopo epistêmico](#escopo-epistêmico)
 - [Compatibilidade e estabilidade (linha 1.x)](#compatibilidade-e-estabilidade-linha-1x)
 - [Limitações conhecidas](#limitações-conhecidas)
-- [Notas da versão 1.0.0](CHANGELOG.md)
+- [Notas de versão](CHANGELOG.md)
 - [Estrutura do repositório](#estrutura-do-repositório)
 - [Rodando o projeto](#rodando-o-projeto)
 - [Empacotamento de release](#empacotamento-de-release)
