@@ -4,14 +4,21 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   wheel-smoke:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
       - name: Build wheel and sdist
         run: |
           python -m pip install build
@@ -21,10 +28,8 @@ jobs:
           python -m venv "$RUNNER_TEMP/minimum"
           "$RUNNER_TEMP/minimum/bin/python" -m pip install \
             "$RUNNER_TEMP"/dist/*.whl \
-            'fastapi==0.116.2' 'starlette==0.48.0' \
-            'pydantic==2.12.0' 'google-genai==1.21.0' \
-            'openai==1.55.3' 'httpx==0.28.1' \
-            'anthropic==1.5.0' pytest pytest-asyncio
+            -r scripts/minimum-direct-requirements.txt \
+            pytest pytest-asyncio
           "$RUNNER_TEMP/minimum/bin/python" -m pip check
       - name: Smoke installed wheel outside checkout
         run: |
@@ -36,6 +41,9 @@ jobs:
             tests/api/test_run_creation_boundary.py \
             tests/api/test_create_run.py \
             tests/api/test_app_lifespan.py \
+            tests/api/test_bootstrap_relocation.py \
             tests/providers/test_factory.py \
             tests/providers/test_openai_provider.py \
-            tests/providers/test_gemini_provider.py
+            tests/providers/test_gemini_provider.py \
+            tests/test_settings.py \
+            tests/orchestrator/test_config.py

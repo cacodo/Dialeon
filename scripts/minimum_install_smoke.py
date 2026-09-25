@@ -14,10 +14,14 @@ from unittest.mock import AsyncMock
 
 import app
 from fastapi.testclient import TestClient
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 from app.api.app import create_app
 from app.bootstrap import build_app_components
 from app.config import Settings
+from app.orchestrator.config import RunConfig
+from app.storage import models as _storage_models  # noqa: F401 - import maps the real ORM
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
@@ -36,18 +40,41 @@ published = {
     if "; extra ==" not in requirement
 }
 assert published == declared, (published - declared, declared - published)
-for package in ("fastapi", "starlette", "pydantic", "google-genai", "openai", "httpx"):
-    assert f"{package}>={metadata.version(package)}" in published, package
+minimum_pins = [
+    line.strip()
+    for line in (SOURCE_ROOT / "scripts/minimum-direct-requirements.txt").read_text().splitlines()
+    if line.strip() and not line.startswith("#")
+]
+assert len(minimum_pins) == len(declared)
+declared_requirements = {Requirement(value).name: Requirement(value) for value in declared}
+for pin in minimum_pins:
+    pinned = Requirement(pin)
+    required = declared_requirements[pinned.name]
+    assert pinned.extras == required.extras, pin
+    assert len(required.specifier) == len(pinned.specifier) == 1, pin
+    floor = next(iter(pinned.specifier))
+    declared_floor = next(iter(required.specifier))
+    assert floor.operator == "==" and declared_floor.operator == ">=", pin
+    assert Version(floor.version) == Version(declared_floor.version), pin
+    assert Version(metadata.version(pinned.name)) == Version(floor.version), pin
 
 
 def settings(**keys):
-    return Settings(
-        _env_file=None,
-        database_url="sqlite+aiosqlite:///:memory:",
-        openai_api_key=keys.get("openai_api_key"),
-        anthropic_api_key=keys.get("anthropic_api_key"),
-        google_api_key=keys.get("google_api_key"),
-    )
+    values = {
+        "database_url": "sqlite+aiosqlite:///:memory:",
+        "openai_api_key": None,
+        "anthropic_api_key": None,
+        "google_api_key": None,
+    }
+    values.update(keys)
+    return Settings(_env_file=None, **values)
+
+
+configured = settings(orchestrator_round_dispatch_timeout_seconds=42.0)
+assert configured.orchestrator_round_dispatch_timeout_seconds == 42.0
+assert RunConfig.from_settings(
+    configured, question="q", enabled_providers=["openai", "anthropic"]
+).round_dispatch_timeout_seconds == 42.0
 
 
 async def factory_smoke():
@@ -96,10 +123,32 @@ with TestClient(create_app(settings=settings())) as client:
     assert service.run.await_count == 1
     assert client.get("/runs").json()["runs"] == []
 
+
+class UvicornRootPathScope:
+    def __init__(self, application):
+        self.application = application
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope)
+            scope["path"] = scope.get("root_path", "") + scope["path"]
+        await self.application(scope, receive, send)
+
+
+for root_path in ("", "/", "/api", "/api/"):
+    application = create_app(settings=settings())
+    with TestClient(UvicornRootPathScope(application), root_path=root_path) as client:
+        service = application.state.components.service
+        service.run = AsyncMock(side_effect=AssertionError("rejected request reached service"))
+        response = client.post("/runs", content=raw)
+        assert response.status_code == 422, (root_path, response.text)
+        service.run.assert_not_called()
+        assert client.get("/runs").json()["runs"] == []
+
 print(
     "minimum wheel smoke passed",
     {
         name: metadata.version(name)
-        for name in ("fastapi", "starlette", "pydantic", "google-genai", "openai", "httpx")
+        for name in ("fastapi", "starlette", "pydantic", "pydantic-settings", "SQLAlchemy", "google-genai", "openai", "httpx")
     },
 )

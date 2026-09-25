@@ -15,14 +15,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
 from app.bootstrap import AppComponents, build_app_components
 from app.api.error_handlers import register_exception_handlers
 from app.api.frontend_serving import mount_frontend
 from app.api.openapi import install_public_contract_policy
-from app.api.routes import router
+from app.api.routes import router, run_creation_router
 from app.config import Settings
 from app.version import get_product_version
 
@@ -56,38 +55,9 @@ def create_app(
     # `info.version` acompanha a versão do PRODUTO (pyproject.toml) -- não
     # existe versão de API HTTP independente (ver app/version.py).
     app = FastAPI(title="LLM Council API", version=get_product_version(), lifespan=lifespan)
-
-    @app.middleware("http")
-    async def require_json_for_run_creation(request: Request, call_next):
-        # A browser can send text/plain, form data, or no Content-Type as a
-        # simple/no-cors POST. Reject those before FastAPI parses the body or
-        # the service can accept a potentially paid Run. JSON requires a
-        # browser preflight across origins; this app does not enable CORS.
-        path = request.scope["path"]
-        root_path = request.scope.get("root_path", "").rstrip("/")
-        if root_path and path.startswith(root_path + "/"):
-            path = path[len(root_path) :]
-        if request.method == "POST" and path == "/runs":
-            content_type = (
-                request.headers.get("content-type", "").partition(";")[0].strip().lower()
-            )
-            if content_type != "application/json" and not (
-                content_type.startswith("application/") and content_type.endswith("+json")
-            ):
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "error": {
-                            "code": "invalid_request",
-                            "message": "Content-Type JSON obrigatório.",
-                            "details": None,
-                        }
-                    },
-                )
-        return await call_next(request)
-
     install_public_contract_policy(app)
     register_exception_handlers(app)
     app.include_router(router)
+    app.include_router(run_creation_router)
     mount_frontend(app, dist_dir=frontend_dist)
     return app

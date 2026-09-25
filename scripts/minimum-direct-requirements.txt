@@ -1,0 +1,14 @@
+# Every published direct dependency at its declared floor. The wheel smoke
+# verifies these pins against the built metadata and exercises the APIs.
+fastapi==0.116.2
+starlette==0.48.0
+uvicorn[standard]==0.30.0
+pydantic==2.12.0
+pydantic-settings==2.15.0
+sqlalchemy[asyncio]==2.0.41
+aiosqlite==0.20.0
+httpx==0.28.1
+python-dotenv==1.0.0
+openai==1.55.3
+anthropic==1.5.0
+google-genai==1.21.0

@@ -9,6 +9,8 @@ service/repository já montados, e mapeamento pra schema HTTP.
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from app.bootstrap import AppComponents
 from app.api.exceptions import RunNotFoundError
@@ -42,6 +44,43 @@ from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFai
 router = APIRouter(responses={500: INTERNAL_ERROR_RESPONSE})
 
 
+class RunCreationRoute(APIRoute):
+    """Check media type after routing, before FastAPI reads the request body."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def require_json(request: Request):
+            # Browsers can issue text/plain, form, or headerless simple POSTs
+            # without a CORS preflight. JSON requires preflight across origins;
+            # this app does not enable CORS. This wrapper belongs only to the
+            # Run creation route, so root_path cannot bypass the check.
+            content_type = (
+                request.headers.get("content-type", "").partition(";")[0].strip().lower()
+            )
+            if content_type != "application/json" and not (
+                content_type.startswith("application/") and content_type.endswith("+json")
+            ):
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": {
+                            "code": "invalid_request",
+                            "message": "Content-Type JSON obrigatório.",
+                            "details": None,
+                        }
+                    },
+                )
+            return await handler(request)
+
+        return require_json
+
+
+run_creation_router = APIRouter(
+    route_class=RunCreationRoute, responses={500: INTERNAL_ERROR_RESPONSE}
+)
+
+
 def _components(request: Request) -> AppComponents:
     """Dependência simples via `app.state` -- sem framework de DI
     externo (Decision Delta secao 14). Testável trocando
@@ -59,7 +98,7 @@ async def get_providers(request: Request) -> ProvidersResponse:
     return ProvidersResponse(providers=sorted(components.providers))
 
 
-@router.post(
+@run_creation_router.post(
     "/runs",
     response_model=RunResponse,
     status_code=status.HTTP_201_CREATED,
