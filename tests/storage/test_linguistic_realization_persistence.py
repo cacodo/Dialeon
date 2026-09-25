@@ -26,9 +26,11 @@ from app.editor.linguistic_realization import (
     primary_answer_digest,
 )
 from app.editor.linguistic_realization_coherence import LinguisticRealizationCoherenceError
+from app.council.result import CouncilRunResult
 from app.models.request_provenance import REQUEST_DIGEST_PREFIX, RequestProvenance
 from app.presentation.mappers import completed_run_audit, completed_run_response
 from app.presentation.schemas import CompletedRunAudit, CompletedRunResponse
+from app.storage import repository as repository_module
 from app.storage.database import create_engine, init_db
 from tests.api.helpers import build_test_components, make_components_factory
 from tests.storage.fixtures import full_council_run_result, with_recomputed_reconciliation
@@ -259,6 +261,113 @@ async def test_a_general_database_failure_is_never_disguised_as_an_optional_real
     await repo.save_success(result)
     with pytest.raises(Exception):
         await repo.save_success(result)  # mesmo id -- violação de chave primária real
+
+
+@pytest.mark.asyncio
+async def test_a_declined_realization_with_real_attempts_passes_run_construction_and_persists(
+    repo,
+):
+    """Regressão 2 (revisão adversarial, audit-truth pass) -- a MESMA
+    divergência de `test_save_success_gracefully_degrades_...` acima,
+    mas agora provando explicitamente as duas garantias que a revisão
+    pediu:
+
+    1. o estado degradado (sem LinguisticRealization aceita, com TODOS
+       os attempts reais retidos, motivo bounded) passa pela construção
+       VALIDANTE completa de `CouncilRunResult` -- round-trip JSON
+       completo, não `model_copy` (que pula validators) -- nunca aborta
+       a construção do Run antes mesmo do preflight do repositório;
+    2. essa mesma forma persiste e recarrega de ponta a ponta, sem
+       nenhum caminho que apague attempts pra "recuperar" coerência --
+       cobre exatamente o ramo que 6f05415 lidava apagando
+       `linguistic_realization_attempts`/`linguistic_semantic_review_attempts`/
+       `linguistic_semantic_review_provider`. Adulteração ESCOLHIDA a
+       propósito: no PRÓPRIO attempt aceito de realização (não no campo
+       `linguistic_realization` já persistido), referenciando um
+       claim_id inexistente -- a RECONSTRUÇÃO da tentativa contra a
+       PrimaryAnswer atual falha (não uma divergência superficial só do
+       campo persistido). Em 6f05415 isto disparava tanto a checagem
+       original QUANTO a re-checagem pós-degradação (que ainda
+       reconstruía os attempts incondicionalmente), só então caindo no
+       caminho que zerava as três listas de attempts/provider -- ver
+       verificação empírica contra 6f05415 no relatório desta tarefa."""
+    result, primary, realization = _with_linguistic_realization(full_council_run_result())
+    original_realization_attempt = result.editor_result.linguistic_realization_attempts[0]
+    original_review_attempts = result.editor_result.linguistic_semantic_review_attempts
+    tampered_raw_output = json.dumps(
+        {"blocks": [{"claim_ids": ["c-forjado-inexistente"], "text": "Reescrita da claim."}]}
+    )
+    tampered_attempt = original_realization_attempt.model_copy(
+        update={"raw_output_text": tampered_raw_output}
+    )
+    editor = result.editor_result.model_copy(
+        update={"linguistic_realization_attempts": [tampered_attempt]}
+    )
+    tampered_result = result.model_copy(update={"editor_result": editor})
+
+    # 1. Run construction -- o preflight do repositório é a MESMA
+    # operação determinística que `save_success` roda antes da
+    # transação; chamá-la diretamente aqui isola exatamente essa
+    # garantia (nunca precisa de sessão/engine).
+    degraded = repository_module._preflight_linguistic_realization(tampered_result)
+
+    assert degraded.editor_result.final_answer.linguistic_realization is None
+    assert (
+        degraded.editor_result.linguistic_realization_fallback_reason
+        == "realization_persistence_preflight_failed"
+    )
+    # NENHUM attempt real foi apagado -- diferente do 6f05415, que tinha
+    # um segundo caminho que zerava as três listas abaixo quando a
+    # re-checagem falhava. O attempt (ainda com o conteúdo adulterado --
+    # um FATO histórico truthfully completado, mesmo que hoje não sirva
+    # mais pra reconstruir uma LinguisticRealization aceita) permanece
+    # byte a byte.
+    (kept_attempt,) = degraded.editor_result.linguistic_realization_attempts
+    assert kept_attempt.id == tampered_attempt.id
+    assert kept_attempt.raw_output_text == tampered_raw_output
+    assert [a.id for a in degraded.editor_result.linguistic_semantic_review_attempts] == [
+        a.id for a in original_review_attempts
+    ]
+    assert degraded.editor_result.linguistic_semantic_review_provider == "anthropic"
+
+    # Reconstrução via o construtor REAL (não `model_copy`, que pula
+    # validators) -- os mesmos objetos aninhados já válidos, então
+    # exercita exatamente os `@model_validator` do PRÓPRIO
+    # `CouncilRunResult` (incluindo `validate_linguistic_realization_coherence`)
+    # sem tropeçar em campos computados (`editor_input_tokens` etc.), que
+    # nunca são entrada de construtor.
+    reconstructed = CouncilRunResult(
+        **{name: getattr(degraded, name) for name in CouncilRunResult.model_fields}
+    )
+    assert reconstructed.editor_result.final_answer.linguistic_realization is None
+    (reconstructed_attempt,) = reconstructed.editor_result.linguistic_realization_attempts
+    assert reconstructed_attempt.id == tampered_attempt.id
+
+    # 2. persiste e recarrega de ponta a ponta -- o Run de resto
+    # bem-sucedido, e o attempt real (mesmo com conteúdo hoje
+    # irreconstruível), sobrevive.
+    await repo.save_success(tampered_result)
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.editor_result.final_answer.linguistic_realization is None
+    assert (
+        loaded.editor_result.linguistic_realization_fallback_reason
+        == "realization_persistence_preflight_failed"
+    )
+    assert loaded.editor_result.final_answer.primary_answer == primary
+    assert loaded.editor_result.final_answer.status == "llm_planned"
+    (loaded_attempt,) = loaded.editor_result.linguistic_realization_attempts
+    assert loaded_attempt.id == tampered_attempt.id
+    assert loaded_attempt.raw_output_text == tampered_raw_output
+    assert [a.id for a in loaded.editor_result.linguistic_semantic_review_attempts] == [
+        a.id for a in original_review_attempts
+    ]
+    assert loaded.editor_result.linguistic_semantic_review_provider == "anthropic"
+    assert loaded.editor_result.editor_cost_usd == pytest.approx(
+        result.editor_result.editor_cost_usd
+    )
+    assert loaded.editor_result.editor_input_tokens == result.editor_result.editor_input_tokens
+    assert loaded.editor_result.editor_output_tokens == result.editor_result.editor_output_tokens
 
 
 # ---------------------------------------------------------------------------

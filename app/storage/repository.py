@@ -187,35 +187,28 @@ _LINGUISTIC_SEMANTIC_REVIEW_PURPOSE = "linguistic_semantic_review"
 _REALIZATION_PERSISTENCE_PREFLIGHT_FAILED = "realization_persistence_preflight_failed"
 
 
-def _drop_linguistic_realization(
-    result: CouncilRunResult, *, keep_attempts: bool
-) -> CouncilRunResult:
-    """Closure repair (adversarial review) -- degrada SÓ a camada opcional
-    de LinguisticRealization: um Run de resto bem-sucedido (debate/judge/
-    primary_answer/natural_answer/answer_text) nunca é tocado.
-
-    `keep_attempts=True` (o caso normal, ver
-    `_preflight_linguistic_realization`) preserva toda tentativa de
-    realização/revisão semântica já completada e seu usage/custo -- só a
-    LinguisticRealization ACEITA em si deixa de ser persistida/preferida.
-
-    `keep_attempts=False` é um último recurso defensivo/extremo (quando
-    nem as tentativas se reconstroem de forma coerente) -- solta o
-    subtree opcional inteiro em vez de arriscar persistir um Run que
-    nunca mais conseguiria ser recarregado."""
+def _drop_linguistic_realization(result: CouncilRunResult) -> CouncilRunResult:
+    """Closure repair (adversarial review, audit-truth pass) -- degrada SÓ
+    a camada opcional de LinguisticRealization: um Run de resto
+    bem-sucedido (debate/judge/primary_answer/natural_answer/answer_text)
+    nunca é tocado, e nenhum attempt/usage/custo/provider já verdadeiro é
+    apagado -- só a LinguisticRealization ACEITA em si deixa de ser
+    persistida/preferida. Não há mais um segundo caminho que também
+    apaga tentativas: coerência falhando pra um resultado ACEITO nunca
+    prova que as chamadas nunca aconteceram (ver docstring de
+    `app/editor/linguistic_realization_coherence.py`), então este é o
+    único destino possível -- se mesmo este estado reduzido não for
+    coerente, isso é agora estruturalmente impossível (branch B daquele
+    módulo nunca reconstrói/exige nada que dependa da PrimaryAnswer
+    atual), não algo que precise de um fallback mais extremo."""
     editor = result.editor_result
     final_answer = editor.final_answer.model_copy(update={"linguistic_realization": None})
-    update: dict = {
-        "final_answer": final_answer,
-        "linguistic_realization_fallback_reason": _REALIZATION_PERSISTENCE_PREFLIGHT_FAILED,
-    }
-    if not keep_attempts:
-        update.update(
-            linguistic_realization_attempts=[],
-            linguistic_semantic_review_attempts=[],
-            linguistic_semantic_review_provider=None,
-        )
-    editor = editor.model_copy(update=update)
+    editor = editor.model_copy(
+        update={
+            "final_answer": final_answer,
+            "linguistic_realization_fallback_reason": _REALIZATION_PERSISTENCE_PREFLIGHT_FAILED,
+        }
+    )
     return result.model_copy(update={"editor_result": editor})
 
 
@@ -240,13 +233,10 @@ def _check_linguistic_realization_persistable(result: CouncilRunResult) -> None:
 
 
 def _preflight_linguistic_realization(result: CouncilRunResult) -> CouncilRunResult:
-    """Closure repair (adversarial review) -- roda a checagem acima ANTES
-    de abrir a transação de `save_success`. Se ela falhar, essa camada
-    OPCIONAL é degradada (nunca o Run inteiro): primeiro tentando manter
-    todo attempt/usage/custo já completado (`keep_attempts=True`), e só
-    recorrendo a soltar o subtree inteiro se mesmo esse estado reduzido
-    ainda não for coerente/recarregável (defensivo/extremo -- não deveria
-    acontecer na prática, ver `_drop_linguistic_realization`).
+    """Closure repair (adversarial review, audit-truth pass) -- roda a
+    checagem acima ANTES de abrir a transação de `save_success`. Se ela
+    falhar, essa camada OPCIONAL é degradada (nunca o Run inteiro, nunca
+    os attempts -- ver `_drop_linguistic_realization`).
 
     Uma falha GERAL de banco/transação/infraestrutura nunca passa por
     aqui -- só acontece depois, dentro da transação real, e continua
@@ -256,14 +246,7 @@ def _preflight_linguistic_realization(result: CouncilRunResult) -> CouncilRunRes
         _check_linguistic_realization_persistable(result)
         return result
     except Exception:
-        pass
-
-    degraded = _drop_linguistic_realization(result, keep_attempts=True)
-    try:
-        _check_linguistic_realization_persistable(degraded)
-        return degraded
-    except Exception:
-        return _drop_linguistic_realization(result, keep_attempts=False)
+        return _drop_linguistic_realization(result)
 
 
 class CouncilRepository:

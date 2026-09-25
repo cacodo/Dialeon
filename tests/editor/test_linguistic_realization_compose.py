@@ -259,6 +259,136 @@ async def test_transport_failure_during_realization_never_retries_this_layer():
 
 
 # ---------------------------------------------------------------------------
+# Closure repair (adversarial review, audit-truth pass, findings 1A/1B) --
+# a resposta do provider RETORNOU (transporte teve sucesso) mas a
+# INTERPRETAÇÃO da aplicação levanta algo fora do vocabulário de erro já
+# antecipado (`MalformedEditorOutputError`/`InvalidLinguisticRealizationError`)
+# -- caso real citado pela revisão: `json.loads` levanta `ValueError` (não
+# `json.JSONDecodeError`) pra um literal inteiro que excede o limite de
+# conversão do Python. A chamada aconteceu de verdade -- o attempt precisa
+# continuar truthfully auditável mesmo assim, nunca marcado aceito, nunca
+# perdido.
+# ---------------------------------------------------------------------------
+
+# Literal inteiro gigante (5000 dígitos) num campo qualquer do JSON --
+# `json.loads` levanta ValueError ao construir o objeto Python, ANTES de
+# qualquer validação Pydantic sequer começar (o objeto nem chega a
+# existir) -- edge case seguro e determinístico, nenhum monkeypatch.
+_HUGE_INTEGER_LITERAL = "9" * 5000
+
+
+def _interpretation_poison_realization_payload() -> str:
+    return (
+        '{"blocks": [{"claim_ids": ["c-sup"], "text": "t"}], "poison": '
+        + _HUGE_INTEGER_LITERAL
+        + "}"
+    )
+
+
+def _interpretation_poison_review_payload(digest: str) -> str:
+    return (
+        '{"candidate_digest": "'
+        + digest
+        + '", "decision": "accept", "issue_codes": [], "poison": '
+        + _HUGE_INTEGER_LITERAL
+        + "}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_realization_response_survives_an_unexpected_parser_exception():
+    """Regressão 1A."""
+    world = World()
+    prior = world.prior()
+    total_prior = prior["prior_input_tokens"] + prior["prior_output_tokens"]
+    poison = _interpretation_poison_realization_payload()
+    provider = _provider(
+        realization_responses=[
+            text_response("anthropic", poison, input_tokens=50, output_tokens=20, cost_usd=0.01)
+        ],
+    )
+    # Teto de tokens que fecha logo depois do ÚNICO attempt de realização
+    # (estilo+primary defaults = 30 tokens além do prior; +50+20 deste
+    # attempt) -- garante "exatamente um attempt" sem precisar roteirizar
+    # uma segunda resposta.
+    run_config = _run_config(max_cost_usd=100.0, max_total_tokens=total_prior + 30 + 70)
+
+    result = await _compose(world, {"anthropic": provider}, run_config=run_config)
+
+    (attempt,) = result.linguistic_realization_attempts
+    assert attempt.parse_status == "interpretation_failed"
+    # provider/model/request/raw output/usage/custo continuam truthfully
+    # auditáveis -- a chamada aconteceu de verdade.
+    assert attempt.provider == "anthropic"
+    assert attempt.raw_output_text == poison
+    assert attempt.usage.input_tokens == 50 and attempt.usage.output_tokens == 20
+    assert attempt.cost_usd == pytest.approx(0.01)
+    assert attempt.request_provenance is not None
+    assert attempt.parse_error_message  # presente, bounded
+    assert _HUGE_INTEGER_LITERAL not in attempt.parse_error_message  # nunca ecoa o literal cru
+    # tokens/custo continuam contados no agregado
+    assert result.editor_input_tokens >= 50
+    assert result.editor_output_tokens >= 20
+    assert result.editor_cost_usd >= 0.01
+    # nenhuma realização vira aceita/preferida; o Run segue bem-sucedido
+    assert result.final_answer.linguistic_realization is None
+    assert result.linguistic_realization_fallback_reason == "malformed_realization"
+    assert result.final_answer.primary_answer is not None
+    assert result.final_answer.status == "llm_planned"
+    assert result.fallback_reason is None
+
+
+@pytest.mark.asyncio
+async def test_semantic_review_response_survives_an_unexpected_parser_exception():
+    """Regressão 1B."""
+    world = World()
+    digest = _expected_digest(world)
+    prior = world.prior()
+    total_prior = prior["prior_input_tokens"] + prior["prior_output_tokens"]
+    poison = _interpretation_poison_review_payload(digest)
+    provider = _provider(
+        realization_responses=[
+            text_response(
+                "anthropic", _realization_payload(), input_tokens=50, output_tokens=20, cost_usd=0.01
+            )
+        ],
+        review_responses=[
+            text_response("anthropic", poison, input_tokens=60, output_tokens=10, cost_usd=0.02)
+        ],
+    )
+    # Teto que abre estilo+primary+realização (30+70=100 além do prior),
+    # mas fecha logo depois do ÚNICO attempt de revisão (60+10=70 além
+    # disso) -- garante "exatamente um attempt de revisão" sem precisar
+    # roteirizar uma segunda resposta.
+    run_config = _run_config(max_cost_usd=100.0, max_total_tokens=total_prior + 30 + 70 + 70)
+
+    result = await _compose(world, {"anthropic": provider}, run_config=run_config)
+
+    (realization_attempt,) = result.linguistic_realization_attempts
+    (review_attempt,) = result.linguistic_semantic_review_attempts
+    assert realization_attempt.parse_status == "accepted"
+    assert review_attempt.parse_status == "interpretation_failed"
+    assert review_attempt.provider == "anthropic"
+    assert review_attempt.raw_output_text == poison
+    assert review_attempt.usage.input_tokens == 60 and review_attempt.usage.output_tokens == 10
+    assert review_attempt.cost_usd == pytest.approx(0.02)
+    assert review_attempt.parse_error_message
+    assert _HUGE_INTEGER_LITERAL not in review_attempt.parse_error_message
+    # AMBAS as famílias de chamada contribuem truthfully pro agregado
+    assert result.editor_input_tokens >= 50 + 60
+    assert result.editor_output_tokens >= 20 + 10
+    assert result.editor_cost_usd >= 0.01 + 0.02
+    # a revisão nunca é tratada como aceite; a provider identity continua
+    # truthfully registrada mesmo sem uma LinguisticRealization aceita
+    assert result.linguistic_semantic_review_provider == "anthropic"
+    assert result.final_answer.linguistic_realization is None
+    assert result.linguistic_realization_fallback_reason == "malformed_semantic_review"
+    assert result.final_answer.primary_answer is not None
+    assert result.final_answer.status == "llm_planned"
+    assert result.fallback_reason is None
+
+
+# ---------------------------------------------------------------------------
 # Revisão semântica -- aceite/rejeição/malformado/transporte
 # ---------------------------------------------------------------------------
 

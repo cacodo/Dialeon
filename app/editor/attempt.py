@@ -71,7 +71,20 @@ class EditorAttempt(BaseModel):
     transport_attempts: int = Field(ge=0)
 
     raw_output_text: str | None = None
-    parse_status: Literal["accepted", "malformed", "inconsistent_references", "not_attempted"]
+    # Closure repair (adversarial review, audit-truth pass) --
+    # "interpretation_failed" cobre um caso DIFERENTE de "malformed": o
+    # transporte teve sucesso e `raw_output_text` é verdadeiro, mas a
+    # PRÓPRIA interpretação da aplicação (parse/validação) levantou uma
+    # exceção INESPERADA -- fora do vocabulário fechado de erro que o
+    # parser já antecipa (ex.: `json.loads` pode levantar `ValueError`,
+    # não `json.JSONDecodeError`, pra um literal inteiro que excede o
+    # limite de conversão do Python -- nunca coberto por
+    # `MalformedEditorOutputError`). Nunca usado pra fingir sucesso
+    # semântico; a chamada real continua truthfully auditável mesmo
+    # quando a interpretação em si quebra de um jeito não previsto.
+    parse_status: Literal[
+        "accepted", "malformed", "inconsistent_references", "interpretation_failed", "not_attempted"
+    ]
     parse_error_message: str | None = None
 
     usage: TokenUsage | None = None
@@ -121,11 +134,12 @@ class EditorAttempt(BaseModel):
         if self.parse_status == "accepted" and self.parse_error_message is not None:
             raise ValueError("parse_status='accepted' não deve ter parse_error_message")
         if (
-            self.parse_status in ("malformed", "inconsistent_references")
+            self.parse_status
+            in ("malformed", "inconsistent_references", "interpretation_failed")
             and not self.parse_error_message
         ):
             raise ValueError(
-                "parse_status em {'malformed','inconsistent_references'} exige "
-                "parse_error_message preenchido"
+                "parse_status em {'malformed','inconsistent_references',"
+                "'interpretation_failed'} exige parse_error_message preenchido"
             )
         return self

@@ -281,6 +281,19 @@ from app.structured_output import strip_single_json_code_fence
 
 _MAX_STRUCTURED_OUTPUT_ATTEMPTS = 2
 
+# Closure repair (adversarial review, audit-truth pass) -- mensagem
+# BOUNDED/autorada pela aplicação pro attempt `parse_status="interpretation_failed"`
+# (ver app/editor/attempt.py). NUNCA o texto cru de `str(exc)`: a exceção
+# inesperada pode conter detalhes internos de implementação (ex.: a
+# mensagem do limite de conversão inteiro do Python) que não são
+# conteúdo autoritativo/do modelo nem precisam ser expostos verbatim --
+# o CAMPO em si já comunica a verdade truthfully ("houve resposta, a
+# interpretação falhou de um jeito inesperado").
+_INTERPRETATION_FAILURE_MESSAGE = (
+    "A interpretação da saída retornada pelo provider falhou de forma "
+    "inesperada (fora do vocabulário de erro já antecipado pela aplicação)."
+)
+
 _VERDICT_LABELS: dict[str, str] = {
     "supported": "sustentada pelo debate",
     "partially_supported": "parcialmente sustentada, com ressalvas",
@@ -882,6 +895,31 @@ class Editor:
                     )
                 )
                 continue
+            except Exception:
+                # Closure repair (adversarial review, audit-truth pass) --
+                # a chamada REALMENTE completou (response.text é
+                # verdadeiro) mas a interpretação da aplicação levantou
+                # algo fora do vocabulário de erro já antecipado (ex.:
+                # `json.loads` levanta `ValueError`, não
+                # `json.JSONDecodeError`, pra um literal inteiro que
+                # excede o limite de conversão do Python -- nunca coberto
+                # por `MalformedEditorOutputError`). O attempt ainda é
+                # registrado truthfully -- nunca marcado aceito, nunca
+                # perdido.
+                feedback = (
+                    "A saída anterior não foi um único JSON fechado com blocks, claim_ids e text."
+                )
+                last_failure = "malformed_realization"
+                ledger.realization_attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        response,
+                        "interpretation_failed",
+                        _INTERPRETATION_FAILURE_MESSAGE,
+                        provenance,
+                    )
+                )
+                continue
             proposal = candidate
             ledger.realization_attempts.append(
                 _accepted_attempt(attempt_number, response, provenance)
@@ -955,6 +993,24 @@ class Editor:
                 ledger.review_attempts.append(
                     _parse_rejected_attempt(
                         attempt_number, response, "malformed", str(exc), provenance
+                    )
+                )
+                ledger.review_provider = review_provider_name
+                continue
+            except Exception:
+                # Closure repair (adversarial review, audit-truth pass) --
+                # mesma proteção do loop de realização acima: a chamada
+                # completou de verdade, mas a interpretação em si levantou
+                # algo inesperado (fora do vocabulário de erro já
+                # antecipado por `parse_semantic_review`). Registrado
+                # truthfully, nunca tratado como aceite/rejeição válida.
+                ledger.review_attempts.append(
+                    _parse_rejected_attempt(
+                        attempt_number,
+                        response,
+                        "interpretation_failed",
+                        _INTERPRETATION_FAILURE_MESSAGE,
+                        provenance,
                     )
                 )
                 ledger.review_provider = review_provider_name
@@ -1772,7 +1828,7 @@ def _transport_error_attempt(
 def _parse_rejected_attempt(
     attempt_number: int,
     provider_response: ProviderResponse,
-    parse_status: Literal["malformed", "inconsistent_references"],
+    parse_status: Literal["malformed", "inconsistent_references", "interpretation_failed"],
     message: str,
     request_provenance: RequestProvenance | None = None,
 ) -> EditorAttempt:
