@@ -24,3 +24,16 @@ def test_frontend_question_limit_matches_backend():
 
 def test_frontend_source_limit_matches_backend():
     assert _frontend_constant("MAX_SOURCE_TEXT_CHARACTERS") == MAX_SOURCE_TEXT_CHARACTERS
+
+
+def test_frontend_blank_source_detection_uses_exactly_the_backend_whitespace_set():
+    """A UI decide "fonte vazia -> ausente" pelo MESMO critério do backend
+    (`not value.strip()`, ou seja, só code points de `str.isspace()`)."""
+    match = re.search(
+        r"export const BACKEND_WHITESPACE_CODE_POINTS = \[([^\]]*)\]",
+        LIMITS_FILE.read_text(encoding="utf-8"),
+    )
+    assert match, "BACKEND_WHITESPACE_CODE_POINTS não encontrado"
+    frontend = {int(token, 16) for token in re.findall(r"0x[0-9a-fA-F]+", match.group(1))}
+    backend = {code for code in range(0x110000) if chr(code).isspace()}
+    assert frontend == backend

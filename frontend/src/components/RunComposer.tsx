@@ -16,6 +16,7 @@ import {
   MAX_QUESTION_CHARACTERS,
   MAX_SOURCE_TEXT_CHARACTERS,
   characterCount,
+  isBlankLikeBackend,
   formatCharacterLimit,
 } from '../lib/inputLimits'
 import type { ReuseInput } from '../lib/reuseInput'
@@ -61,11 +62,13 @@ export function RunComposer({
 
   // Limites estáticos (espelham o backend -- ver lib/inputLimits.ts). O
   // backend segue a autoridade; isto só evita um round-trip inútil. A fonte
-  // é contada já sem espaço nas pontas, exatamente como é enviada.
+  // é contada VERBATIM, exatamente como é enviada; só uma fonte vazia (pelo
+  // mesmo critério do backend) é tratada como ausente e não conta pro limite.
   const questionCount = characterCount(question)
-  const sourceCount = characterCount(sourceText.trim())
+  const sourceCount = characterCount(sourceText)
+  const sourceBlank = isBlankLikeBackend(sourceText)
   const questionTooLong = questionCount > MAX_QUESTION_CHARACTERS
-  const sourceTooLong = sourceCount > MAX_SOURCE_TEXT_CHARACTERS
+  const sourceTooLong = !sourceBlank && sourceCount > MAX_SOURCE_TEXT_CHARACTERS
 
   const canSubmit =
     question.trim().length > 0 &&
@@ -88,8 +91,10 @@ export function RunComposer({
     // valor originalmente inválido (ex.: >20.000 caracteres) nunca pode
     // se tornar válido por acaso de ser encurtado aqui antes de chegar
     // na validação canônica.
-    const trimmedSource = sourceText.trim()
-    onSubmit(question, selected, trimmedSource.length > 0 ? trimmedSource : null)
+    // Mesmo contrato da fonte: whitespace só decide se ela está vazia;
+    // conteúdo não vazio segue VERBATIM (indentação, quebras de linha nas
+    // pontas), igual à API e à CLI.
+    onSubmit(question, selected, sourceBlank ? null : sourceText)
   }
 
   return (

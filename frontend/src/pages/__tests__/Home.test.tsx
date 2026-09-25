@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Home } from '../Home'
@@ -425,6 +425,61 @@ describe('Home', () => {
       fireEvent.change(screen.getByLabelText(/fonte de texto/i), { target: { value: ' '.repeat(25_000) } })
 
       expect(screen.getByRole('button', { name: /investigar/i })).toBeEnabled()
+    })
+
+    describe('fonte enviada VERBATIM, como API/CLI (whitespace só decide se está vazia)', () => {
+      async function submitWithSource(source: string) {
+        vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
+        const input = await ready()
+        await userEvent.type(input, 'q')
+        await userEvent.click(screen.getByRole('button', { name: /fonte \(opcional\)/i }))
+        fireEvent.change(screen.getByLabelText(/fonte de texto/i), { target: { value: source } })
+        const submit = screen.getByRole('button', { name: /investigar/i })
+        return submit
+      }
+
+      it.each([
+        [' source ', ' source '],
+        ['    código\n', '    código\n'],
+        ['\ntexto\n', '\ntexto\n'],
+        // U+FEFF não é whitespace pro backend (str.isspace) -- fonte não vazia
+        ['\ufeff', '\ufeff'],
+      ])('%j é enviada exatamente como digitada', async (source, sent) => {
+        const submit = await submitWithSource(source)
+        await userEvent.click(submit)
+
+        await waitFor(() => expect(apiClient.createRun).toHaveBeenCalled())
+        expect(vi.mocked(apiClient.createRun).mock.calls[0][0].source_text).toBe(sent)
+      })
+
+      it.each([[''], ['   '], ['\n\t '], ['\u001c\u0085\u3000']])(
+        '%j é vazia pelo critério do backend e vai como ausente',
+        async (source) => {
+          const submit = await submitWithSource(source)
+          await userEvent.click(submit)
+
+          await waitFor(() => expect(apiClient.createRun).toHaveBeenCalled())
+          expect(vi.mocked(apiClient.createRun).mock.calls[0][0].source_text).toBeNull()
+        },
+      )
+
+      it('fonte exatamente no limite (20.000) é aceita e enviada inteira', async () => {
+        const source = 'b'.repeat(20_000)
+        const submit = await submitWithSource(source)
+
+        expect(submit).toBeEnabled()
+        await userEvent.click(submit)
+        await waitFor(() => expect(apiClient.createRun).toHaveBeenCalled())
+        expect(vi.mocked(apiClient.createRun).mock.calls[0][0].source_text).toBe(source)
+      })
+
+      it('fonte que só caberia no limite se fosse trimada é bloqueada (o backend a rejeitaria)', async () => {
+        const submit = await submitWithSource(' ' + 'b'.repeat(20_000))
+
+        expect(screen.getByRole('alert')).toHaveTextContent(/a fonte passa do limite de 20\.000/i)
+        expect(screen.getByText(/20\.001 \/ 20\.000 caracteres/)).toBeInTheDocument()
+        expect(submit).toBeDisabled()
+      })
     })
 
     it('invalid_request do servidor mostra feedback POR CAMPO, sem expor a estrutura crua', async () => {
