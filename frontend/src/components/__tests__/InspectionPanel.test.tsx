@@ -771,6 +771,58 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     consoleError.mockRestore()
   })
 
+  it.each([
+    ['{"claim_id": "x", "n": 9223372036854775807}', true],
+    ['{"claim_id": "x", "n": 9007199254740991}', false],
+  ])('raw_entry %s: aviso de fidelidade numérica = %s', async (rawEntryJson, warned) => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(
+      makeAudit({
+        source_analysis: {
+          skipped_reason: null,
+          source_analyzer_provider: 'anthropic',
+          cumulative_budget_exceeded: false,
+          attempts: [],
+          claim_results: [
+            {
+              kind: 'rejected',
+              id: 'rej-1',
+              claim_id: null,
+              reason: 'omitted_by_model',
+              raw_entry: null,
+              raw_entry_omitted_reason: null,
+              created_at: '2026-09-06T00:00:00Z',
+            },
+            {
+              kind: 'rejected',
+              id: 'rej-1',
+              claim_id: null,
+              reason: 'invalid_entry',
+              // como o cliente real recebe: pelo JSON.parse do navegador
+              raw_entry: JSON.parse(rawEntryJson),
+              raw_entry_omitted_reason: null,
+              created_at: '2026-09-06T00:00:00Z',
+            },
+          ],
+        },
+      }),
+    )
+
+    render(<InspectionPanel runId="run-1" />)
+    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await screen.findByRole('heading', { name: /afirmações/i })
+    await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
+
+    const sourceHeading = screen.getByRole('heading', { name: /resultados de fonte em quarentena/i })
+    const sourceList = sourceHeading.nextElementSibling?.nextElementSibling as HTMLElement
+    const notice = within(sourceList).queryByText(/pode ter sido arredondado pelo navegador/i)
+    if (warned) {
+      expect(notice).toBeInTheDocument()
+      expect(sourceList.textContent).toContain('texto integral do provider')
+    } else {
+      expect(notice).not.toBeInTheDocument()
+    }
+  })
+
   it('repair M2 -- raw_entry degradado aparece só como aviso textual bounded, nunca como fragmento', async () => {
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(
       makeAudit({

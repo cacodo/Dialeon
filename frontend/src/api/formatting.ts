@@ -329,6 +329,11 @@ export function formatAuditFragmentOmittedReason(reason: AuditFragmentOmittedRea
   return AUDIT_FRAGMENT_OMITTED_REASON_LABELS[reason] ?? reason
 }
 
+// Ver lib/numericFidelity.ts: o valor exibido pode ter sido arredondado pelo
+// JSON.parse do navegador; nunca apresentado como o valor bruto exato.
+export const UNSAFE_INTEGER_FIDELITY_NOTICE =
+  'Contém inteiro acima de 2^53 − 1: o valor exibido pode ter sido arredondado pelo navegador. O valor exato está no texto integral do provider, no attempt correspondente.'
+
 const FAILURE_STAGE_LABELS: Record<'execution' | 'terminal_persistence', string> = {
   execution: 'Falha durante a execução.',
   terminal_persistence:

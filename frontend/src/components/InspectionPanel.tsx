@@ -53,6 +53,7 @@ import type {
 } from '../api/types'
 import {
   formatAuditFragmentOmittedReason,
+  UNSAFE_INTEGER_FIDELITY_NOTICE,
   formatChannelRelationship,
   formatClaimVerdict,
   formatDateTime,
@@ -67,6 +68,7 @@ import {
   formatTokenCount,
   formatUsageRecordPresence,
 } from '../api/formatting'
+import { containsUnsafeInteger } from '../lib/numericFidelity'
 import { AccountingView } from './AccountingView'
 import { ClaimInspectionList } from './ClaimInspectionList'
 import { ClaimsList } from './ClaimsList'
@@ -349,6 +351,11 @@ function TechnicalAudit({
                         {quarantined.entry.raw_entry !== null && (
                           <p className="inspection-panel__technical-hint">
                             raw_entry: {JSON.stringify(quarantined.entry.raw_entry)}
+                          </p>
+                        )}
+                        {containsUnsafeInteger(quarantined.entry.raw_entry) && (
+                          <p className="inspection-panel__technical-hint">
+                            {UNSAFE_INTEGER_FIDELITY_NOTICE}
                           </p>
                         )}
                         {quarantined.entry.raw_entry_omitted_reason !== null && (
