@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from google.genai import errors as genai_errors
 
@@ -478,3 +479,83 @@ async def test_max_output_tokens_per_call_reaches_correct_gemini_parameter():
 
     call_kwargs = provider._client.aio.models.generate_content.call_args.kwargs
     assert call_kwargs["config"].max_output_tokens == 4096
+
+
+# ---------------------------------------------------------------------------
+# Falhas de transporte do httpx: mesma classe (TIMEOUT retentável) de
+# APITimeoutError/APIConnectionError em OpenAI/Anthropic
+# ---------------------------------------------------------------------------
+
+_HTTPX_REQUEST = httpx.Request("POST", "https://generativelanguage.googleapis.com/")
+TRANSPORT_ERRORS = {
+    "connect_error": httpx.ConnectError("connection refused", request=_HTTPX_REQUEST),
+    "read_error": httpx.ReadError("connection reset", request=_HTTPX_REQUEST),
+    "remote_protocol_error": httpx.RemoteProtocolError("closed", request=_HTTPX_REQUEST),
+    "connect_timeout": httpx.ConnectTimeout("connect timeout", request=_HTTPX_REQUEST),
+    "read_timeout": httpx.ReadTimeout("read timeout", request=_HTTPX_REQUEST),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", sorted(TRANSPORT_ERRORS))
+async def test_httpx_transport_failure_is_a_retryable_timeout(name):
+    provider = _provider(max_retries=0)
+    provider._client.aio.models.generate_content.side_effect = TRANSPORT_ERRORS[name]
+
+    result = await provider.complete(_request())
+
+    assert result.status == "error"
+    assert result.error.type == "timeout"
+    assert result.error.retryable is True
+    assert result.attempts == 1
+    # a request pode ter chegado ao provider: custo desconhecido, nunca zero
+    assert (result.usage, result.cost_usd) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_is_retried_only_by_complete_and_then_succeeds():
+    provider = _provider(max_retries=1)
+    provider._client.aio.models.generate_content.side_effect = [
+        TRANSPORT_ERRORS["connect_error"],
+        _FakeResponse("resposta"),
+    ]
+
+    with patch("app.providers.base._backoff_delay", return_value=0.0):
+        result = await provider.complete(_request())
+
+    assert result.status == "success"
+    assert result.attempts == 2
+    assert result.had_uncertain_prior_attempts is True
+    assert provider._client.aio.models.generate_content.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_persistent_connection_failure_stops_at_the_configured_attempt_limit():
+    provider = _provider(max_retries=2)
+    provider._client.aio.models.generate_content.side_effect = TRANSPORT_ERRORS["connect_error"]
+
+    with patch("app.providers.base._backoff_delay", return_value=0.0):
+        result = await provider.complete(_request())
+
+    assert (result.status, result.attempts) == ("error", 3)
+    assert result.error.type == "timeout"
+    assert provider._client.aio.models.generate_content.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_lets_raw_httpx_errors_escape_and_the_adapter_maps_them(monkeypatch):
+    """Sem mock do SDK: o client google-genai real, com o transporte httpx
+    falhando (nenhuma rede). Guarda contra mudança de comportamento do SDK."""
+
+    async def refuse(self, request, **kwargs):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", refuse)
+    provider = GeminiProvider(
+        api_key="test-key", timeout_seconds=5, max_retries=0, default_model="gemini-test",
+        pricing=PricingRegistry({}),
+    )
+
+    result = await provider.complete(_request())
+
+    assert (result.error.type, result.error.retryable, result.attempts) == ("timeout", True, 1)

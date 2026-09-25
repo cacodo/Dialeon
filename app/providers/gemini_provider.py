@@ -14,6 +14,7 @@ exclusiva de LLMProvider.complete() (base.py) — ver correção pós-Etapa-2.
 
 from __future__ import annotations
 
+import httpx
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -25,6 +26,7 @@ from app.providers.errors import (
     ProviderAuthError,
     ProviderMalformedResponseError,
     ProviderRateLimitError,
+    ProviderTimeoutError,
 )
 from app.providers.pricing import PricingRegistry
 
@@ -104,6 +106,16 @@ class GeminiProvider(LLMProvider):
             raise ProviderAPIError(f"gemini: erro de cliente ({code}): {exc}", retryable=False) from exc
         except genai_errors.ServerError as exc:
             raise ProviderAPIError(f"gemini: erro de servidor: {exc}", retryable=True) from exc
+        # O SDK google-genai (1.21 e 2.x) deixa escapar a exceção CRUA do
+        # httpx em falhas de transporte -- sem isto elas viravam UNKNOWN
+        # não-retentável em LLMProvider.complete(), enquanto a mesma falha
+        # em OpenAI/Anthropic (APITimeoutError/APIConnectionError, que os
+        # SDKs deles derivam das mesmas exceções do httpx) é TIMEOUT
+        # retentável. O retry continua sendo só o de complete().
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(f"gemini: timeout: {exc}") from exc
+        except httpx.TransportError as exc:
+            raise ProviderTimeoutError(f"gemini: falha de conexão: {exc}") from exc
 
         return self._parse_response(response)
 
