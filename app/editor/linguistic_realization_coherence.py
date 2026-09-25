@@ -95,10 +95,17 @@ def validate_linguistic_realization_coherence(
             _fail("LinguisticRealization exige semantic review accept do candidato exato")
         if reason is not None:
             _fail("LinguisticRealization aceita não pode ter fallback reason")
-    elif review is not None and review.decision == "accept" and reason != (
-        "defensive_realization_persistence_failure"
+    elif review is not None and review.decision == "accept" and reason not in (
+        "defensive_realization_persistence_failure",
+        # Closure repair (adversarial review) -- o repositório pode ter
+        # deliberadamente recusado persistir/preferir uma
+        # LinguisticRealization estruturalmente aceita (preflight
+        # específico desta camada, nunca uma falha geral de banco) mesmo
+        # com semantic review aceita para o candidato exato; ver
+        # `app/storage/repository.py::_preflight_linguistic_realization`.
+        "realization_persistence_preflight_failed",
     ):
-        _fail("semantic review aceita sem realização persistida exige falha defensiva explícita")
+        _fail("semantic review aceita sem realização persistida exige motivo bounded explícito")
 
     if reason == "semantic_review_rejection":
         if review is None or review.decision != "reject":

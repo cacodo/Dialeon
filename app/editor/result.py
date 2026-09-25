@@ -487,7 +487,27 @@ class EditorResult(BaseModel):
             "semantic_review_transport_failure",
             "malformed_semantic_review",
             "semantic_review_rejection",
+            # Closure repair (adversarial review) -- distinto de
+            # `defensive_realization_persistence_failure`: NENHUMA chamada
+            # de provider foi tentada, porque `run_config.judge_provider`
+            # não está entre os providers injetados no Editor. Nunca
+            # classificado como falha de transporte (nenhuma chamada
+            # aconteceu) nem como a falha defensiva genérica (não é
+            # inesperada -- é uma configuração ausente, detectável antes de
+            # qualquer chamada).
+            "semantic_review_provider_unavailable",
             "defensive_realization_persistence_failure",
+            # Closure repair (adversarial review) -- ver
+            # `app/storage/repository.py::_preflight_linguistic_realization`.
+            # Só o repositório produz este motivo: a checagem/serialização
+            # determinística específica da LinguisticRealization falhou
+            # ANTES de qualquer escrita real no banco (nunca uma falha
+            # geral de banco/transação/infraestrutura, que continua
+            # propagando normalmente) -- toda tentativa de realização/
+            # revisão completada e seu usage/custo permanecem preservados;
+            # só a LinguisticRealization aceita em si deixa de ser
+            # persistida/preferida.
+            "realization_persistence_preflight_failed",
         ]
         | None
     ) = None

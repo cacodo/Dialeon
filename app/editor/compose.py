@@ -209,6 +209,7 @@ from __future__ import annotations
 
 import json
 import unicodedata
+from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
 
 from pydantic import ValidationError
@@ -492,6 +493,23 @@ _DEFAULT_PLAN = EditorPlan(opening_style="direct", closing_style="concise")
 # da mesma derivação que pudessem divergir silenciosamente.
 
 
+@dataclass
+class _LinguisticRealizationLedger:
+    """Closure repair (adversarial review) -- carregador DURÁVEL de tudo
+    que uma chamada de provider já completada provou verdadeiro, mutado
+    IMEDIATAMENTE quando cada fato é conhecido (nunca só através do valor
+    de retorno de `_realize_primary_answer`). Uma exceção inesperada
+    depois disso ainda pode abortar a DETERMINAÇÃO final (se existe uma
+    LinguisticRealization aceita), mas nunca apaga um attempt já
+    completado, seu usage/custo, nem o provider que ele de fato usou --
+    `Editor.compose()` lê este ledger no `except` também, não só no
+    caminho de sucesso."""
+
+    realization_attempts: list[EditorAttempt] = field(default_factory=list)
+    review_attempts: list[EditorAttempt] = field(default_factory=list)
+    review_provider: str | None = None
+
+
 class Editor:
     def __init__(self, providers: dict[str, LLMProvider]):
         self._providers = providers
@@ -715,25 +733,31 @@ class Editor:
         if primary_answer is not None:
             all_before_realization = [*attempts, *primary_attempts]
             extra_input, extra_output, extra_cost, _ = sum_usage_and_cost(all_before_realization)
+            # Closure repair (adversarial review) -- `ledger` é passado e
+            # mutado DENTRO de `_realize_primary_answer`, então mesmo se o
+            # `except` abaixo dispara (exceção inesperada DEPOIS de uma
+            # chamada de provider já ter completado), todo attempt/
+            # provider já verdadeiro continua aqui -- nunca depende do
+            # `return` daquela função ter sido alcançado.
+            ledger = _LinguisticRealizationLedger()
             try:
-                (
-                    linguistic_realization,
-                    realization_attempts,
-                    semantic_review_attempts,
-                    realization_reason,
-                    semantic_review_provider,
-                ) = await self._realize_primary_answer(
+                linguistic_realization, realization_reason = await self._realize_primary_answer(
                     editor_llm=editor_llm,
                     run_config=run_config,
                     primary_answer=primary_answer,
                     input_before=input_before + extra_input,
                     output_before=output_before + extra_output,
                     cost_before=cost_before + extra_cost,
+                    ledger=ledger,
                 )
             except Exception:
                 # This layer is optional and may never invalidate a successful Run.
                 linguistic_realization = None
                 realization_reason = "defensive_realization_persistence_failure"
+
+            realization_attempts = ledger.realization_attempts
+            semantic_review_attempts = ledger.review_attempts
+            semantic_review_provider = ledger.review_provider
 
             optional_input, optional_output, optional_cost, _ = sum_usage_and_cost(
                 [*realization_attempts, *semantic_review_attempts]
@@ -783,24 +807,30 @@ class Editor:
         input_before: int,
         output_before: int,
         cost_before: int | float,
-    ) -> tuple[
-        LinguisticRealization | None,
-        list[EditorAttempt],
-        list[EditorAttempt],
-        str | None,
-        str | None,
-    ]:
-        """Generate, structurally validate, then independently review wording."""
-        if compute_budget_exceeded(input_before, output_before, cost_before, run_config):
-            return None, [], [], "budget_exhausted_before_realization", None
+        ledger: _LinguisticRealizationLedger,
+    ) -> tuple[LinguisticRealization | None, str | None]:
+        """Generate, structurally validate, then independently review wording.
 
-        realization_attempts: list[EditorAttempt] = []
+        Closure repair (adversarial review) -- every completed provider
+        response is appended to `ledger` the INSTANT it is known, never
+        only via this function's return value. The return value carries
+        only the final DETERMINATION (an accepted realization, or why
+        not) -- an exception raised anywhere below (including from a call
+        this function does not itself guard, e.g. `build_linguistic_realization`
+        at the very end) can still lose that determination, but the
+        caller (`Editor.compose()`) reads `ledger` even from its `except`
+        branch, so a completed attempt is never lost with it."""
+        if compute_budget_exceeded(input_before, output_before, cost_before, run_config):
+            return None, "budget_exhausted_before_realization"
+
         proposal = None
         feedback = None
         last_failure = "malformed_realization"
         for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
             if attempt_number > 1:
-                used_in, used_out, used_cost, _ = sum_usage_and_cost(realization_attempts)
+                used_in, used_out, used_cost, _ = sum_usage_and_cost(
+                    ledger.realization_attempts
+                )
                 if compute_budget_exceeded(
                     input_before + used_in,
                     output_before + used_out,
@@ -819,16 +849,10 @@ class Editor:
             )
             response = await editor_llm.complete(request)
             if response.status == "error":
-                realization_attempts.append(
+                ledger.realization_attempts.append(
                     _transport_error_attempt(attempt_number, response, provenance)
                 )
-                return (
-                    None,
-                    realization_attempts,
-                    [],
-                    "realization_transport_failure",
-                    None,
-                )
+                return None, "realization_transport_failure"
             try:
                 candidate = parse_realization_proposal(response.text)
                 validate_realization_proposal(
@@ -839,7 +863,7 @@ class Editor:
                     "A saída anterior não foi um único JSON fechado com blocks, claim_ids e text."
                 )
                 last_failure = "malformed_realization"
-                realization_attempts.append(
+                ledger.realization_attempts.append(
                     _parse_rejected_attempt(
                         attempt_number, response, "malformed", str(exc), provenance
                     )
@@ -848,7 +872,7 @@ class Editor:
             except InvalidLinguisticRealizationError as exc:
                 feedback = exc.to_feedback()
                 last_failure = "structural_rejection"
-                realization_attempts.append(
+                ledger.realization_attempts.append(
                     _parse_rejected_attempt(
                         attempt_number,
                         response,
@@ -859,46 +883,43 @@ class Editor:
                 )
                 continue
             proposal = candidate
-            realization_attempts.append(_accepted_attempt(attempt_number, response, provenance))
+            ledger.realization_attempts.append(
+                _accepted_attempt(attempt_number, response, provenance)
+            )
             break
 
         if proposal is None:
-            return None, realization_attempts, [], last_failure, None
+            return None, last_failure
 
-        real_in, real_out, real_cost, _ = sum_usage_and_cost(realization_attempts)
+        real_in, real_out, real_cost, _ = sum_usage_and_cost(ledger.realization_attempts)
         if compute_budget_exceeded(
             input_before + real_in,
             output_before + real_out,
             cost_before + real_cost,
             run_config,
         ):
-            return (
-                None,
-                realization_attempts,
-                [],
-                "budget_exhausted_before_semantic_review",
-                None,
-            )
+            return None, "budget_exhausted_before_semantic_review"
 
         review_provider_name = run_config.judge_provider
         review_llm = self._providers.get(review_provider_name)
         if review_llm is None:
-            return (
-                None,
-                realization_attempts,
-                [],
-                "defensive_realization_persistence_failure",
-                None,
-            )
+            # Closure repair (adversarial review) -- NENHUMA chamada foi
+            # tentada (`review_llm` nunca resolveu), então isto NUNCA é
+            # `defensive_realization_persistence_failure` (essa reserva é
+            # pra exceções verdadeiramente inesperadas) nem uma falha de
+            # transporte (nenhum request saiu) -- é uma configuração
+            # ausente, detectável antes de qualquer chamada.
+            return None, "semantic_review_provider_unavailable"
 
         digest = candidate_digest(
             proposal, based_on_primary_answer_digest=primary_answer_digest(primary_answer)
         )
-        review_attempts: list[EditorAttempt] = []
         review = None
         for attempt_number in range(1, _MAX_STRUCTURED_OUTPUT_ATTEMPTS + 1):
             if attempt_number > 1:
-                review_in, review_out, review_cost, _ = sum_usage_and_cost(review_attempts)
+                review_in, review_out, review_cost, _ = sum_usage_and_cost(
+                    ledger.review_attempts
+                )
                 if compute_budget_exceeded(
                     input_before + real_in + review_in,
                     output_before + real_out + review_out,
@@ -918,58 +939,44 @@ class Editor:
             )
             response = await review_llm.complete(request)
             if response.status == "error":
-                review_attempts.append(
+                ledger.review_attempts.append(
                     _transport_error_attempt(attempt_number, response, provenance)
                 )
-                return (
-                    None,
-                    realization_attempts,
-                    review_attempts,
-                    "semantic_review_transport_failure",
-                    review_provider_name,
-                )
+                # O provider só é registrado como usado quando um attempt
+                # de fato existe pra ele (mesmo invariante de
+                # `EditorResult` -- ver `_linguistic_realization_state_is_coherent`).
+                ledger.review_provider = review_provider_name
+                return None, "semantic_review_transport_failure"
             try:
                 parsed_review = parse_semantic_review(response.text)
                 if parsed_review.candidate_digest != digest:
                     raise MalformedEditorOutputError("candidate_digest diverge do candidato")
             except MalformedEditorOutputError as exc:
-                review_attempts.append(
+                ledger.review_attempts.append(
                     _parse_rejected_attempt(
                         attempt_number, response, "malformed", str(exc), provenance
                     )
                 )
+                ledger.review_provider = review_provider_name
                 continue
             review = parsed_review
-            review_attempts.append(_accepted_attempt(attempt_number, response, provenance))
+            ledger.review_attempts.append(_accepted_attempt(attempt_number, response, provenance))
+            ledger.review_provider = review_provider_name
             break
 
         if review is None:
-            return (
-                None,
-                realization_attempts,
-                review_attempts,
-                "malformed_semantic_review",
-                review_provider_name,
-            )
+            return None, "malformed_semantic_review"
         if review.decision == "reject":
-            return (
-                None,
-                realization_attempts,
-                review_attempts,
-                "semantic_review_rejection",
-                review_provider_name,
-            )
-        try:
-            realization = build_linguistic_realization(proposal, primary=primary_answer)
-        except Exception:
-            return (
-                None,
-                realization_attempts,
-                review_attempts,
-                "defensive_realization_persistence_failure",
-                review_provider_name,
-            )
-        return realization, realization_attempts, review_attempts, None, review_provider_name
+            return None, "semantic_review_rejection"
+        # Closure repair (adversarial review) -- não há mais um try/except
+        # dedicado aqui: uma falha nesta construção puramente determinística
+        # é exatamente o tipo de exceção inesperada que o `except` em
+        # `Editor.compose()` já trata (`defensive_realization_persistence_failure`),
+        # e `ledger` já contém os dois attempts (realização + revisão)
+        # completados truthfully de qualquer forma -- um segundo catch
+        # local aqui não protegeria nada que o ledger não proteja.
+        realization = build_linguistic_realization(proposal, primary=primary_answer)
+        return realization, None
 
     async def _plan_primary_answer(
         self,

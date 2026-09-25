@@ -466,7 +466,11 @@ async def test_a_separate_review_provider_is_recorded_as_its_own_provider():
 
 
 @pytest.mark.asyncio
-async def test_review_provider_missing_from_the_configured_providers_falls_back_defensively():
+async def test_review_provider_missing_from_the_configured_providers_reports_the_precise_reason():
+    # Closure repair (adversarial review) -- NENHUMA chamada foi tentada
+    # (o provider nunca resolveu), então isto é `semantic_review_provider_unavailable`,
+    # nunca a falha defensiva genérica (reservada pra exceções
+    # verdadeiramente inesperadas) nem uma falha de transporte.
     world = World()
     provider = _provider(realization_responses=[text_response("anthropic", _realization_payload())])
     run_config = _run_config(editor_provider="anthropic", judge_provider="openai")
@@ -476,9 +480,182 @@ async def test_review_provider_missing_from_the_configured_providers_falls_back_
 
     assert provider.review_requests == []
     assert result.final_answer.linguistic_realization is None
-    assert result.linguistic_realization_fallback_reason == "defensive_realization_persistence_failure"
+    assert result.linguistic_realization_fallback_reason == "semantic_review_provider_unavailable"
     assert result.linguistic_semantic_review_provider is None
     assert [a.parse_status for a in result.linguistic_realization_attempts] == ["accepted"]
+    assert result.final_answer.primary_answer is not None
+    assert result.final_answer.status == "llm_planned"
+
+
+# ---------------------------------------------------------------------------
+# Closure repair (adversarial review, finding #1/#2) -- um attempt já
+# COMPLETADO (chamada de provider real, resposta recebida) nunca some do
+# audit/accounting só porque uma exceção INESPERADA acontece DEPOIS dele,
+# num ponto do código que não é mais protegido por um catch local (ver
+# `_LinguisticRealizationLedger`/docstring de `_realize_primary_answer`).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_realization_attempt_survives_an_unexpected_exception_raised_right_after_it(
+    monkeypatch,
+):
+    world = World()
+    provider = _provider(
+        realization_responses=[
+            text_response(
+                "anthropic", _realization_payload(), input_tokens=50, output_tokens=20, cost_usd=0.01
+            )
+        ],
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("falha inesperada simulada logo após a realização completar")
+
+    # `candidate_digest` só é chamado DEPOIS que o loop de realização já
+    # aceitou uma resposta real de provider (attempt já no ledger) e
+    # ANTES de qualquer chamada de revisão semântica.
+    monkeypatch.setattr(compose_module, "candidate_digest", boom)
+
+    result = await _compose(world, {"anthropic": provider})
+
+    # o Run continua bem-sucedido -- a camada opcional nunca o invalida
+    assert result.final_answer.status == "llm_planned"
+    assert result.fallback_reason is None
+    assert result.final_answer.primary_answer is not None
+    assert result.final_answer.linguistic_realization is None
+    assert (
+        result.linguistic_realization_fallback_reason
+        == "defensive_realization_persistence_failure"
+    )
+    # a chamada de provider que REALMENTE aconteceu continua no audit
+    (attempt,) = result.linguistic_realization_attempts
+    assert attempt.parse_status == "accepted"
+    assert attempt.usage.input_tokens == 50 and attempt.usage.output_tokens == 20
+    assert attempt.cost_usd == pytest.approx(0.01)
+    assert result.linguistic_semantic_review_attempts == []
+    assert result.linguistic_semantic_review_provider is None
+    # o custo/tokens dessa chamada real continuam no accounting agregado
+    assert result.editor_input_tokens >= 50
+    assert result.editor_output_tokens >= 20
+    assert result.editor_cost_usd >= 0.01
+
+
+@pytest.mark.asyncio
+async def test_both_realization_and_review_attempts_survive_an_unexpected_exception_after_both_complete(
+    monkeypatch,
+):
+    world = World()
+    digest = _expected_digest(world)
+    provider = _provider(
+        realization_responses=[
+            text_response(
+                "anthropic", _realization_payload(), input_tokens=50, output_tokens=20, cost_usd=0.01
+            )
+        ],
+        review_responses=[
+            text_response(
+                "anthropic", _review_payload(digest), input_tokens=60, output_tokens=10, cost_usd=0.02
+            )
+        ],
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("falha inesperada simulada depois das duas chamadas completarem")
+
+    # `build_linguistic_realization` só é chamado DEPOIS que TANTO a
+    # realização quanto a revisão semântica já foram aceitas (os dois
+    # attempts já estão no ledger).
+    monkeypatch.setattr(compose_module, "build_linguistic_realization", boom)
+
+    result = await _compose(world, {"anthropic": provider})
+
+    assert result.final_answer.status == "llm_planned"
+    assert result.fallback_reason is None
+    assert result.final_answer.primary_answer is not None
+    assert result.final_answer.linguistic_realization is None
+    assert (
+        result.linguistic_realization_fallback_reason
+        == "defensive_realization_persistence_failure"
+    )
+    # AMBAS as famílias de chamada completadas continuam no audit
+    (realization_attempt,) = result.linguistic_realization_attempts
+    (review_attempt,) = result.linguistic_semantic_review_attempts
+    assert realization_attempt.parse_status == "accepted"
+    assert review_attempt.parse_status == "accepted"
+    assert realization_attempt.usage.input_tokens == 50
+    assert review_attempt.usage.input_tokens == 60
+    # o provider da revisão continua registrado truthfully (mesmo attempt
+    # real, provider real -- não um `None` inventado)
+    assert result.linguistic_semantic_review_provider == "anthropic"
+    assert review_attempt.provider == "anthropic"
+    # ambas contribuem truthfully pro accounting agregado
+    assert result.editor_input_tokens >= 50 + 60
+    assert result.editor_output_tokens >= 20 + 10
+    assert result.editor_cost_usd >= 0.01 + 0.02
+
+
+@pytest.mark.asyncio
+async def test_both_attempt_families_survive_an_unexpected_exception_mid_review_retry(monkeypatch):
+    """Injeção alternativa da mesma classe de defeito, desta vez ANTES de
+    qualquer decisão de aceite/rejeição da revisão: a realização já
+    completou (1 attempt aceito real) e a revisão já fez UMA chamada real
+    completa (rejeitada -- formato malformado, um attempt real de
+    qualquer forma), e só DEPOIS disso -- na checagem de orçamento do
+    retry, nunca protegida por um try/except local -- uma exceção
+    inesperada acontece. Em ad3c24e (sem ledger), isto também perdia os
+    dois attempts já completados -- não é específico de
+    `build_linguistic_realization`."""
+    world = World()
+    provider = _provider(
+        realization_responses=[
+            text_response(
+                "anthropic", _realization_payload(), input_tokens=50, output_tokens=20, cost_usd=0.01
+            )
+        ],
+        review_responses=[
+            text_response(
+                "anthropic", "não é json", input_tokens=60, output_tokens=10, cost_usd=0.02
+            ),
+            # nunca consumida -- o boom dispara antes da 2a chamada acontecer.
+            text_response("anthropic", "não é json"),
+        ],
+    )
+
+    real_sum_usage_and_cost = compose_module.sum_usage_and_cost
+    already_fired = []  # dispara só na 1a chamada que bate o critério
+
+    def boom_on_review_retry_budget_check(records):
+        if not already_fired and any(
+            r.request_provenance is not None
+            and r.request_provenance.contract_version
+            == "linguistic_semantic_review_v1"
+            for r in records
+        ):
+            already_fired.append(True)
+            raise RuntimeError("falha inesperada simulada durante o retry da revisão semântica")
+        return real_sum_usage_and_cost(records)
+
+    monkeypatch.setattr(compose_module, "sum_usage_and_cost", boom_on_review_retry_budget_check)
+
+    result = await _compose(world, {"anthropic": provider})
+
+    assert result.final_answer.status == "llm_planned"
+    assert result.fallback_reason is None
+    assert result.final_answer.primary_answer is not None
+    assert result.final_answer.linguistic_realization is None
+    assert (
+        result.linguistic_realization_fallback_reason
+        == "defensive_realization_persistence_failure"
+    )
+    (realization_attempt,) = result.linguistic_realization_attempts
+    (review_attempt,) = result.linguistic_semantic_review_attempts
+    assert realization_attempt.parse_status == "accepted"
+    assert review_attempt.parse_status == "malformed"
+    assert realization_attempt.usage.input_tokens == 50
+    assert review_attempt.usage.input_tokens == 60
+    assert result.linguistic_semantic_review_provider == "anthropic"
+    assert review_attempt.provider == "anthropic"
 
 
 # ---------------------------------------------------------------------------

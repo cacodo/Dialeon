@@ -183,8 +183,20 @@ async def test_a_different_review_provider_roundtrips_truthfully(repo):
 
 
 @pytest.mark.asyncio
-async def test_save_success_rejects_a_realization_that_diverges_from_the_accepted_attempt(repo, engine):
+async def test_save_success_gracefully_degrades_a_realization_that_diverges_from_the_accepted_attempt(
+    repo, engine
+):
+    """Closure repair (adversarial review, finding #3/#4) -- a mesma
+    divergência que ANTES abortava a persistência do Run inteiro agora
+    degrada só a camada opcional de LinguisticRealization: o Run continua
+    bem-sucedido, a PrimaryAnswer/avaliação completa persistem
+    normalmente, e TODO attempt/usage/custo de realização+revisão já
+    completado continua presente/auditável -- só a LinguisticRealization
+    aceita em si deixa de ser preferida, com um motivo truthful e
+    bounded."""
     result, primary, realization = _with_linguistic_realization(full_council_run_result())
+    original_realization_attempts = result.editor_result.linguistic_realization_attempts
+    original_review_attempts = result.editor_result.linguistic_semantic_review_attempts
     tampered = realization.model_copy(
         update={
             "rendered_text": realization.rendered_text + " Tudo comprovado.",
@@ -200,12 +212,53 @@ async def test_save_success_rejects_a_realization_that_diverges_from_the_accepte
     editor = result.editor_result.model_copy(update={"final_answer": final_answer})
     tampered_result = result.model_copy(update={"editor_result": editor})
 
-    with pytest.raises(LinguisticRealizationCoherenceError):
-        await repo.save_success(tampered_result)
+    await repo.save_success(tampered_result)  # nunca levanta -- degrada, não aborta
 
     async with engine.connect() as conn:
-        assert (await conn.execute(text("SELECT count(*) FROM council_runs"))).scalar_one() == 0
-        assert (await conn.execute(text("SELECT count(*) FROM final_answers"))).scalar_one() == 0
+        assert (await conn.execute(text("SELECT count(*) FROM council_runs"))).scalar_one() == 1
+        assert (await conn.execute(text("SELECT count(*) FROM final_answers"))).scalar_one() == 1
+
+    loaded = (await repo.get_run(result.id)).council_run_result
+
+    assert loaded.editor_result.final_answer.linguistic_realization is None
+    assert (
+        loaded.editor_result.linguistic_realization_fallback_reason
+        == "realization_persistence_preflight_failed"
+    )
+    # o Run de resto bem-sucedido nunca é tocado
+    assert loaded.editor_result.final_answer.primary_answer == primary
+    assert loaded.editor_result.final_answer.answer_text == result.editor_result.final_answer.answer_text
+    assert loaded.editor_result.final_answer.status == "llm_planned"
+    # todo attempt/usage/custo já completado continua presente/auditável
+    assert [a.id for a in loaded.editor_result.linguistic_realization_attempts] == [
+        a.id for a in original_realization_attempts
+    ]
+    assert [a.id for a in loaded.editor_result.linguistic_semantic_review_attempts] == [
+        a.id for a in original_review_attempts
+    ]
+    assert loaded.editor_result.linguistic_semantic_review_provider == "anthropic"
+    assert loaded.editor_result.editor_cost_usd == pytest.approx(
+        result.editor_result.editor_cost_usd
+    )
+    assert loaded.editor_result.editor_input_tokens == result.editor_result.editor_input_tokens
+    assert loaded.editor_result.editor_output_tokens == result.editor_result.editor_output_tokens
+
+
+@pytest.mark.asyncio
+async def test_a_general_database_failure_is_never_disguised_as_an_optional_realization_failure(
+    repo,
+):
+    """Closure repair (adversarial review, finding #4) -- prova que o
+    preflight específico de LinguisticRealization NUNCA mascara uma falha
+    GERAL de banco/transação: um `save_success` repetido pro MESMO run id
+    (violação de chave primária, nada a ver com realização) continua
+    propagando normalmente, mesmo quando esse mesmo Run tem uma
+    LinguisticRealization perfeitamente válida."""
+    result, primary, realization = _with_linguistic_realization(full_council_run_result())
+
+    await repo.save_success(result)
+    with pytest.raises(Exception):
+        await repo.save_success(result)  # mesmo id -- violação de chave primária real
 
 
 # ---------------------------------------------------------------------------

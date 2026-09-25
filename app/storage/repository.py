@@ -184,6 +184,87 @@ _PRIMARY_ANSWER_PURPOSE = "primary_answer_plan"
 _LINGUISTIC_REALIZATION_PURPOSE = "linguistic_realization"
 _LINGUISTIC_SEMANTIC_REVIEW_PURPOSE = "linguistic_semantic_review"
 
+_REALIZATION_PERSISTENCE_PREFLIGHT_FAILED = "realization_persistence_preflight_failed"
+
+
+def _drop_linguistic_realization(
+    result: CouncilRunResult, *, keep_attempts: bool
+) -> CouncilRunResult:
+    """Closure repair (adversarial review) -- degrada SÓ a camada opcional
+    de LinguisticRealization: um Run de resto bem-sucedido (debate/judge/
+    primary_answer/natural_answer/answer_text) nunca é tocado.
+
+    `keep_attempts=True` (o caso normal, ver
+    `_preflight_linguistic_realization`) preserva toda tentativa de
+    realização/revisão semântica já completada e seu usage/custo -- só a
+    LinguisticRealization ACEITA em si deixa de ser persistida/preferida.
+
+    `keep_attempts=False` é um último recurso defensivo/extremo (quando
+    nem as tentativas se reconstroem de forma coerente) -- solta o
+    subtree opcional inteiro em vez de arriscar persistir um Run que
+    nunca mais conseguiria ser recarregado."""
+    editor = result.editor_result
+    final_answer = editor.final_answer.model_copy(update={"linguistic_realization": None})
+    update: dict = {
+        "final_answer": final_answer,
+        "linguistic_realization_fallback_reason": _REALIZATION_PERSISTENCE_PREFLIGHT_FAILED,
+    }
+    if not keep_attempts:
+        update.update(
+            linguistic_realization_attempts=[],
+            linguistic_semantic_review_attempts=[],
+            linguistic_semantic_review_provider=None,
+        )
+    editor = editor.model_copy(update=update)
+    return result.model_copy(update={"editor_result": editor})
+
+
+def _check_linguistic_realization_persistable(result: CouncilRunResult) -> None:
+    """As MESMAS operações determinísticas específicas da LinguisticRealization
+    que `save_success` precisaria fazer pra persistir/preferir essa camada
+    -- coerência entre registros + forma de serialização JSON -- rodadas
+    aqui isoladamente, e SÓ isoladamente: nunca toca a sessão/banco. Uma
+    exceção capturada por quem chama isto é portanto GARANTIDAMENTE
+    Python/domínio, nunca uma falha geral de banco/transação/
+    infraestrutura (essas continuam propagando normalmente de dentro da
+    transação real, inteiramente alheias a esta função)."""
+    validate_linguistic_realization_coherence(
+        result.editor_result.final_answer, result.editor_result, question=result.run_config.question
+    )
+    realization = result.editor_result.final_answer.linguistic_realization
+    if realization is not None:
+        # Força a mesma serialização que `final_answer_to_row`
+        # (app/storage/serializers.py) fará -- nunca toca o banco, só
+        # prova que a forma é serializável.
+        realization.model_dump(mode="json")
+
+
+def _preflight_linguistic_realization(result: CouncilRunResult) -> CouncilRunResult:
+    """Closure repair (adversarial review) -- roda a checagem acima ANTES
+    de abrir a transação de `save_success`. Se ela falhar, essa camada
+    OPCIONAL é degradada (nunca o Run inteiro): primeiro tentando manter
+    todo attempt/usage/custo já completado (`keep_attempts=True`), e só
+    recorrendo a soltar o subtree inteiro se mesmo esse estado reduzido
+    ainda não for coerente/recarregável (defensivo/extremo -- não deveria
+    acontecer na prática, ver `_drop_linguistic_realization`).
+
+    Uma falha GERAL de banco/transação/infraestrutura nunca passa por
+    aqui -- só acontece depois, dentro da transação real, e continua
+    propagando/abortando o `save_success` inteiro como sempre (nunca
+    disfarçada de falha opcional de apresentação)."""
+    try:
+        _check_linguistic_realization_persistable(result)
+        return result
+    except Exception:
+        pass
+
+    degraded = _drop_linguistic_realization(result, keep_attempts=True)
+    try:
+        _check_linguistic_realization_persistable(degraded)
+        return degraded
+    except Exception:
+        return _drop_linguistic_realization(result, keep_attempts=False)
+
 
 class CouncilRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
@@ -323,9 +404,17 @@ class CouncilRepository:
         # (validator de `CouncilRunResult`); aqui cobre objetos montados
         # sem validação (ex. `model_copy`) antes de qualquer escrita.
         validate_natural_answer_coherence(editor.final_answer)
-        validate_linguistic_realization_coherence(
-            editor.final_answer, editor, question=result.run_config.question
-        )
+        # Closure repair (adversarial review) -- LinguisticRealization é a
+        # ÚNICA camada aqui que é OPCIONAL/presentacional por design (ver
+        # docstring de `_preflight_linguistic_realization`): diferente das
+        # checagens acima (que continuam abortando o save inteiro se
+        # falharem -- indicam bug/adulteração no núcleo determinístico),
+        # uma falha ESPECÍFICA desta camada só derruba ela mesma. Isto
+        # roda ANTES da transação (nunca toca o banco) -- pode substituir
+        # `result`/`editor` por uma versão degradada, nunca abre/aborta a
+        # sessão sozinha.
+        result = _preflight_linguistic_realization(result)
+        editor = result.editor_result
 
         async with session_scope(self._session_factory) as session:
             accepted_row = await session.get(AcceptedRunRow, result.id)
