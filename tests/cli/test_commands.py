@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import pytest_asyncio
 
 from app.cli import commands
 from app.config import Settings
@@ -21,8 +22,28 @@ def _settings(**overrides) -> Settings:
     return Settings(_env_file=None, **overrides)
 
 
+_CREATED_COMPONENTS: list = []
+
+
+async def _tracked_components(*args, **kwargs):
+    components = await build_test_components(*args, **kwargs)
+    _CREATED_COMPONENTS.append(components)
+    return components
+
+
 async def _components(**kwargs):
-    return await build_test_components(_settings(), **kwargs)
+    return await _tracked_components(_settings(), **kwargs)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _dispose_created_engines():
+    """Estes testes chamam os comandos direto, sem o `finally` de
+    `app/cli/main.py` que descarta o engine; sem isto a conexão aiosqlite
+    sobrevive ao event loop do teste e o thread dela reclama
+    ("Event loop is closed") quando o GC a coleta num teste qualquer."""
+    yield
+    while _CREATED_COMPONENTS:
+        await _CREATED_COMPONENTS.pop().engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +220,7 @@ async def test_cmd_run_infeasible_quorum_returns_exit_2(capsys):
     default (judge/editor/claim processor/source analyzer, todos
     "anthropic" por Settings) -- só `enabled_providers=["openai"]" (1
     participante) fica abaixo de `min_to_return=2`."""
-    components = await build_test_components(
+    components = await _tracked_components(
         _settings(quorum_min_to_return=2), provider_names=("openai", "anthropic")
     )
 
@@ -214,7 +235,7 @@ async def test_cmd_run_infeasible_quorum_returns_exit_2(capsys):
 
 @pytest.mark.asyncio
 async def test_cmd_run_infeasible_quorum_json_has_invalid_request_vocabulary(capsys):
-    components = await build_test_components(
+    components = await _tracked_components(
         _settings(quorum_min_to_return=2), provider_names=("openai", "anthropic")
     )
 
@@ -888,7 +909,7 @@ async def test_cmd_providers_json(capsys):
 async def test_no_secrets_leak_in_run_output(capsys):
     result = full_council_run_result()
     settings = Settings(_env_file=None, openai_api_key="sk-super-secreta-nao-deveria-aparecer")
-    components = await build_test_components(
+    components = await _tracked_components(
         settings,
         debate_result=result.debate_result,
         judge_result=result.judge_result,
@@ -904,7 +925,7 @@ async def test_no_secrets_leak_in_run_output(capsys):
 @pytest.mark.asyncio
 async def test_no_secrets_leak_in_providers_output(capsys):
     settings = Settings(_env_file=None, anthropic_api_key="sk-outra-secreta")
-    components = await build_test_components(settings, provider_names=("openai", "anthropic"))
+    components = await _tracked_components(settings, provider_names=("openai", "anthropic"))
 
     await commands.cmd_providers(components, as_json=True)
     out = capsys.readouterr()
