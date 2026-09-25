@@ -551,11 +551,12 @@ def test_rejected_entries_are_distinct_from_unresolved():
             ),
             RejectedSourceEntryPublic(
                 kind="rejected", id="rej-1", claim_id="c2", reason="duplicate_claim_id",
-                raw_entry=None, created_at=_NOW,
+                raw_entry=None, raw_entry_omitted_reason=None, created_at=_NOW,
             ),
             RejectedSourceEntryPublic(
                 kind="rejected", id="rej-2", claim_id=None, reason="invalid_entry",
-                raw_entry={"claim_id": "id-desconhecido"}, created_at=_NOW,
+                raw_entry={"claim_id": "id-desconhecido"}, raw_entry_omitted_reason=None,
+                created_at=_NOW,
             ),
         ],
     )

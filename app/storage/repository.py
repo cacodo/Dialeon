@@ -70,6 +70,7 @@ from app.storage.models import (
 from app.storage.records import (
     AcceptedRunRecord,
     CompletedRunRecord,
+    FailureStage,
     QuorumFailureRecord,
     RunSummary,
 )
@@ -310,6 +311,7 @@ class CouncilRepository:
                     failed_at=None,
                     failure_classification=None,
                     failure_message=None,
+                    failure_stage=None,
                     provider_execution_policy_json=provider_execution_policy.model_dump(
                         mode="json"
                     ),
@@ -328,12 +330,18 @@ class CouncilRepository:
         failed_at: datetime,
         failure_classification: str,
         failure_message: str,
+        failure_stage: FailureStage = "execution",
     ) -> None:
         """T02.4 -- transição terminal FAILED da MESMA linha de aceite
         (nunca cria um registro novo/paralelo). `failure_classification`/
         `failure_message` já chegam sanitizados (ver
         `CouncilExecutionService._sanitize_unexpected_failure`) -- esta
-        camada nunca examina/reformata o que recebe, só persiste."""
+        camada nunca examina/reformata o que recebe, só persiste.
+
+        `failure_stage` (repair M2): "execution" é o contrato histórico
+        deste método (exceção do runner); "terminal_persistence" marca
+        uma falha do próprio `save_success`, nunca uma falha de
+        provider/modelo."""
         async with session_scope(self._session_factory) as session:
             row = await session.get(AcceptedRunRow, run_id)
             assert row is not None, (
@@ -343,6 +351,7 @@ class CouncilRepository:
             row.failed_at = dt_to_naive_utc(failed_at)
             row.failure_classification = failure_classification
             row.failure_message = failure_message
+            row.failure_stage = failure_stage
 
     async def save_success(self, result: CouncilRunResult) -> None:
         """Persiste um `CouncilRunResult` completo numa única transação.
@@ -1176,6 +1185,7 @@ def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord:
         failed_at=dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None,
         failure_classification=row.failure_classification,
         failure_message=row.failure_message,
+        failure_stage=row.failure_stage,  # type: ignore[arg-type]  # FailureStage | None
         provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
         default_model_authority_snapshot=_default_model_authority_snapshot_from_json(
             row.default_model_authority_snapshot_json

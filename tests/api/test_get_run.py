@@ -338,11 +338,12 @@ def test_get_run_failed():
     assert body["id"] == run_id
     assert body["failure_reason"] == "WeirdBug"
     assert body["message"] == "Erro interno inesperado durante a execução."
+    assert body["failure_stage"] == "execution"
     assert "final_answer" not in body
     assert "accounting" not in body
     assert set(body.keys()) == {
-        "status", "id", "started_at", "failed_at", "failure_reason", "message", "config",
-        "provider_execution_policy", "default_model_authority_snapshot",
+        "status", "id", "started_at", "failed_at", "failure_reason", "message", "failure_stage",
+        "config", "provider_execution_policy", "default_model_authority_snapshot",
     }
 
 

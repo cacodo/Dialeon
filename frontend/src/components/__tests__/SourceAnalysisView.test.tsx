@@ -70,6 +70,7 @@ describe('SourceAnalysisView — renderiza exatamente o que unattributedRejected
         claim_id: null,
         reason: 'omitted_by_model',
         raw_entry: null,
+        raw_entry_omitted_reason: null,
         created_at: '2026-09-06T00:00:00Z',
       },
     ]
@@ -89,6 +90,7 @@ describe('SourceAnalysisView — renderiza exatamente o que unattributedRejected
           claim_id: null,
           reason: 'omitted_by_model',
           raw_entry: null,
+          raw_entry_omitted_reason: null,
           created_at: '2026-09-06T00:00:00Z',
         },
       ],

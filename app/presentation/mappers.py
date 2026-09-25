@@ -541,6 +541,7 @@ def deterministic_verification_attempt_public(
         claim_id=attempt.claim_id,
         state=attempt.state,
         raw_proposal=attempt.raw_proposal,
+        raw_proposal_omitted_reason=attempt.raw_proposal_omitted_reason,
         assertion=assertion,
         computed_result=attempt.computed_result,
         created_at=attempt.created_at,
@@ -591,6 +592,7 @@ def source_claim_analysis_result_public(
         claim_id=result.claim_id,
         reason=result.reason,
         raw_entry=result.raw_entry,
+        raw_entry_omitted_reason=result.raw_entry_omitted_reason,
         created_at=result.created_at,
     )
 
@@ -740,6 +742,7 @@ def failed_run_response(record: AcceptedRunRecord) -> FailedRunResponse:
         failed_at=record.failed_at,
         failure_reason=record.failure_classification,
         message=record.failure_message,
+        failure_stage=record.failure_stage,
         config=run_config_public(record.run_config),
         provider_execution_policy=record.provider_execution_policy,
         default_model_authority_snapshot=record.default_model_authority_snapshot,

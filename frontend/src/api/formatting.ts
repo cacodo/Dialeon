@@ -8,6 +8,7 @@ import { MAX_QUESTION_CHARACTERS, MAX_SOURCE_TEXT_CHARACTERS, formatCharacterLim
 import type {
   AnswerBlockPublic,
   AnswerVerdictLabel,
+  AuditFragmentOmittedReason,
   ChannelRelationship,
   ClaimVerdict,
   DebateOutcome,
@@ -313,6 +314,29 @@ export function formatSourceRejectionReason(
   reason: 'omitted_by_model' | 'duplicate_claim_id' | 'invalid_entry',
 ): string {
   return SOURCE_REJECTION_REASON_LABELS[reason] ?? reason
+}
+
+// Repair M2 -- o fragmento estruturado não foi guardado; o texto integral
+// devolvido pelo provider continua no attempt correspondente.
+const AUDIT_FRAGMENT_OMITTED_REASON_LABELS: Record<AuditFragmentOmittedReason, string> = {
+  complexity_limit_exceeded:
+    'Fragmento estruturado não guardado: excedeu o limite de complexidade de auditoria da aplicação. O texto integral do provider está preservado no attempt correspondente.',
+  non_json_value:
+    'Fragmento estruturado não guardado: continha valor fora do modelo JSON. O texto integral do provider está preservado no attempt correspondente.',
+}
+
+export function formatAuditFragmentOmittedReason(reason: AuditFragmentOmittedReason): string {
+  return AUDIT_FRAGMENT_OMITTED_REASON_LABELS[reason] ?? reason
+}
+
+const FAILURE_STAGE_LABELS: Record<'execution' | 'terminal_persistence', string> = {
+  execution: 'Falha durante a execução.',
+  terminal_persistence:
+    'A execução terminou, mas a persistência do resultado falhou (não é uma falha de provider ou modelo).',
+}
+
+export function formatFailureStage(stage: 'execution' | 'terminal_persistence'): string {
+  return FAILURE_STAGE_LABELS[stage] ?? stage
 }
 
 // Cross-Channel Reconciliation V1 -- rótulos descrevem só o RELACIONAMENTO

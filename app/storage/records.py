@@ -25,6 +25,11 @@ from app.orchestrator.result import RoundResult
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
+# Repair M2 -- estágio de uma falha terminal de accepted run: exceção do
+# runner ("execution") vs. falha do `save_success` atômico depois de uma
+# execução que terminou ("terminal_persistence").
+FailureStage = Literal["execution", "terminal_persistence"]
+
 
 class CompletedRunRecord(BaseModel):
     """Um run que chegou até o Editor -- reconstrução semanticamente
@@ -97,6 +102,9 @@ class AcceptedRunRecord(BaseModel):
     failed_at: datetime | None = None
     failure_classification: str | None = None
     failure_message: str | None = None
+    # Repair M2 -- ver `AcceptedRunRow.failure_stage`. `None` em "running"
+    # e em linhas "failed" legadas (estágio nunca registrado).
+    failure_stage: FailureStage | None = None
     # T02.2 -- ver docstring de CompletedRunRecord.provider_execution_policy.
     # Novos accepted runs SEMPRE têm um valor concreto (`save_accepted`
     # exige o parâmetro); `None` só ocorre reconstruindo uma linha

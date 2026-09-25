@@ -52,6 +52,7 @@ import type {
   RunAuditResponse,
 } from '../api/types'
 import {
+  formatAuditFragmentOmittedReason,
   formatChannelRelationship,
   formatClaimVerdict,
   formatDateTime,
@@ -348,6 +349,11 @@ function TechnicalAudit({
                         {quarantined.entry.raw_entry !== null && (
                           <p className="inspection-panel__technical-hint">
                             raw_entry: {JSON.stringify(quarantined.entry.raw_entry)}
+                          </p>
+                        )}
+                        {quarantined.entry.raw_entry_omitted_reason !== null && (
+                          <p className="inspection-panel__technical-hint">
+                            {formatAuditFragmentOmittedReason(quarantined.entry.raw_entry_omitted_reason)}
                           </p>
                         )}
                       </>

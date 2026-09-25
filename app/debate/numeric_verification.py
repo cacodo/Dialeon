@@ -39,7 +39,17 @@ from fractions import Fraction
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from app.audit_fragment import AuditFragmentOmittedReason, bound_audit_fragment
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -170,6 +180,16 @@ class DeterministicVerificationAttempt(BaseModel):
     # veio de json.loads()) que foi rejeitado, pra auditoria mostrar
     # exatamente o que a LLM propôs.
     raw_proposal: Any = None
+    # Repair M2 -- preenchido SÓ quando o payload cru violou o contrato
+    # de complexidade de app/audit_fragment.py e por isso NÃO foi
+    # guardado (`raw_proposal` fica None). Distingue "degradado" de
+    # "ausente por semântica normal" (estados != invalid_proposal); o
+    # texto integral do provider continua no ClaimProcessingAttempt de
+    # extração correspondente (`raw_output_text`). O mesmo contrato vale na
+    # leitura: uma linha gravada antes dele com fragmento fora do limite
+    # (possível em 3.13/3.14, onde o save passava e só a renderização
+    # quebrava) é exposta como omitida; a linha no banco nunca é reescrita.
+    raw_proposal_omitted_reason: AuditFragmentOmittedReason | None = None
 
     # Só quando state != "invalid_proposal" -- a asserção normalizada
     # que passou na validação estrita.
@@ -180,6 +200,31 @@ class DeterministicVerificationAttempt(BaseModel):
     computed_result: str | None = None
 
     created_at: datetime = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bound_raw_proposal(cls, data: Any) -> Any:
+        # Toda construção validada (caminho do provider, reload,
+        # construção programática) passa pelo mesmo contrato -- o
+        # fragmento que o viola nunca chega a existir no domínio.
+        if (
+            isinstance(data, dict)
+            and data.get("raw_proposal") is not None
+            and data.get("raw_proposal_omitted_reason") is None
+        ):
+            raw, reason = bound_audit_fragment(data["raw_proposal"])
+            if reason is not None:
+                return {**data, "raw_proposal": raw, "raw_proposal_omitted_reason": reason}
+        return data
+
+    @model_validator(mode="after")
+    def _omission_is_explicit(self) -> DeterministicVerificationAttempt:
+        if self.raw_proposal_omitted_reason is not None:
+            if self.raw_proposal is not None:
+                raise ValueError("raw_proposal omitido não pode carregar o fragmento")
+            if self.state != "invalid_proposal":
+                raise ValueError("só uma proposta invalid_proposal tem raw_proposal a omitir")
+        return self
 
 
 def _to_fraction(literal: str) -> Fraction:

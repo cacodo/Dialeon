@@ -169,6 +169,7 @@ const failedRun = {
   started_at: '2026-09-06T00:00:00Z',
   failed_at: '2026-09-06T00:00:02Z',
   failure_reason: 'WeirdBug',
+  failure_stage: 'execution' as const,
   message: 'Erro interno inesperado durante a execução.',
   config: completedRun.config,
   provider_execution_policy: null,
@@ -347,6 +348,25 @@ describe('RunDetail', () => {
 
     expect(await screen.findByRole('heading', { name: /falhou/i })).toBeInTheDocument()
     expect(screen.getByText(failedRun.message)).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /inspecionar execução/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('repair M2: falha de persistência terminal é identificada como tal, nunca como falha de provider/modelo', async () => {
+    const persistenceFailure = {
+      ...failedRun,
+      failure_reason: 'OperationalError',
+      failure_stage: 'terminal_persistence' as const,
+      message:
+        'Falha ao persistir o resultado terminal da execução; o histórico detalhado da execução não foi preservado.',
+    }
+    vi.mocked(apiClient.getRun).mockResolvedValue(persistenceFailure)
+    renderDetail('run-4')
+
+    expect(await screen.findByRole('heading', { name: /falhou/i })).toBeInTheDocument()
+    expect(screen.getByText(/persistência do resultado falhou/i)).toBeInTheDocument()
+    expect(screen.getByText(persistenceFailure.message)).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: /inspecionar execução/i }),
     ).not.toBeInTheDocument()

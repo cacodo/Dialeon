@@ -27,6 +27,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.audit_fragment import AuditFragmentOmittedReason
 from app.editor.answer_blocks import AnswerSectionHeading, AnswerVerdictLabel
 from app.models.provider_models import (
     DefaultModelAuthoritySnapshot,
@@ -272,6 +273,10 @@ class DeterministicVerificationAttemptPublic(BaseModel):
     claim_id: str
     state: Literal["invalid_proposal", "computation_failed", "supports", "contradicts"]
     raw_proposal: Any
+    # Repair M2 -- não-None SÓ quando o payload cru violou o contrato de
+    # complexidade da aplicação e não foi guardado (`raw_proposal` null);
+    # o texto integral do provider continua no attempt de extração.
+    raw_proposal_omitted_reason: AuditFragmentOmittedReason | None
     assertion: ArithmeticAssertionPublic | None
     computed_result: str | None
     created_at: datetime
@@ -335,6 +340,9 @@ class RejectedSourceEntryPublic(BaseModel):
     claim_id: str | None
     reason: Literal["omitted_by_model", "duplicate_claim_id", "invalid_entry"]
     raw_entry: Any
+    # Repair M2 -- ver DeterministicVerificationAttemptPublic.raw_proposal_omitted_reason;
+    # o texto integral do provider continua no SourceAnalysisAttempt aceito.
+    raw_entry_omitted_reason: AuditFragmentOmittedReason | None
     created_at: datetime
 
 
@@ -811,6 +819,11 @@ class FailedRunResponse(BaseModel):
     failed_at: datetime
     failure_reason: str
     message: str
+    # Repair M2 -- "execution" (exceção durante a execução) ou
+    # "terminal_persistence" (a execução terminou, mas a persistência
+    # terminal atômica falhou e nenhum histórico detalhado foi salvo --
+    # nunca uma falha de provider/modelo). `None` em runs legados.
+    failure_stage: Literal["execution", "terminal_persistence"] | None
     config: RunConfigPublic
     # T02.2 -- ver docstring de CompletedRunResponse.provider_execution_policy.
     provider_execution_policy: ProviderExecutionPolicy | None

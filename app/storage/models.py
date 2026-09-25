@@ -176,6 +176,11 @@ class AcceptedRunRow(Base):
     # CouncilExecutionService._sanitize_unexpected_failure).
     failure_classification: Mapped[str | None]
     failure_message: Mapped[str | None]
+    # Repair M2 -- onde a falha aconteceu: "execution" (exceção do
+    # runner) ou "terminal_persistence" (o `save_success` atômico falhou
+    # depois de uma execução que terminou; nada do histórico detalhado
+    # foi preservado). NULL em linhas legadas: nunca registrado antes.
+    failure_stage: Mapped[str | None]
 
     # T02.2 -- snapshot de ProviderExecutionPolicy vigente no momento do
     # aceite. Sempre preenchido por `save_accepted` (novas linhas nunca
@@ -416,6 +421,12 @@ class DeterministicVerificationAttemptRow(Base):
     raw_proposal_json: Mapped[dict | list | str | float | int | bool | None] = mapped_column(
         JSON
     )
+    # Repair M2 -- motivo estável quando o payload cru violou o contrato
+    # de app/audit_fragment.py e não foi guardado (raw_proposal_json
+    # NULL). NULL em linhas legadas: o fragmento delas foi persistido
+    # integralmente (um fragmento que não serializasse abortava a
+    # transação inteira, nunca gerava linha).
+    raw_proposal_omitted_reason: Mapped[str | None]
     # Preenchidos juntos, só quando state != "invalid_proposal" -- a
     # asserção NORMALIZADA que passou na validação estrita (strings
     # decimais limitadas, nunca float).
@@ -503,6 +514,9 @@ class SourceClaimAnalysisResultRow(Base):
     # Só quando kind="rejected".
     reason: Mapped[str | None]
     raw_entry_json: Mapped[dict | list | str | float | int | bool | None] = mapped_column(JSON)
+    # Repair M2 -- mesma disciplina de
+    # DeterministicVerificationAttemptRow.raw_proposal_omitted_reason.
+    raw_entry_omitted_reason: Mapped[str | None]
 
     created_at: Mapped[datetime]
 

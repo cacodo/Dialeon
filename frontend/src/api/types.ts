@@ -540,6 +540,9 @@ export interface RunningRunResponse {
 // T02.4 -- exceção inesperada durante a execução (nem validação de
 // request, nem quórum insuficiente). failure_reason/message já chegam
 // sanitizados do backend -- nunca traceback/segredo/texto cru.
+// Repair M2 -- motivo estável de um fragmento de auditoria bruto não guardado.
+export type AuditFragmentOmittedReason = 'complexity_limit_exceeded' | 'non_json_value'
+
 export interface FailedRunResponse {
   status: 'failed'
   id: string
@@ -547,6 +550,10 @@ export interface FailedRunResponse {
   failed_at: string
   failure_reason: string
   message: string
+  // Repair M2 -- 'terminal_persistence': a execução terminou, mas a
+  // persistência terminal falhou (nunca falha de provider/modelo);
+  // null em runs legados.
+  failure_stage: 'execution' | 'terminal_persistence' | null
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
@@ -602,6 +609,10 @@ export interface DeterministicVerificationAttemptPublic {
   claim_id: string
   state: 'invalid_proposal' | 'computation_failed' | 'supports' | 'contradicts'
   raw_proposal: unknown
+  // Repair M2 -- não-null SÓ quando o payload cru excedeu o contrato de
+  // complexidade da aplicação e não foi guardado (raw_proposal null); o
+  // texto integral do provider continua no attempt de extração.
+  raw_proposal_omitted_reason: AuditFragmentOmittedReason | null
   assertion: ArithmeticAssertionPublic | null
   computed_result: string | null
   created_at: string
@@ -713,6 +724,8 @@ export interface RejectedSourceEntryPublic {
   claim_id: string | null
   reason: 'omitted_by_model' | 'duplicate_claim_id' | 'invalid_entry'
   raw_entry: unknown
+  // Repair M2 -- ver DeterministicVerificationAttemptPublic.raw_proposal_omitted_reason.
+  raw_entry_omitted_reason: AuditFragmentOmittedReason | null
   created_at: string
 }
 

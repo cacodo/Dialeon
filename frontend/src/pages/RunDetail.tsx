@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
 import type { RunResponse } from '../api/types'
-import { formatDateTime, formatErrorCode, formatProviderName } from '../api/formatting'
+import { formatDateTime, formatErrorCode, formatFailureStage, formatProviderName } from '../api/formatting'
 import { FinalAnswerView } from '../components/FinalAnswerView'
 import { AccountingView } from '../components/AccountingView'
 import { InspectionPanel } from '../components/InspectionPanel'
@@ -254,6 +254,7 @@ export function RunDetail() {
         <section role="alert" aria-labelledby="failed-heading">
           <h2 id="failed-heading">Falhou</h2>
           <p>Iniciada em {formatDateTime(run.started_at)}, falhou em {formatDateTime(run.failed_at)}.</p>
+          {run.failure_stage !== null && <p>{formatFailureStage(run.failure_stage)}</p>}
           <p>{run.message}</p>
           <ProviderExecutionPolicyView policy={run.provider_execution_policy} />
         </section>

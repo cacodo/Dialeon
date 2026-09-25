@@ -26,6 +26,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter
 
+from app.audit_fragment import bound_audit_fragment
 from app.debate.numeric_verification import ArithmeticAssertion, DeterministicVerificationAttempt
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.editor.answer_blocks import AnswerBlock
@@ -388,13 +389,20 @@ def deterministic_verification_attempt_to_row(
     attempt: DeterministicVerificationAttempt, *, council_run_id: str, position: int = 0
 ) -> DeterministicVerificationAttemptRow:
     assertion = attempt.assertion
+    # Defense-in-depth (repair M2): construção que contornou a validação
+    # do domínio (`model_construct`/`model_copy(update=...)`) nunca leva
+    # um fragmento fora do contrato ao bind JSON -- degrada explicitamente.
+    raw_proposal, raw_proposal_omitted_reason = bound_audit_fragment(
+        attempt.raw_proposal, attempt.raw_proposal_omitted_reason
+    )
     return DeterministicVerificationAttemptRow(
         id=attempt.id,
         council_run_id=council_run_id,
         claim_id=attempt.claim_id,
         position=position,
         state=attempt.state,
-        raw_proposal_json=attempt.raw_proposal,
+        raw_proposal_json=raw_proposal,
+        raw_proposal_omitted_reason=raw_proposal_omitted_reason,
         assertion_left=assertion.left if assertion is not None else None,
         assertion_operator=assertion.operator if assertion is not None else None,
         assertion_right=assertion.right if assertion is not None else None,
@@ -420,6 +428,7 @@ def deterministic_verification_attempt_from_row(
         claim_id=row.claim_id,
         state=row.state,
         raw_proposal=row.raw_proposal_json,
+        raw_proposal_omitted_reason=row.raw_proposal_omitted_reason,
         assertion=assertion,
         computed_result=row.computed_result,
         created_at=dt_from_naive_utc(row.created_at),
@@ -831,8 +840,13 @@ def source_claim_analysis_result_to_row(
             excerpt_end=result.excerpt_end,
             reason=None,
             raw_entry_json=None,
+            raw_entry_omitted_reason=None,
             created_at=dt_to_naive_utc(result.created_at),
         )
+    # Defense-in-depth (repair M2) -- ver deterministic_verification_attempt_to_row.
+    raw_entry, raw_entry_omitted_reason = bound_audit_fragment(
+        result.raw_entry, result.raw_entry_omitted_reason
+    )
     return SourceClaimAnalysisResultRow(
         id=result.id,
         council_run_id=council_run_id,
@@ -845,7 +859,8 @@ def source_claim_analysis_result_to_row(
         excerpt_start=None,
         excerpt_end=None,
         reason=result.reason,
-        raw_entry_json=result.raw_entry,
+        raw_entry_json=raw_entry,
+        raw_entry_omitted_reason=raw_entry_omitted_reason,
         created_at=dt_to_naive_utc(result.created_at),
     )
 
@@ -868,6 +883,7 @@ def source_claim_analysis_result_from_row(
         claim_id=row.claim_id,
         reason=row.reason,
         raw_entry=row.raw_entry_json,
+        raw_entry_omitted_reason=row.raw_entry_omitted_reason,
         created_at=dt_from_naive_utc(row.created_at),
     )
 

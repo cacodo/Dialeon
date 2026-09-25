@@ -87,7 +87,11 @@ async def init_db(engine: AsyncEngine) -> None:
     Structured Unevaluated Claims (revisão adversarial): mesmo
     tratamento pra `unevaluated_claims_json` (`final_answers`) --
     também sem backfill, ver docstring de
-    `_upgrade_legacy_unevaluated_claims`."""
+    `_upgrade_legacy_unevaluated_claims`.
+
+    Repair M2: mesmo tratamento pra `raw_proposal_omitted_reason`/
+    `raw_entry_omitted_reason`/`failure_stage` -- também sem backfill,
+    ver docstring de `_upgrade_legacy_audit_fragment_bounds`."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_upgrade_legacy_had_uncertain_prior_attempts)
@@ -102,6 +106,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_primary_answer)
         await conn.run_sync(_upgrade_legacy_natural_answer)
         await conn.run_sync(_upgrade_legacy_linguistic_realization)
+        await conn.run_sync(_upgrade_legacy_audit_fragment_bounds)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -502,6 +507,31 @@ def _upgrade_legacy_linguistic_realization(sync_conn) -> None:  # noqa: ANN001
         existing = {col["name"] for col in inspector.get_columns(table_name)}
         if column not in existing:
             sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} {ddl}"))
+
+
+def _upgrade_legacy_audit_fragment_bounds(sync_conn) -> None:  # noqa: ANN001
+    """Repair M2: motivo de omissão de fragmento de auditoria bruto e
+    estágio de falha de accepted runs. Só `ALTER TABLE` quando a coluna
+    não existe; sem backfill. NULL é o valor verdadeiro pra linhas
+    legadas: um fragmento cru que não serializasse abortava a transação
+    terminal inteira (nunca gerava linha), então toda linha existente
+    guardou o fragmento integralmente -- às vezes acima do contrato novo
+    (3.13/3.14), caso em que a LEITURA o expõe como omitido sem reescrever
+    a linha (ver `DeterministicVerificationAttempt.raw_proposal_omitted_reason`);
+    e `failure_stage` nunca foi registrado antes, então fica desconhecido
+    em vez de inferido."""
+    inspector = sa_inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+    for table_name, column in (
+        ("deterministic_verification_attempts", "raw_proposal_omitted_reason"),
+        ("source_claim_analysis_results", "raw_entry_omitted_reason"),
+        ("accepted_runs", "failure_stage"),
+    ):
+        if table_name not in tables:
+            continue
+        existing = {col["name"] for col in inspector.get_columns(table_name)}
+        if column not in existing:
+            sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} TEXT"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

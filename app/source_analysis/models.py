@@ -23,6 +23,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.audit_fragment import AuditFragmentOmittedReason, bound_audit_fragment
+
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
 
@@ -82,15 +84,42 @@ class RejectedSourceEntry(BaseModel):
     # JSON-safe, nunca objeto Python arbitrário -- None só quando não há
     # fragmento nenhum (caso "omitted_by_model": a claim nunca apareceu).
     raw_entry: Any = None
+    # Repair M2 -- preenchido SÓ quando o fragmento cru violou o contrato
+    # de complexidade de app/audit_fragment.py e por isso NÃO foi
+    # guardado (`raw_entry` fica None). Distingue "degradado" de
+    # "ausente por semântica normal" (omitted_by_model); o texto integral
+    # do provider continua no SourceAnalysisAttempt aceito
+    # (`raw_output_text`). Mesma regra de leitura de linhas legadas de
+    # DeterministicVerificationAttempt.raw_proposal_omitted_reason.
+    raw_entry_omitted_reason: AuditFragmentOmittedReason | None = None
     created_at: datetime = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bound_raw_entry(cls, data: Any) -> Any:
+        # Mesmo contrato em toda construção validada -- ver
+        # DeterministicVerificationAttempt._bound_raw_proposal.
+        if (
+            isinstance(data, dict)
+            and data.get("raw_entry") is not None
+            and data.get("raw_entry_omitted_reason") is None
+        ):
+            raw, reason = bound_audit_fragment(data["raw_entry"])
+            if reason is not None:
+                return {**data, "raw_entry": raw, "raw_entry_omitted_reason": reason}
+        return data
 
     @model_validator(mode="after")
     def _omitted_has_no_raw_entry(self) -> RejectedSourceEntry:
-        if self.reason == "omitted_by_model" and self.raw_entry is not None:
+        if self.reason == "omitted_by_model" and (
+            self.raw_entry is not None or self.raw_entry_omitted_reason is not None
+        ):
             raise ValueError(
                 "reason='omitted_by_model' não deve ter raw_entry -- não existe "
                 "fragmento nenhum quando a claim nunca foi endereçada"
             )
+        if self.raw_entry_omitted_reason is not None and self.raw_entry is not None:
+            raise ValueError("raw_entry omitido não pode carregar o fragmento")
         return self
 
 

@@ -199,6 +199,7 @@ describe('RejectedSourceEntryPublic.raw_entry', () => {
       claim_id: null,
       reason: 'invalid_entry',
       raw_entry: { claim_id: 'unknown-claim', relation: 'nonsense' },
+      raw_entry_omitted_reason: null,
       created_at: '2026-09-16T00:00:00Z',
     }
     expect(rejected.raw_entry).toEqual({ claim_id: 'unknown-claim', relation: 'nonsense' })
@@ -212,6 +213,7 @@ describe('DeterministicVerificationAttemptPublic (numeric_verification_attempts)
       claim_id: 'claim-1',
       state: 'contradicts',
       raw_proposal: { left: '2', operator: '+', right: '2', asserted_result: '5' },
+      raw_proposal_omitted_reason: null,
       assertion: {
         kind: 'arithmetic',
         left: '2',

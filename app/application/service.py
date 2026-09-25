@@ -35,10 +35,14 @@ abaixo):
       -> persiste o registro de aceite (repo.save_accepted) -- esta
          transação PRECISA completar antes de qualquer chamada ao runner
       -> chama CouncilRunner.run(run_config, run_id=..., started_at=...)
-      -> sucesso: repo.save_success(...) (mesma id)
+      -> sucesso: repo.save_success(...) (mesma id); se ESSA persistência
+         falhar, uma tentativa de repo.save_unexpected_failure(...,
+         failure_stage="terminal_persistence") e relança a exceção
+         ORIGINAL intacta (repair M2)
       -> quorum failure: repo.save_quorum_failure(..., run_id=...) (mesma id)
-      -> qualquer outra exceção: repo.save_unexpected_failure(...) (mesma
-         id, informação sanitizada) e relança a exceção ORIGINAL intacta
+      -> qualquer outra exceção: repo.save_unexpected_failure(...,
+         failure_stage="execution") (mesma id, informação sanitizada) e
+         relança a exceção ORIGINAL intacta
       -> retorna o resultado, ou relança a exceção
 
 Decision Delta §5 dizia explicitamente "não minta run_id antes de chamar
@@ -60,6 +64,7 @@ reusem essa MESMA identidade em vez de mintar a própria."""
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -92,6 +97,17 @@ from app.storage.repository import CouncilRepository
 # `app/api/error_handlers.py`/`app/cli/main.py` -- este slice não inventa
 # um segundo vocabulário de erro genérico, reusa o que já existe.
 _UNEXPECTED_FAILURE_MESSAGE = "Erro interno inesperado durante a execução."
+
+# Repair M2 -- mensagem fixa pra falha do `save_success` atômico. Diz a
+# verdade sobre o que NÃO existe: a execução terminou, mas nenhum attempt/
+# usage/custo/resultado dela foi persistido (a transação terminal inteira
+# sofreu rollback). Nunca menciona provider/modelo como causa.
+_TERMINAL_PERSISTENCE_FAILURE_MESSAGE = (
+    "Falha ao persistir o resultado terminal da execução; o histórico "
+    "detalhado da execução não foi preservado."
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -283,10 +299,17 @@ class CouncilExecutionService:
         muda O QUE é relançado, só passa a deixar rastro recuperável
         antes de relançar.
 
-        Se a PRÓPRIA persistência terminal falhar (ex.: erro de banco
-        durante `save_success`/`save_quorum_failure`/
-        `save_unexpected_failure`), essa nova exceção propaga no lugar
-        (item 7 do contrato: nunca fabrica um desfecho terminal falso) --
+        Se `save_success` falhar (repair M2), a exceção ORIGINAL propaga
+        intacta depois de UMA tentativa de marcar o aceite como `failed`
+        com `failure_stage="terminal_persistence"` (ver
+        `_record_terminal_persistence_failure`) -- nunca classificada
+        como falha de execução/provider, e nunca afirmando que attempts
+        foram preservados (não foram: a transação terminal é atômica).
+
+        Se a persistência terminal de `save_quorum_failure`/
+        `save_unexpected_failure` falhar (ex.: erro de banco), essa nova
+        exceção propaga no lugar (item 7 do contrato: nunca fabrica um
+        desfecho terminal falso) --
         o registro de aceite/running já commitado antes do runner rodar
         nunca é apagado por uma falha aqui, porque o DELETE/UPDATE que o
         finalizaria está na MESMA transação atômica que falhou."""
@@ -357,8 +380,64 @@ class CouncilExecutionService:
                 failed_at=failed_at,
                 failure_classification=classification,
                 failure_message=message,
+                failure_stage="execution",
             )
             raise
 
-        await self._repository.save_success(result)
+        try:
+            await self._repository.save_success(result)
+        except Exception as exc:
+            await self._record_terminal_persistence_failure(run_id, exc)
+            raise
         return result
+
+    async def _record_terminal_persistence_failure(self, run_id: str, exc: Exception) -> None:
+        """Repair M2 -- o `save_success` atômico falhou DEPOIS de uma
+        execução que terminou. Tenta UMA vez deixar o registro de aceite
+        em estado terminal honesto (`failed`, estágio
+        "terminal_persistence", nunca uma falha de provider/modelo); nunca
+        levanta: quem chama relança a exceção ORIGINAL intacta com `raise`
+        simples, então uma segunda falha aqui nunca a mascara nem
+        substitui seu `__context__`/`__cause__`.
+
+        Nunca formata `exc` (`str`/`repr`/traceback): os parâmetros de um
+        `StatementError` podem conter o próprio payload que falhou. Só
+        nomes de classe e o run_id (da aplicação) vão pro log/nota.
+
+        Se o fallback também falhar, o registro continua `running` -- e a
+        nota anexada à exceção original diz exatamente isso, sem prometer
+        um estado terminal que não foi salvo."""
+        try:
+            await self._repository.save_unexpected_failure(
+                run_id,
+                failed_at=_now(),
+                failure_classification=type(exc).__name__,
+                failure_message=_TERMINAL_PERSISTENCE_FAILURE_MESSAGE,
+                failure_stage="terminal_persistence",
+            )
+        except Exception as fallback_exc:
+            logger.error(
+                "Persistência terminal da run %s falhou (%s) e o registro do "
+                "estado failed também falhou (%s); o registro de aceite "
+                "permanece 'running'.",
+                run_id,
+                type(exc).__name__,
+                type(fallback_exc).__name__,
+            )
+            exc.add_note(
+                f"Dialeon: a persistência terminal da run {run_id} falhou e o "
+                "estado failed não pôde ser registrado; o registro de aceite "
+                "permanece 'running'."
+            )
+            return
+        logger.error(
+            "Persistência terminal da run %s falhou (%s); registrada como failed "
+            "(failure_stage=terminal_persistence), sem histórico detalhado.",
+            run_id,
+            type(exc).__name__,
+        )
+        exc.add_note(
+            f"Dialeon: a persistência terminal da run {run_id} falhou; registrada "
+            "como failed (failure_stage=terminal_persistence) sem o histórico "
+            "detalhado da execução."
+        )
