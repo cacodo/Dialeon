@@ -119,15 +119,14 @@ class ModelResponse(BaseModel):
     pricing_provenance: PricingProvenance | None = None
     latency_ms: int = Field(ge=0)
     attempts: int = Field(ge=0)
-    # attempts=0 é o único caso especial: uma execução cancelada pelo
-    # timeout de dispatch de rodada do Orchestrator (Etapa 4) antes de qualquer
-    # resultado do LLMProvider chegar — não sabemos quantas tentativas
-    # internas de retry já tinham ocorrido no momento do cancelamento,
-    # então 0 significa "nenhuma tentativa CONCLUÍDA observável", não
-    # "zero chamadas foram feitas". Em qualquer outro caso (sucesso ou
-    # erro definitivo vindo do provider), attempts vem de
-    # ProviderResponse.attempts (sempre ≥ 1, LLMProvider.complete()
-    # sempre faz pelo menos uma tentativa).
+    # Tentativas de transporte que chegaram a `_call_api()`. 0 = nenhum
+    # dispatch observado (ex.: API key ausente). Numa execução cancelada
+    # pelo timeout de dispatch da rodada (Etapa 4), vem do contador que
+    # `LLMProvider.complete()` preenche antes de cada tentativa
+    # (`TransportDispatchCount`, app/providers/base.py) -- inclui a
+    # tentativa em voo cancelada, cujo usage/custo continuam desconhecidos.
+    # Linhas persistidas antes disso registravam 0 nesse caso, significando
+    # só "nenhuma tentativa CONCLUÍDA observável"; nunca reinterpretadas.
     error: ProviderErrorInfo | None = None
     # Etapa 17A (B3) — ver docstring de ProviderResponse
     # (app/models/provider_models.py). Copiado verbatim, nunca recalculado.

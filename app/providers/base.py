@@ -31,6 +31,7 @@ assumimos zero consumo nesse caso.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import random
 import time
 from abc import ABC, abstractmethod
@@ -51,6 +52,35 @@ from app.providers.pricing import PricingRegistry
 # Backoff exponencial com jitter entre tentativas (não aplicado à 1ª tentativa).
 _BASE_DELAY_SECONDS = 0.5
 _MAX_DELAY_SECONDS = 8.0
+
+
+class TransportDispatchCount:
+    """Quantas tentativas de transporte de UMA chamada a `complete()` já
+    chegaram a invocar `_call_api()` -- observável de fora mesmo quando a
+    task é cancelada antes de `complete()` devolver um `ProviderResponse`
+    (timeout de dispatch da rodada no Orchestrator). Só `complete()`
+    escreve; quem criou a task só lê."""
+
+    __slots__ = ("started",)
+
+    def __init__(self) -> None:
+        self.started = 0
+
+
+_TRANSPORT_DISPATCH_COUNT: contextvars.ContextVar[TransportDispatchCount | None] = (
+    contextvars.ContextVar("transport_dispatch_count", default=None)
+)
+
+
+def track_transport_dispatches() -> tuple[contextvars.Context, TransportDispatchCount]:
+    """Contexto pra rodar UMA task de `complete()` + o contador que ela
+    preenche (`asyncio.create_task(..., context=context)`). Sem assinatura
+    nova em `complete()`: implementações que o sobrescrevem continuam
+    válidas (e simplesmente não registram dispatch)."""
+    counter = TransportDispatchCount()
+    context = contextvars.copy_context()
+    context.run(_TRANSPORT_DISPATCH_COUNT.set, counter)
+    return context, counter
 
 
 def _backoff_delay(attempt_number: int) -> float:
@@ -283,8 +313,11 @@ class LLMProvider(ABC):
         attempts = 0
         last_error: ProviderError
 
+        dispatch_count = _TRANSPORT_DISPATCH_COUNT.get()
         while True:
             attempts += 1
+            if dispatch_count is not None:
+                dispatch_count.started = attempts
             try:
                 # Etapa 13: variável RENOMEADA (era `effective_model`) e
                 # deliberadamente separada de `requested_model` — antes da

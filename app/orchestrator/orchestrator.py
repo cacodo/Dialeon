@@ -53,7 +53,7 @@ from app.orchestrator.config import (
 )
 from app.orchestrator.errors import InsufficientQuorumError
 from app.orchestrator.result import InitialResponsesResult, RoundResult
-from app.providers.base import LLMProvider
+from app.providers.base import LLMProvider, TransportDispatchCount, track_transport_dispatches
 
 _PHASE_1_ROUND_NUMBER = 1
 
@@ -192,10 +192,15 @@ class Orchestrator:
         round_dispatch_timeout_seconds: float,
     ) -> dict[str, ProviderResponse]:
         start = time.monotonic()
-        tasks: dict[str, asyncio.Task] = {
-            name: asyncio.create_task(self._providers[name].complete(request))
-            for name, request in requests.items()
-        }
+        tasks: dict[str, asyncio.Task] = {}
+        dispatches: dict[str, TransportDispatchCount] = {}
+        for name, request in requests.items():
+            # Cada task registra quantas tentativas chegaram a `_call_api()`,
+            # legível mesmo se ela for cancelada pelo timeout da rodada.
+            context, dispatches[name] = track_transport_dispatches()
+            tasks[name] = asyncio.create_task(
+                self._providers[name].complete(request), context=context
+            )
 
         try:
             await asyncio.wait(tasks.values(), timeout=round_dispatch_timeout_seconds)
@@ -214,11 +219,16 @@ class Orchestrator:
             request = requests[name]
             if task.cancelled():
                 results[name] = _timeout_response(
-                    name, provider, request, round_dispatch_timeout_seconds, elapsed_ms
+                    name,
+                    provider,
+                    request,
+                    round_dispatch_timeout_seconds,
+                    elapsed_ms,
+                    dispatches[name].started,
                 )
             elif task.exception() is not None:
                 results[name] = _unknown_error_response(
-                    name, provider, request, task.exception(), elapsed_ms
+                    name, provider, request, task.exception(), elapsed_ms, dispatches[name].started
                 )
             else:
                 results[name] = task.result()
@@ -255,6 +265,7 @@ def _timeout_response(
     request: CompletionRequest,
     round_dispatch_timeout_seconds: float,
     elapsed_ms: int,
+    dispatched_attempts: int,
 ) -> ProviderResponse:
     # Etapa 13: mesmo caminho defensivo não previsto no Evidence Pack
     # original — a task foi cancelada pelo timeout de DISPATCH da rodada,
@@ -276,13 +287,14 @@ def _timeout_response(
         usage=None,
         cost_usd=None,
         latency_ms=elapsed_ms,
-        attempts=0,
-        # Etapa 17A: sem tentativa CONFIRMADA nenhuma nesses dois
-        # caminhos defensivos (a task foi cancelada/a exceção escapou
-        # de fora de complete() -- não temos como saber se ela chegou a
-        # discar) -- False aqui é o default neutro, nunca uma alegação
-        # de que sabemos que não houve tentativa anterior real.
-        had_uncertain_prior_attempts=False,
+        # Tentativas que chegaram a `_call_api()` antes do cancelamento/da
+        # exceção (contadas por `complete()`); 0 só quando nenhum dispatch
+        # foi observado. A última tentativa nunca devolveu nada, então
+        # usage/custo seguem desconhecidos (None) mesmo com attempts >= 1.
+        attempts=dispatched_attempts,
+        # Etapa 17A: mesma regra de `complete()` -- True sse uma tentativa
+        # ANTERIOR à última já tinha discado e falhado.
+        had_uncertain_prior_attempts=dispatched_attempts > 1,
         provider_finish_reason=None,  # nenhuma chamada foi observada de verdade
         error=ProviderErrorInfo(
             type=ProviderErrorType.TIMEOUT,
@@ -304,6 +316,7 @@ def _unknown_error_response(
     request: CompletionRequest,
     exc: BaseException,
     elapsed_ms: int,
+    dispatched_attempts: int,
 ) -> ProviderResponse:
     # Etapa 13: mesmo caso do timeout acima — exceção não tratada
     # escapou de complete() antes de um ProviderResponse próprio existir.
@@ -320,13 +333,14 @@ def _unknown_error_response(
         usage=None,
         cost_usd=None,
         latency_ms=elapsed_ms,
-        attempts=0,
-        # Etapa 17A: sem tentativa CONFIRMADA nenhuma nesses dois
-        # caminhos defensivos (a task foi cancelada/a exceção escapou
-        # de fora de complete() -- não temos como saber se ela chegou a
-        # discar) -- False aqui é o default neutro, nunca uma alegação
-        # de que sabemos que não houve tentativa anterior real.
-        had_uncertain_prior_attempts=False,
+        # Tentativas que chegaram a `_call_api()` antes do cancelamento/da
+        # exceção (contadas por `complete()`); 0 só quando nenhum dispatch
+        # foi observado. A última tentativa nunca devolveu nada, então
+        # usage/custo seguem desconhecidos (None) mesmo com attempts >= 1.
+        attempts=dispatched_attempts,
+        # Etapa 17A: mesma regra de `complete()` -- True sse uma tentativa
+        # ANTERIOR à última já tinha discado e falhado.
+        had_uncertain_prior_attempts=dispatched_attempts > 1,
         provider_finish_reason=None,  # nenhuma chamada foi observada de verdade
         error=ProviderErrorInfo(
             type=ProviderErrorType.UNKNOWN,
