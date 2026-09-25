@@ -1,5 +1,5 @@
 // UI Slice 2 -- cobertura do app shell: navegação persistente entre as
-// rotas primárias (Perguntar/Histórico), com estado de rota atual
+// rotas primárias (Nova pergunta/Histórico), com estado de rota atual
 // exposto via `aria-current="page"` (nunca só por cor).
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
@@ -43,24 +43,24 @@ describe('App shell', () => {
     renderApp()
 
     expect(screen.getByRole('link', { name: 'Dialeon' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Perguntar' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Nova pergunta' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Histórico' })).toBeInTheDocument()
   })
 
-  it('marca "Perguntar" como página atual (aria-current) em "/", nunca "Histórico"', async () => {
+  it('marca "Nova pergunta" como página atual (aria-current) em "/", nunca "Histórico"', async () => {
     renderApp('/')
 
-    expect(screen.getByRole('link', { name: 'Perguntar' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Nova pergunta' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'Histórico' })).not.toHaveAttribute('aria-current')
   })
 
-  it('marca "Histórico" como página atual em "/runs", nunca "Perguntar"', async () => {
+  it('marca "Histórico" como página atual em "/runs", nunca "Nova pergunta"', async () => {
     renderApp('/runs')
 
-    await screen.findByText(/nenhuma execução ainda/i)
+    await screen.findByText(/nenhuma pergunta ainda/i)
 
     expect(screen.getByRole('link', { name: 'Histórico' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('link', { name: 'Perguntar' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('link', { name: 'Nova pergunta' })).not.toHaveAttribute('aria-current')
   })
 
   it('navega para o histórico ao clicar no item de navegação, preservando a experiência de pergunta', async () => {
@@ -69,18 +69,34 @@ describe('App shell', () => {
 
     await userEvent.click(screen.getByRole('link', { name: 'Histórico' }))
 
-    await screen.findByText(/nenhuma execução ainda/i)
+    await screen.findByText(/nenhuma pergunta ainda/i)
     expect(screen.getByRole('link', { name: 'Histórico' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('a marca sempre leva de volta pra experiência de pergunta', async () => {
     renderApp('/runs')
-    await screen.findByText(/nenhuma execução ainda/i)
+    await screen.findByText(/nenhuma pergunta ainda/i)
 
     await userEvent.click(screen.getByRole('link', { name: 'Dialeon' }))
 
     await screen.findByLabelText(/faça uma pergunta/i)
-    expect(screen.getByRole('link', { name: 'Perguntar' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Nova pergunta' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('o primeiro elemento focável é um link pra pular pro conteúdo principal, que existe em cada rota', async () => {
+    const { unmount } = renderApp('/')
+    await screen.findByLabelText(/faça uma pergunta/i)
+
+    await userEvent.tab()
+    const skip = screen.getByRole('link', { name: 'Pular para o conteúdo' })
+    expect(skip).toHaveFocus()
+    expect(skip).toHaveAttribute('href', '#main-content')
+    expect(document.getElementById('main-content')?.tagName).toBe('MAIN')
+    unmount()
+
+    renderApp('/runs')
+    await screen.findByText(/nenhuma pergunta ainda/i)
+    expect(document.getElementById('main-content')?.tagName).toBe('MAIN')
   })
 
   it('o shell persiste (mesmo header) através da navegação entre rotas', async () => {
@@ -89,7 +105,7 @@ describe('App shell', () => {
     const headerBefore = screen.getByRole('link', { name: 'Dialeon' })
 
     await userEvent.click(screen.getByRole('link', { name: 'Histórico' }))
-    await screen.findByText(/nenhuma execução ainda/i)
+    await screen.findByText(/nenhuma pergunta ainda/i)
 
     expect(screen.getByRole('link', { name: 'Dialeon' })).toBe(headerBefore)
   })

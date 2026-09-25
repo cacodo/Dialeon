@@ -1,17 +1,24 @@
-// Composer da pergunta -- protagonista da home (Decision Delta secao 7).
-// Pelo menos um provider precisa continuar selecionado pra submit válido
-// (prevenção de UX; o backend continua autoridade de validação real).
+// Composer da pergunta -- UMA superfície coerente (moldura única):
 //
-// Seleção inicial: quando GET /providers completa com sucesso pela
-// primeira vez, TODOS os providers retornados vêm pré-selecionados --
-// sem hardcode, usando exatamente os IDs reais do backend -- pra que a
-// experiência Standard funcione sem exigir interação manual antes da
-// primeira Run. Só acontece UMA vez (via `hasInitializedSelection`):
-// rerenders posteriores nunca sobrescrevem uma escolha manual do
-// usuário.
+//   ┌──────────────────────────────────────────────┐
+//   │ pergunta…                                    │
+//   ├──────────────────────────────────────────────┤
+//   │ Fonte   Modelos: GPT, Claude, Gemini  [Perguntar] │
+//   └──────────────────────────────────────────────┘
+//
+// Só capacidades que EXISTEM hoje: fonte opcional (à esquerda), seleção de
+// modelos (resumo por nome) e o envio. A barra é o ponto natural de
+// extensão futura, mas nada além disso é renderizado aqui -- sem
+// placeholders, sem controles "em breve".
+//
+// Enter continua inserindo nova linha (a pergunta pode ser longa e
+// multi-linha); Ctrl/⌘+Enter envia. O atalho é anunciado por
+// `aria-keyshortcuts` e por uma dica discreta ligada ao campo por
+// `aria-describedby` -- nunca só visual.
 
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ProviderSelector } from './ProviderSelector'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { formatProviderName } from '../api/formatting'
+import { ModelSelectionPanel, ModelSummaryButton, type ModelOption } from './ProviderSelector'
 import {
   MAX_QUESTION_CHARACTERS,
   MAX_SOURCE_TEXT_CHARACTERS,
@@ -26,11 +33,13 @@ interface RunComposerProps {
   providersLoading: boolean
   providersError: string | null
   submitting: boolean
-  // Reuso de ENTRADA do usuário (pergunta/fonte/participantes) -- ver
-  // lib/reuseInput.ts. Nunca contexto de Run anterior.
   initialInput?: ReuseInput | null
   onSubmit: (question: string, enabledProviders: string[], sourceText: string | null) => void
+  onRetryProviders?: () => void
 }
+
+const SOURCE_PANEL_ID = 'run-composer-source-panel'
+const MODELS_PANEL_ID = 'provider-selector-panel'
 
 export function RunComposer({
   providers,
@@ -39,26 +48,27 @@ export function RunComposer({
   submitting,
   initialInput = null,
   onSubmit,
+  onRetryProviders,
 }: RunComposerProps) {
   const [question, setQuestion] = useState(initialInput?.question ?? '')
   const [selected, setSelected] = useState<string[]>([])
+  // A pré-seleção (todos, ou os do reuso que ainda existem) acontece UMA vez,
+  // na primeira lista de modelos recebida -- nunca reverte uma escolha do
+  // usuário depois.
   const hasInitializedSelection = useRef(false)
-  // Etapa 16 -- divulgação progressiva: o campo de fonte só aparece
-  // depois de um clique explícito, pra não sugerir que toda pergunta
-  // precisa de uma fonte (a resposta continua answer-first mesmo sem
-  // nenhuma fonte fornecida).
   const [sourceExpanded, setSourceExpanded] = useState(initialInput?.sourceText != null)
   const [sourceText, setSourceText] = useState(initialInput?.sourceText ?? '')
+  const [modelsExpanded, setModelsExpanded] = useState(false)
 
   useEffect(() => {
     if (providers.length > 0 && !hasInitializedSelection.current) {
-      // Reuso: só os participantes ainda disponíveis; se nenhum restar,
-      // cai no default de sempre (todos).
       const reused = (initialInput?.enabledProviders ?? []).filter((p) => providers.includes(p))
       setSelected(reused.length > 0 ? reused : providers)
       hasInitializedSelection.current = true
     }
   }, [providers, initialInput])
+
+  const modelOptions: ModelOption[] = providers.map((id) => ({ id, label: formatProviderName(id) }))
 
   // Limites estáticos (espelham o backend -- ver lib/inputLimits.ts). O
   // backend segue a autoridade; isto só evita um round-trip inútil. A fonte
@@ -78,158 +88,172 @@ export function RunComposer({
     !submitting &&
     !providersLoading
 
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault()
+  function submit() {
     if (!canSubmit) return
     // Accepted Question Size Boundary V1 (repair F1) -- `question` é
-    // encaminhada VERBATIM (nunca `.trim()`ada aqui): o backend é a
-    // única autoridade sobre o que conta como pergunta válida
-    // (vazio/só-espaço-em-branco, teto de MAX_QUESTION_CHARACTERS -- ver
-    // app/orchestrator/config.py::validate_question). `.trim()` acima em
-    // `canSubmit` é só detecção de "em branco" pra UX (desabilitar o
-    // botão), nunca uma transformação do valor realmente enviado -- um
-    // valor originalmente inválido (ex.: >20.000 caracteres) nunca pode
-    // se tornar válido por acaso de ser encurtado aqui antes de chegar
-    // na validação canônica.
-    // Mesmo contrato da fonte: whitespace só decide se ela está vazia;
-    // conteúdo não vazio segue VERBATIM (indentação, quebras de linha nas
-    // pontas), igual à API e à CLI.
+    // encaminhada VERBATIM (nunca `.trim()`ada aqui): o backend é a única
+    // autoridade sobre o que conta como pergunta válida. `.trim()` acima em
+    // `canSubmit` é só detecção de "em branco" pra UX. Fonte: whitespace só
+    // decide se ela está vazia; conteúdo não vazio segue VERBATIM, igual à
+    // API e à CLI.
     onSubmit(question, selected, sourceBlank ? null : sourceText)
   }
 
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault()
+    submit()
+  }
+
+  function handleQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault()
+      submit()
+    }
+  }
+
   return (
-    <form className="run-composer" onSubmit={handleSubmit}>
-      <div className="run-composer__question">
-        {/* Único heading primário da tela agora (Polimento visual UI
-            Slice 2) -- "Nova pergunta"/"Faça uma pergunta" foram
-            colapsados nesta única frase, pra remover a hierarquia
-            redundante que existia antes. O label continua existindo
-            (acessibilidade nunca é sacrificada por simplicidade visual),
-            só visualmente oculto via `.sr-only`. */}
-        <h1 className="run-composer__heading">O que você quer investigar?</h1>
-        <label htmlFor="question-input" className="run-composer__label sr-only">
+    <form className="composer" onSubmit={handleSubmit} aria-busy={submitting}>
+      <h1 className="composer__heading">O que você quer saber?</h1>
+      <p className="composer__lede">
+        Os modelos escolhidos respondem de forma independente; o Dialeon organiza a resposta e
+        mostra onde eles concordam, onde divergem e o que continua incerto.
+      </p>
+
+      <div className="composer__frame">
+        <label htmlFor="question-input" className="sr-only">
           Faça uma pergunta
         </label>
         <textarea
           id="question-input"
-          className="run-composer__input run-composer__input--question"
+          className="composer__input"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={handleQuestionKeyDown}
           placeholder="Escreva sua pergunta…"
           rows={4}
           disabled={submitting}
           aria-invalid={questionTooLong}
-          aria-describedby="question-limit"
+          aria-describedby="question-limit question-shortcut"
+          aria-keyshortcuts="Control+Enter Meta+Enter"
         />
-        <p
-          id="question-limit"
-          className={`run-composer__limit${questionTooLong ? ' run-composer__limit--exceeded' : ''}`}
-        >
-          {formatCharacterLimit(questionCount)} / {formatCharacterLimit(MAX_QUESTION_CHARACTERS)}{' '}
-          caracteres
-        </p>
-        {questionTooLong && (
-          <p role="alert" className="run-composer__error">
-            A pergunta passa do limite de {formatCharacterLimit(MAX_QUESTION_CHARACTERS)} caracteres
-            ({formatCharacterLimit(questionCount)}). Reduza o texto para investigar.
-          </p>
-        )}
-      </div>
 
-      {/* Barra de configuração secundária -- fonte opcional e seleção de
-          participantes nunca competem visualmente com a pergunta em si
-          (Decision Delta secao 6/7: provider selection nunca é a
-          identidade principal da tela). Fonte e Participantes são
-          controles-irmãos genuínos dentro do MESMO container flex: cada
-          botão fica na linha de controles, e o painel que ele abre
-          (`.run-composer__control-panel`) quebra pra própria linha cheia
-          logo abaixo -- nunca aninhado dentro de outro controle, nunca
-          flutuando numa coluna diferente (Polish dos controles
-          secundários do composer). */}
-      <div className="run-composer__toolbar">
-        <button
-          type="button"
-          className="run-composer__control-toggle run-composer__source-toggle"
-          onClick={() => setSourceExpanded((expanded) => !expanded)}
-          disabled={submitting}
-          aria-expanded={sourceExpanded}
-          aria-controls="run-composer-source-panel"
-        >
-          Fonte (opcional)
-          <span className="run-composer__control-chevron" aria-hidden="true">
-            ▾
-          </span>
-        </button>
+        <div className="composer__bar">
+          <button
+            type="button"
+            className="composer__control composer__source-toggle"
+            onClick={() => setSourceExpanded((expanded) => !expanded)}
+            disabled={submitting}
+            aria-expanded={sourceExpanded}
+            aria-controls={SOURCE_PANEL_ID}
+          >
+            Fonte (opcional)
+            <span className="composer__control-chevron" aria-hidden="true">
+              ▾
+            </span>
+          </button>
+
+          {providersLoading && (
+            <p aria-live="polite" className="composer__status">
+              Carregando modelos…
+            </p>
+          )}
+          {!providersLoading && !providersError && (
+            <ModelSummaryButton
+              options={modelOptions}
+              selected={selected}
+              expanded={modelsExpanded}
+              onToggle={() => setModelsExpanded((expanded) => !expanded)}
+              disabled={submitting}
+              panelId={MODELS_PANEL_ID}
+            />
+          )}
+
+          <button type="submit" disabled={!canSubmit} className="composer__submit">
+            {submitting ? 'Perguntando…' : 'Perguntar'}
+          </button>
+        </div>
 
         {sourceExpanded && (
-          // Colapsar só oculta este painel -- `sourceText` continua vivo no
-          // estado do componente pai, nunca é limpo aqui, então reabrir
-          // depois de fechar mostra exatamente o que já tinha sido digitado.
-          <div
-            id="run-composer-source-panel"
-            className="run-composer__control-panel run-composer__source"
-          >
-            <label htmlFor="source-input" className="run-composer__label">
+          <div id={SOURCE_PANEL_ID} className="composer__panel composer__source">
+            <label htmlFor="source-input" className="composer__label">
               Fonte de texto (opcional)
             </label>
             <textarea
               id="source-input"
-              className="run-composer__input"
+              className="composer__source-input"
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
-              placeholder="Cole um trecho de texto para comparar com as claims do debate…"
+              placeholder="Cole um trecho de texto para comparar com a resposta…"
               rows={4}
               disabled={submitting}
               aria-invalid={sourceTooLong}
-              aria-describedby="source-limit"
+              aria-describedby="source-limit source-hint"
             />
             <p
               id="source-limit"
-              className={`run-composer__limit${sourceTooLong ? ' run-composer__limit--exceeded' : ''}`}
+              className={`composer__limit${sourceTooLong ? ' composer__limit--exceeded' : ''}`}
             >
               {formatCharacterLimit(sourceCount)} / {formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)}{' '}
               caracteres
             </p>
-            <p className="run-composer__source-hint">
-              A fonte é comparada com as afirmações do debate como um canal independente do
-              julgamento -- não altera a avaliação do juiz, mas o relacionamento entre os dois
-              pode aparecer na resposta final.
+            <p id="source-hint" className="composer__hint">
+              O Dialeon compara as afirmações da resposta com este texto e mostra onde ele apoia ou
+              contradiz cada uma. A fonte não é verificada como verdadeira e não muda a avaliação das
+              afirmações.
             </p>
           </div>
         )}
 
-        {sourceTooLong && (
-          // Fora do painel colapsável: o erro nunca fica escondido se a fonte
-          // estiver recolhida.
-          <p role="alert" className="run-composer__error">
-            A fonte passa do limite de {formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)} caracteres (
-            {formatCharacterLimit(sourceCount)}). Abra “Fonte (opcional)” e reduza o texto.
-          </p>
-        )}
-
-        {providersError && (
-          <p role="alert" className="run-composer__error">
-            Não foi possível carregar os participantes disponíveis: {providersError}
-          </p>
-        )}
-        {providersLoading && (
-          <p aria-live="polite" className="run-composer__providers-status">
-            Carregando participantes disponíveis…
-          </p>
-        )}
-        {!providersLoading && !providersError && (
-          <ProviderSelector
-            providers={providers}
+        {modelsExpanded && !providersLoading && !providersError && (
+          <ModelSelectionPanel
+            options={modelOptions}
             selected={selected}
             onChange={setSelected}
             disabled={submitting}
+            panelId={MODELS_PANEL_ID}
           />
         )}
       </div>
 
-      <button type="submit" disabled={!canSubmit} className="run-composer__submit">
-        {submitting ? 'Investigando…' : 'Investigar'}
-      </button>
+      <div className="composer__meta">
+        <p id="question-shortcut" className="composer__hint">
+          Ctrl/⌘ + Enter para perguntar
+        </p>
+        <p
+          id="question-limit"
+          className={`composer__limit${questionTooLong ? ' composer__limit--exceeded' : ''}`}
+        >
+          {formatCharacterLimit(questionCount)} / {formatCharacterLimit(MAX_QUESTION_CHARACTERS)}{' '}
+          caracteres
+        </p>
+      </div>
+
+      {questionTooLong && (
+        <p role="alert" className="notice notice--validation">
+          A pergunta passa do limite de {formatCharacterLimit(MAX_QUESTION_CHARACTERS)} caracteres (
+          {formatCharacterLimit(questionCount)}). Reduza o texto para perguntar.
+        </p>
+      )}
+
+      {sourceTooLong && (
+        // Fora do painel recolhível: o erro nunca fica escondido se a fonte
+        // estiver recolhida.
+        <p role="alert" className="notice notice--validation">
+          A fonte passa do limite de {formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)} caracteres (
+          {formatCharacterLimit(sourceCount)}). Abra “Fonte (opcional)” e reduza o texto.
+        </p>
+      )}
+
+      {providersError && (
+        <div role="alert" className="notice notice--error composer__providers-error">
+          <p>Não foi possível carregar os modelos disponíveis: {providersError}</p>
+          {onRetryProviders && (
+            <button type="button" onClick={onRetryProviders}>
+              Tentar novamente
+            </button>
+          )}
+        </div>
+      )}
     </form>
   )
 }

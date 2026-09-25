@@ -13,6 +13,8 @@ import {
   formatProviderName,
   formatUsageRecordPresence,
   splitAnswerParagraphs,
+  formatModelList,
+  formatRecordedDuration,
 } from '../formatting'
 
 describe('formatEstimatedCost', () => {
@@ -22,12 +24,14 @@ describe('formatEstimatedCost', () => {
 
   it('formata custo conhecido-zero distinto de desconhecido', () => {
     const result = formatEstimatedCost(0, false)
-    expect(result).toContain('$0,00')
+    expect(result).toBe('US$ 0,00 (estimativa conhecida)')
     expect(result).not.toBe('Estimativa indisponível')
   })
 
   it('formata custo positivo conhecido', () => {
-    expect(formatEstimatedCost(0.0042, false)).toContain('0.0042')
+    // formato numérico pt-BR (vírgula decimal), igual ao resto da interface
+    expect(formatEstimatedCost(0.0042, false)).toBe('~US$ 0,0042')
+    expect(formatEstimatedCost(1.5, false)).toBe('~US$ 1,50')
   })
 
   it('sinaliza quando has_unknown_accounting_components é true mesmo com custo conhecido', () => {
@@ -282,8 +286,34 @@ describe('formatExactCost — repair pós-revisão adversarial', () => {
 
   it('nunca colapsa um valor positivo minúsculo pro mesmo texto que zero (diferente de formatEstimatedCost, que arredonda pra exibição amigável)', () => {
     expect(formatExactCost(0.00001)).not.toBe(formatExactCost(0))
-    // formatEstimatedCost (.toFixed(4)) arredondaria os dois pro mesmo
-    // "~$0.0000" -- por isso formatExactCost existe separadamente.
-    expect(formatEstimatedCost(0.00001, false)).toBe('~$0.0000')
+    // formatEstimatedCost arredonda pra exibição amigável, mas um positivo
+    // abaixo da menor casa exibida NUNCA vira texto de zero -- e o valor
+    // exato continua em formatExactCost.
+    expect(formatEstimatedCost(0.00001, false)).toBe('< US$ 0,0001')
+    expect(formatEstimatedCost(0.00001, false)).not.toBe(formatEstimatedCost(0, false))
+  })
+})
+
+
+describe('formatModelList', () => {
+  it('lista os nomes de exibição na ordem recebida, como frase', () => {
+    expect(formatModelList(['openai', 'anthropic', 'gemini'])).toBe('GPT, Claude e Gemini')
+    expect(formatModelList(['anthropic'])).toBe('Claude')
+  })
+
+  it('não depende de uma lista fixa: ids desconhecidos entram com nome derivado', () => {
+    expect(formatModelList(['openai', 'mistral'])).toBe('GPT e Mistral')
+  })
+})
+
+describe('formatRecordedDuration', () => {
+  it('usa os instantes registrados pelo servidor', () => {
+    expect(formatRecordedDuration('2026-09-06T00:00:00Z', '2026-09-06T00:02:04Z')).toBe('2 min 04 s')
+  })
+
+  it('nunca inventa: fim ausente, inválido ou anterior ao início => null', () => {
+    expect(formatRecordedDuration('2026-09-06T00:00:00Z', null)).toBeNull()
+    expect(formatRecordedDuration('2026-09-06T00:00:00Z', 'não-é-data')).toBeNull()
+    expect(formatRecordedDuration('2026-09-06T00:05:00Z', '2026-09-06T00:00:00Z')).toBeNull()
   })
 })

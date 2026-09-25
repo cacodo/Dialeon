@@ -64,7 +64,7 @@ const PAGE_SIZE = 20
 // indistinguíveis por design).
 const STATUS_LABELS: Record<RunSummaryResponse['status'], string> = {
   completed: 'Concluída',
-  insufficient_quorum: 'Quórum insuficiente',
+  insufficient_quorum: 'Sem respostas suficientes',
   running: 'Sem desfecho registrado',
   failed: 'Falhou durante a execução',
 }
@@ -134,7 +134,7 @@ export function History() {
   const current = result !== null && result.attemptKey === attemptKey ? result : null
 
   return (
-    <main className="history">
+    <main className="history" id="main-content">
       <h1>Histórico</h1>
 
       {current === null && <p role="status">Carregando histórico…</p>}
@@ -152,10 +152,13 @@ export function History() {
         <>
           {current.runs.length === 0 ? (
             page === 1 ? (
-              <p>Nenhuma execução ainda.</p>
+              <div className="history__empty">
+                <p>Nenhuma pergunta ainda.</p>
+                <Link to="/">Fazer uma pergunta</Link>
+              </div>
             ) : (
               <div className="history__out-of-range">
-                <p>Esta página não tem execuções — pode estar além do fim do histórico.</p>
+                <p>Esta página não tem perguntas — pode estar além do fim do histórico.</p>
                 <Link to={`/runs?page=${page - 1}`}>Voltar para a página anterior</Link>
               </div>
             )

@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { FinalAnswerView } from '../FinalAnswerView'
+import { AnswerAssessmentDetails, FinalAnswerView } from '../FinalAnswerView'
 import type { AnswerBlockPublic, AnswerVerdictLabel, FinalAnswerPublic } from '../../api/types'
 
 function makeFinalAnswer(overrides: Partial<FinalAnswerPublic> = {}): FinalAnswerPublic {
@@ -446,7 +446,7 @@ describe('FinalAnswerView -- unevaluated_claims (Structured Unevaluated Claims +
 
     expect(
       screen.getByText(
-        /Algumas alegações não foram avaliadas pelo Judge e podem se sobrepor a outras alegações ou permanecer sem verificação/,
+        /Estas afirmações não foram avaliadas e podem se sobrepor a outras ou permanecer sem verificação/,
       ),
     ).toBeInTheDocument()
     expect(
@@ -608,7 +608,7 @@ describe('FinalAnswerView -- resumo determinístico', () => {
       />,
     )
 
-    expect(summaryText(container)).toBe('Sem veredito do Judge — 3 afirmações sem avaliação.')
+    expect(summaryText(container)).toBe('Sem avaliação final — 3 afirmações ficaram sem avaliação.')
   })
 
   it('resposta histórica sem answer_blocks e sem lista estruturada não ganha resumo', () => {
@@ -830,10 +830,17 @@ describe('FinalAnswerView -- resposta principal', () => {
     expect(within(limitations as HTMLElement).getByText('Sem dados empíricos.')).toBeVisible()
   })
 
-  it('não despeja o muro de claims sob a resposta principal: a avaliação completa fica recolhida', () => {
+  it('não despeja o muro de claims sob a resposta principal: a avaliação completa fica fora da resposta (profundidade 1) e recolhida', () => {
     const { container } = render(<FinalAnswerView finalAnswer={withPrimary()} />)
 
-    const details = container.querySelector('details.final-answer__complete') as HTMLDetailsElement
+    // Profundidade 0: só a resposta -- a avaliação completa não está ali.
+    expect(container.querySelector('details.final-answer__complete')).toBeNull()
+    expect(screen.queryByText('Claim da avaliação completa.')).not.toBeInTheDocument()
+
+    // Profundidade 1: presente, mas recolhida até um gesto explícito.
+    const details = render(<AnswerAssessmentDetails finalAnswer={withPrimary()} />).container.querySelector(
+      'details.final-answer__complete',
+    ) as HTMLDetailsElement
     expect(details).not.toBeNull()
     expect(details.open).toBe(false)
     expect(screen.getByText('Claim da avaliação completa.')).not.toBeVisible()
@@ -841,7 +848,7 @@ describe('FinalAnswerView -- resposta principal', () => {
   })
 
   it('a investigação completa continua alcançável: abrir revela a avaliação completa intacta', async () => {
-    const { container } = render(<FinalAnswerView finalAnswer={withPrimary()} />)
+    const { container } = render(<AnswerAssessmentDetails finalAnswer={withPrimary()} />)
 
     await userEvent.click(screen.getByText(/Ver avaliação completa/))
 
@@ -868,7 +875,12 @@ describe('FinalAnswerView -- resposta principal', () => {
   it('"Copiar resposta" copia EXATAMENTE o texto canônico da resposta principal; a avaliação completa tem seu próprio botão', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
-    render(<FinalAnswerView finalAnswer={withPrimary()} />)
+    render(
+      <>
+        <FinalAnswerView finalAnswer={withPrimary()} />
+        <AnswerAssessmentDetails finalAnswer={withPrimary()} />
+      </>,
+    )
 
     await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta' }))
     expect(writeText).toHaveBeenLastCalledWith(makePrimary().rendered_text)
@@ -967,24 +979,18 @@ describe('FinalAnswerView -- resposta natural', () => {
       ).tagName,
     ).toBe('P')
     // nenhum heading de seção tipo "Conclusão central:"/"Incertezas e ressalvas:"
-    // fora da disclosure recolhida (a resposta principal estruturada, dentro
-    // dela, continua tendo seus próprios headings -- nunca removidos).
-    const topLevelHeadings = screen
-      .getAllByRole('heading', { level: 3 })
-      .filter((h) => !h.closest('details'))
-    expect(topLevelHeadings).toHaveLength(0)
+    // na resposta (a resposta principal estruturada, na profundidade 1,
+    // continua tendo seus próprios headings -- nunca removidos).
+    expect(screen.queryAllByRole('heading', { level: 3 })).toHaveLength(0)
+    expect(screen.queryByText('Conclusão central:')).not.toBeInTheDocument()
   })
 
-  it('preserva acesso à resposta principal estruturada e à avaliação completa via disclosure', async () => {
-    const { container } = render(<FinalAnswerView finalAnswer={withNatural()} />)
+  it('preserva acesso à resposta principal estruturada e à avaliação completa na profundidade 1', async () => {
+    const { container } = render(<AnswerAssessmentDetails finalAnswer={withNatural()} />)
 
-    const outer = container.querySelector('details.final-answer__inspect') as HTMLDetailsElement
-    expect(outer.open).toBe(false)
-    await userEvent.click(screen.getByText('Ver resposta principal e avaliação completa'))
-    expect(outer.open).toBe(true)
-
+    expect(screen.getByRole('heading', { level: 3, name: 'Resposta principal (estruturada)' })).toBeVisible()
     // resposta principal estruturada, com seus próprios headings/rótulos
-    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+    expect(screen.getByRole('heading', { level: 4, name: 'Conclusão central:' })).toBeVisible()
     expect(screen.getByText('(sustentada pelo debate)')).toBeVisible()
 
     // dentro dela, a mesma affordance de sempre continua presente e recolhida
@@ -1125,9 +1131,7 @@ describe('FinalAnswerView -- realização linguística', () => {
     expect(
       screen.getByText('Fica registrada a ressalva de que o fornecedor pode falir.').tagName,
     ).toBe('P')
-    expect(screen.getByText(/redação foi gerada por modelo/)).toBeInTheDocument()
-    // frase completa -- distinta do lead_in da resposta principal aninhada
-    // (recolhida), que termina em "(não é verificação externa):"
+    expect(screen.getByText(/Texto redigido por um modelo/)).toBeInTheDocument()
     expect(screen.getByText(/não é verificação externa nem garantia de verdade/)).toBeInTheDocument()
   })
 
@@ -1145,15 +1149,11 @@ describe('FinalAnswerView -- realização linguística', () => {
     expect(within(topLevelLimitations).getByText('Sem dados empíricos.')).toBeInTheDocument()
   })
 
-  it('preserva acesso à resposta principal estruturada e à avaliação completa via disclosure', async () => {
-    const { container } = render(<FinalAnswerView finalAnswer={withRealization()} />)
+  it('preserva acesso à resposta principal estruturada e à avaliação completa na profundidade 1', async () => {
+    const { container } = render(<AnswerAssessmentDetails finalAnswer={withRealization()} />)
 
-    const outer = container.querySelector('details.final-answer__inspect') as HTMLDetailsElement
-    expect(outer.open).toBe(false)
-    await userEvent.click(screen.getByText('Ver resposta principal estruturada e avaliação completa'))
-    expect(outer.open).toBe(true)
-
-    expect(screen.getByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
+    expect(screen.getByRole('heading', { level: 3, name: 'Resposta principal (estruturada)' })).toBeVisible()
+    expect(screen.getByRole('heading', { level: 4, name: 'Conclusão central:' })).toBeVisible()
     const inner = container.querySelector('details.final-answer__complete') as HTMLDetailsElement
     expect(inner.open).toBe(false)
     await userEvent.click(screen.getByText(/Ver avaliação completa/))
@@ -1176,9 +1176,11 @@ describe('FinalAnswerView -- realização linguística', () => {
       <FinalAnswerView finalAnswer={withRealization(makeRealization(), makePrimary(), makeNatural())} />,
     )
 
-    expect(screen.getByText(/redação foi gerada por modelo/)).toBeInTheDocument()
+    expect(screen.getByText(/Texto redigido por um modelo/)).toBeInTheDocument()
     expect(container.querySelector('.final-answer__scope-note')).not.toBeNull()
-    expect(screen.queryByText('Ver resposta principal e avaliação completa')).not.toBeInTheDocument()
+    // o texto da resposta natural não aparece -- a realização o substitui
+    expect(screen.queryByText('Um SaaS é a melhor escolha. (sustentada pelo debate).')).not.toBeInTheDocument()
+    expect(screen.getByText('Um SaaS é a melhor escolha (sustentada pelo debate).')).toBeInTheDocument()
   })
 
   it('ordem de fallback: não elegível, cai pra resposta natural quando ela está presente e elegível', () => {
@@ -1187,7 +1189,7 @@ describe('FinalAnswerView -- realização linguística', () => {
 
     render(<FinalAnswerView finalAnswer={withNatural} />)
 
-    expect(screen.queryByText(/redação foi gerada por modelo/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Texto redigido por um modelo/)).not.toBeInTheDocument()
     expect(screen.getByText('Um SaaS é a melhor escolha. (sustentada pelo debate).')).toBeInTheDocument()
   })
 
@@ -1228,7 +1230,36 @@ describe('FinalAnswerView -- realização linguística', () => {
       <FinalAnswerView finalAnswer={makeFinalAnswer({ answer_blocks: completeBlocks, primary_answer: makePrimary() })} />,
     )
 
-    expect(screen.queryByText(/redação foi gerada por modelo/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Texto redigido por um modelo/)).not.toBeInTheDocument()
     expect(container.querySelector('.final-answer--primary')).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Divisão por profundidade: a resposta (profundidade 0) não carrega a
+// proveniência técnica; AnswerAssessmentDetails (profundidade 1) carrega.
+// ---------------------------------------------------------------------------
+
+import { formatFinalAnswerStatus } from '../../api/formatting'
+
+describe('FinalAnswerView / AnswerAssessmentDetails -- profundidade', () => {
+  it('a resposta não mostra a linha de status/proveniência; a profundidade 1 mostra', () => {
+    const answer = makeFinalAnswer()
+    const statusLabel = formatFinalAnswerStatus(answer.status)
+    const { unmount } = render(<FinalAnswerView finalAnswer={answer} />)
+    expect(screen.queryByText(statusLabel, { exact: false })).not.toBeInTheDocument()
+    unmount()
+
+    const { container } = render(<AnswerAssessmentDetails finalAnswer={answer} />)
+    const provenance = container.querySelector('.answer-details__provenance')
+    expect(provenance?.textContent).toBe(`Como a resposta foi montada: ${statusLabel}.`)
+  })
+
+  it('sem resposta principal, a avaliação completa JÁ é a resposta: a profundidade 1 não a duplica', () => {
+    const { container } = render(<AnswerAssessmentDetails finalAnswer={makeFinalAnswer()} />)
+
+    expect(container.querySelector('details.final-answer__complete')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Resposta principal (estruturada)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /copiar/i })).not.toBeInTheDocument()
   })
 })

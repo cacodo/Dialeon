@@ -61,7 +61,7 @@ export function SourceAnalysisView({
 
   return (
     <div className="source-analysis">
-      <h3>Entradas descartadas sem afirmação identificada</h3>
+      <h4>Entradas descartadas sem afirmação identificada</h4>
       <p className="source-analysis__rejected-note">
         Entradas descartadas não são uma relação com a fonte — a aplicação não pôde confiar no
         que a análise devolveu para elas, e estas em particular não puderam ser associadas a

@@ -1,15 +1,10 @@
-// Estado de ESPERA de uma investigação -- honesto por construção: só um
-// relógio LOCAL de tempo decorrido e duas frases estáticas. Nenhuma etapa,
-// percentual, previsão de término, animação de digitação ou progresso por
-// participante (o backend não expõe nada disso; `POST /runs` é síncrono).
+// Espera honesta por uma resposta: o POST é síncrono e não expõe etapas, então
+// não há etapas, percentuais, previsão nem progresso por modelo a mostrar --
+// só o tempo decorrido LOCAL e o que acontece se o usuário sair da página.
 //
-// A linha de status (`role="status"`) é ESTÁTICA -- o contador de segundos
-// fica fora da região viva pra não gerar um anúncio a cada segundo.
-//
-// Sobre sair da página: só o resultado LOCAL desta tela deixa de aparecer; a
-// execução aceita pode ser localizada no Histórico. O frontend não consegue
-// provar se uma execução persistida sem desfecho ainda está rodando, então
-// nada aqui afirma isso nem afirma que algo foi perdido.
+// A linha `role="status"` é estática (o contador não é anunciado a cada
+// segundo). O indicador de atividade é neutro e decorativo (`aria-hidden`),
+// sem identidade de marca; com `prefers-reduced-motion` ele fica parado.
 
 import { useEffect, useState } from 'react'
 import { formatElapsed } from '../api/formatting'
@@ -24,16 +19,21 @@ export function PendingInvestigation() {
   }, [])
 
   return (
-    <div className="pending-investigation">
-      <p role="status" className="pending-investigation__title">
-        Investigando…
+    <div className="pending-answer">
+      <p className="pending-answer__title">
+        <span className="activity-indicator" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+        <span role="status">Aguardando a resposta…</span>
       </p>
-      <p className="pending-investigation__elapsed">
+      <p className="pending-answer__elapsed">
         Tempo decorrido: <time>{formatElapsed((now - startedAt) / 1000)}</time>
       </p>
-      <p className="pending-investigation__note">
-        Uma investigação do Dialeon pode levar vários minutos. Se você sair desta página, o
-        resultado deixará de aparecer aqui; a investigação poderá ser reaberta pelo Histórico.
+      <p className="pending-answer__note">
+        Uma resposta do Dialeon pode levar vários minutos. Se você sair desta página, o resultado
+        deixará de aparecer aqui; a pergunta poderá ser reaberta pelo Histórico.
       </p>
     </div>
   )

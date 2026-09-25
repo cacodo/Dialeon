@@ -31,7 +31,7 @@
 // Essas distinções já vivem nos componentes reutilizados abaixo (nenhuma
 // duplicada aqui).
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { apiClient, ApiError } from '../api/client'
 import {
   buildClaimInspectionModel,
@@ -81,6 +81,15 @@ import { SourceAnalysisView } from './SourceAnalysisView'
 
 interface InspectionPanelProps {
   runId: string
+  // Título da seção (profundidade 1). Padrão pra runs com resposta; runs sem
+  // resposta (quórum insuficiente) usam um título que não promete resposta.
+  title?: string
+  intro?: string
+  // Conteúdo já disponível sem o audit (ex.: detalhes da resposta final),
+  // mostrado primeiro assim que a seção abre.
+  children?: ReactNode
+  // Id do heading da resposta, pro "Voltar à resposta" (foco + rolagem).
+  returnTargetId?: string
 }
 
 // Estado do FETCH do audit -- deliberadamente separado de `expanded`
@@ -130,7 +139,7 @@ function TechnicalAudit({
 
   return (
     <section aria-labelledby="technical-audit-heading" className="inspection-panel__technical">
-      <h2 id="technical-audit-heading">Auditoria técnica</h2>
+      <h3 id="technical-audit-heading">Auditoria técnica</h3>
       <p className="inspection-panel__technical-hint">
         Identidade bruta de provider/modelo, configuração de execução e o detalhamento completo de
         consumo — não necessários pra interpretar a resposta, mas continuam inspecionáveis aqui.
@@ -146,15 +155,15 @@ function TechnicalAudit({
       </button>
       {expanded && (
         <div id="inspection-panel-technical-panel">
-          <h3>Consumo e custo</h3>
+          <h4>Consumo e custo</h4>
           <AccountingView accounting={accounting} />
 
-          <h3>Política de execução do provider</h3>
+          <h4>Política de execução do provider</h4>
           <ProviderExecutionPolicyView policy={policy} />
 
           {participantResponses.length > 0 && (
             <>
-              <h3>Respostas dos participantes — registros técnicos</h3>
+              <h4>Respostas dos participantes — registros técnicos</h4>
               <p className="inspection-panel__technical-hint">
                 Um registro por resposta (distinto do consumo AGREGADO acima) -- identidade bruta
                 de modelo, erro completo e proveniência de request/preço, nunca inferidos quando
@@ -252,14 +261,14 @@ function TechnicalAudit({
 
           {claims !== null && (
             <>
-              <h3>Afirmações — lista técnica completa</h3>
+              <h4>Afirmações — lista técnica completa</h4>
               <ClaimsList claims={claims} assessmentsByClaimId={assessmentsByClaimId} />
             </>
           )}
 
           {reconciliationOutcomes !== null && reconciliationOutcomes.length > 0 && (
             <>
-              <h3>Referências brutas de reconciliação</h3>
+              <h4>Referências brutas de reconciliação</h4>
               <dl className="inspection-panel__technical-refs">
                 {reconciliationOutcomes.map((outcome, index) => (
                   <div key={index} className="inspection-panel__technical-refs-row">
@@ -281,7 +290,7 @@ function TechnicalAudit({
 
           {ambiguousClaims.length > 0 && (
             <>
-              <h3>Identidade de claim ambígua</h3>
+              <h4>Identidade de claim ambígua</h4>
               <p className="inspection-panel__technical-hint">
                 Registros de claim que compartilham o mesmo id -- nenhum vira unidade semântica;
                 nenhum "vence" sobre os outros. Todos os registros originais continuam abaixo.
@@ -305,7 +314,7 @@ function TechnicalAudit({
 
           {quarantinedAssessments.length > 0 && (
             <>
-              <h3>Avaliações do juiz em quarentena</h3>
+              <h4>Avaliações do juiz em quarentena</h4>
               <p className="inspection-panel__technical-hint">
                 Registros originais preservados, mas que não viraram uma conclusão semântica do
                 juiz pra nenhuma afirmação (ver motivo de cada um).
@@ -327,7 +336,7 @@ function TechnicalAudit({
 
           {quarantinedSourceResults.length > 0 && (
             <>
-              <h3>Resultados de fonte em quarentena</h3>
+              <h4>Resultados de fonte em quarentena</h4>
               <p className="inspection-panel__technical-hint">
                 Registros originais preservados, mas que não entraram em nenhuma unidade de claim
                 (ver motivo de cada um).
@@ -374,7 +383,7 @@ function TechnicalAudit({
 
           {quarantinedReconciliationOutcomes.length > 0 && (
             <>
-              <h3>Outcomes de reconciliação em quarentena</h3>
+              <h4>Outcomes de reconciliação em quarentena</h4>
               <p className="inspection-panel__technical-hint">
                 Registros originais preservados, mas cujo envelope de referência não passou na
                 validação de integridade (ver motivos de cada um) -- nunca anexados como
@@ -408,7 +417,7 @@ function TechnicalAudit({
 
           {integrityIssues.length > 0 && (
             <>
-              <h3>Problemas de integridade do audit</h3>
+              <h4>Problemas de integridade do audit</h4>
               <p className="inspection-panel__technical-hint">
                 Referências explícitas que não puderam ser resolvidas neste audit -- nunca
                 anexadas a uma afirmação adivinhada, nunca reinterpretadas como desacordo,
@@ -493,7 +502,7 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
         // `DeliberationOutcomes` já diz isso explicitamente (nunca um
         // silêncio ambíguo).
         <section aria-labelledby="execution-notes-heading">
-          <h2 id="execution-notes-heading">Notas da execução</h2>
+          <h3 id="execution-notes-heading">Notas da execução</h3>
           <DeliberationOutcomes
             debateOutcome={audit.debate_outcome}
             judgeOutcome={audit.judge_outcome}
@@ -503,7 +512,7 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
       )}
 
       <section aria-labelledby="participants-heading">
-        <h2 id="participants-heading">Perspectivas dos participantes</h2>
+        <h3 id="participants-heading">Perspectivas dos participantes</h3>
         <p className="participant-responses-caveat">
           Estas são perspectivas individuais dos participantes, não a conclusão do Dialeon. As
           revisões mostram uma etapa posterior do debate, não uma correção comprovada.
@@ -522,7 +531,7 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
       {audit.status === 'completed' && claimModel && (
         <>
           <section aria-labelledby="claims-heading">
-            <h2 id="claims-heading">Afirmações</h2>
+            <h3 id="claims-heading">Afirmações</h3>
             <ClaimInspectionList
               model={claimModel}
               sourceRelationAvailable={sourceRelationAvailable}
@@ -541,7 +550,7 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
           </section>
 
           <section aria-labelledby="judgment-heading-wrapper">
-            <h2 id="judgment-heading-wrapper">Avaliação do juiz</h2>
+            <h3 id="judgment-heading-wrapper">Avaliação do juiz</h3>
             <JudgmentView verdict={audit.judge_verdict} />
           </section>
         </>
@@ -568,11 +577,14 @@ function InspectionContent({ audit }: { audit: RunAuditResponse }) {
   )
 }
 
-export function InspectionPanel({ runId }: InspectionPanelProps) {
+export function InspectionPanel({
+  runId,
+  title = 'Como esta resposta foi produzida',
+  intro = 'Afirmações avaliadas, o que cada modelo respondeu, comparação com a fonte e a auditoria técnica completa.',
+  children,
+  returnTargetId,
+}: InspectionPanelProps) {
   const [audit, setAudit] = useState<AuditState>({ phase: 'idle' })
-  // Reversível: colapsar só oculta a apresentação, nunca descarta o
-  // audit já carregado (`audit` acima continua `'loaded'`) -- reabrir
-  // depois de colapsar nunca dispara um novo request.
   const [expanded, setExpanded] = useState(false)
 
   async function loadAudit() {
@@ -586,6 +598,8 @@ export function InspectionPanel({ runId }: InspectionPanelProps) {
     }
   }
 
+  // O audit só é buscado sob ação explícita (primeira abertura) -- nunca no
+  // carregamento da página.
   function handleToggle() {
     if (expanded) {
       setExpanded(false)
@@ -597,20 +611,39 @@ export function InspectionPanel({ runId }: InspectionPanelProps) {
     }
   }
 
+  function returnToAnswer() {
+    if (!returnTargetId) return
+    const target = document.getElementById(returnTargetId)
+    if (!target) return
+    target.focus()
+    target.scrollIntoView?.({ block: 'start' })
+  }
+
   return (
-    <div className="inspection-panel">
-      <button
-        type="button"
-        className="inspection-panel__open"
-        onClick={handleToggle}
-        aria-expanded={expanded}
-        aria-controls="inspection-panel-content"
-      >
-        {expanded ? 'Ocultar inspeção' : 'Inspecionar execução'}
-      </button>
+    <section aria-labelledby="inspection-panel-heading" className="inspection-panel">
+      {/* Padrão de disclosure: o botão fica DENTRO do heading, com rótulo
+          estável; o estado aberto/fechado é comunicado por aria-expanded
+          (e pelo chevron), nunca trocando o texto. */}
+      <h2 id="inspection-panel-heading" className="inspection-panel__heading">
+        <button
+          type="button"
+          className="inspection-panel__open"
+          onClick={handleToggle}
+          aria-expanded={expanded}
+          aria-controls="inspection-panel-content"
+        >
+          {title}
+          <span className="inspection-panel__chevron" aria-hidden="true">
+            ▾
+          </span>
+        </button>
+      </h2>
+      <p className="inspection-panel__intro">{intro}</p>
 
       {expanded && (
-        <div id="inspection-panel-content">
+        <div id="inspection-panel-content" className="inspection-panel__body">
+          {children}
+
           {audit.phase === 'loading' && (
             <p aria-live="polite" role="status">
               Carregando detalhes da execução…
@@ -618,8 +651,8 @@ export function InspectionPanel({ runId }: InspectionPanelProps) {
           )}
 
           {audit.phase === 'error' && (
-            <div role="alert">
-              <p>Não foi possível carregar a inspeção: {audit.message}</p>
+            <div role="alert" className="notice notice--error">
+              <p>Não foi possível carregar os detalhes: {audit.message}</p>
               <button type="button" onClick={loadAudit}>
                 Tentar novamente
               </button>
@@ -627,8 +660,16 @@ export function InspectionPanel({ runId }: InspectionPanelProps) {
           )}
 
           {audit.phase === 'loaded' && <InspectionContent audit={audit.audit} />}
+
+          {returnTargetId && (
+            <p className="inspection-panel__return">
+              <button type="button" className="inspection-panel__return-button" onClick={returnToAnswer}>
+                Voltar à resposta
+              </button>
+            </p>
+          )}
         </div>
       )}
-    </div>
+    </section>
   )
 }

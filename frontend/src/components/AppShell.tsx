@@ -15,13 +15,16 @@ interface AppShellProps {
 export function AppShell({ children }: AppShellProps) {
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Pular para o conteúdo
+      </a>
       <header className="app-shell__header">
         <NavLink to="/" end className="app-shell__brand">
           Dialeon
         </NavLink>
         <nav className="app-shell__nav" aria-label="Navegação principal">
           <NavLink to="/" end className="app-shell__nav-link">
-            Perguntar
+            Nova pergunta
           </NavLink>
           <NavLink to="/runs" className="app-shell__nav-link">
             Histórico

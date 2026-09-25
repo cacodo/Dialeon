@@ -1,33 +1,37 @@
-// /app -- experiência principal (Decision Delta secao 7). Uma nova
-// submissão é sempre uma nova Run independente -- nenhum estado de
-// Conversation é mantido entre submissões.
-
 import { useEffect, useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
-import type { RunResponse } from '../api/types'
 import { formatErrorCode, formatInvalidRequest } from '../api/formatting'
 import { parseReuseInput } from '../lib/reuseInput'
+import { completedRunState } from '../lib/completedRunState'
 import { RunComposer } from '../components/RunComposer'
 import { PendingInvestigation } from '../components/PendingInvestigation'
-import { FinalAnswerView } from '../components/FinalAnswerView'
-import { AccountingView } from '../components/AccountingView'
 
+// Depois do envio, uma pergunta com desfecho persistido tem UMA superfície de
+// leitura e UMA URL: /runs/:id. A resposta concluída já recebida segue no
+// state da navegação (sem novo GET); quórum insuficiente também já tem
+// registro persistido, então abre a mesma página.
+//
+// Falha sem desfecho confirmado (erro do servidor ou de rede depois do envio)
+// NUNCA oferece reenvio de um clique: o POST é síncrono e pode já ter feito
+// chamadas pagas aos modelos. A pergunta continua no composer para um reenvio
+// deliberado, e o usuário é levado a conferir o Histórico antes.
 type SubmissionState =
   | { phase: 'idle' }
   | { phase: 'submitting' }
-  | { phase: 'completed'; result: Extract<RunResponse, { status: 'completed' }> }
-  | { phase: 'insufficient_quorum'; runId: string; message: string }
-  | { phase: 'error'; message: string }
+  | { phase: 'invalid'; message: string }
+  | { phase: 'unknown_provider'; message: string }
+  | { phase: 'outcome_uncertain' }
+  | { phase: 'insufficient_without_record'; message: string }
 
 export function Home() {
-  // Reuso de entrada vindo de "Reutilizar pergunta" (RunDetail) -- só os
-  // três campos do usuário; a submissão continua uma Run independente comum.
   const location = useLocation()
+  const navigate = useNavigate()
   const [initialInput] = useState(() => parseReuseInput(location.state))
   const [providers, setProviders] = useState<string[]>([])
   const [providersLoading, setProvidersLoading] = useState(true)
   const [providersError, setProvidersError] = useState<string | null>(null)
+  const [providersAttempt, setProvidersAttempt] = useState(0)
   const [submission, setSubmission] = useState<SubmissionState>({ phase: 'idle' })
 
   useEffect(() => {
@@ -48,7 +52,14 @@ export function Home() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [providersAttempt])
+
+  // GET /providers é seguro de repetir (nenhuma execução, nenhum custo).
+  function retryProviders() {
+    setProvidersLoading(true)
+    setProvidersError(null)
+    setProvidersAttempt((attempt) => attempt + 1)
+  }
 
   async function handleSubmit(
     question: string,
@@ -63,28 +74,28 @@ export function Home() {
         source_text: sourceText,
       })
       if (result.status === 'completed') {
-        setSubmission({ phase: 'completed', result })
+        navigate(`/runs/${encodeURIComponent(result.id)}`, { state: completedRunState(result) })
       }
     } catch (error) {
       if (error instanceof ApiError && error.code === 'insufficient_quorum') {
-        const runId = (error.details?.run_id as string | undefined) ?? null
-        setSubmission({
-          phase: 'insufficient_quorum',
-          runId: runId ?? '',
-          message: error.message,
-        })
+        const runId = error.details?.run_id
+        if (typeof runId === 'string' && runId.length > 0) {
+          navigate(`/runs/${encodeURIComponent(runId)}`)
+        } else {
+          setSubmission({ phase: 'insufficient_without_record', message: error.message })
+        }
       } else if (error instanceof ApiError && error.code === 'invalid_request') {
-        setSubmission({ phase: 'error', message: formatInvalidRequest(error.details) })
-      } else if (error instanceof ApiError) {
-        setSubmission({ phase: 'error', message: formatErrorCode(error.code) })
+        setSubmission({ phase: 'invalid', message: formatInvalidRequest(error.details) })
+      } else if (error instanceof ApiError && error.code === 'invalid_provider') {
+        setSubmission({ phase: 'unknown_provider', message: formatErrorCode(error.code) })
       } else {
-        setSubmission({ phase: 'error', message: 'Erro inesperado.' })
+        setSubmission({ phase: 'outcome_uncertain' })
       }
     }
   }
 
   return (
-    <main className="home">
+    <main className="home" id="main-content">
       <RunComposer
         providers={providers}
         providersLoading={providersLoading}
@@ -92,33 +103,42 @@ export function Home() {
         submitting={submission.phase === 'submitting'}
         initialInput={initialInput}
         onSubmit={handleSubmit}
+        onRetryProviders={retryProviders}
       />
 
       <div aria-live="polite" className="home__result">
         {submission.phase === 'submitting' && <PendingInvestigation />}
 
-        {submission.phase === 'completed' && (
-          <>
-            <FinalAnswerView finalAnswer={submission.result.final_answer} />
-            <AccountingView accounting={submission.result.accounting} compact />
-            <Link to={`/runs/${submission.result.id}`}>Ver detalhes desta execução</Link>
-          </>
+        {submission.phase === 'invalid' && (
+          <p role="alert" className="notice notice--validation">
+            {submission.message}
+          </p>
         )}
 
-        {submission.phase === 'insufficient_quorum' && (
-          <div role="alert" className="home__quorum-failure">
-            <p>
-              Não houve participantes suficientes para produzir um resultado desta vez.
-              {submission.message ? ` ${submission.message}` : ''}
-            </p>
-            {submission.runId && <Link to={`/runs/${submission.runId}`}>Ver detalhes</Link>}
+        {submission.phase === 'unknown_provider' && (
+          <div role="alert" className="notice notice--validation">
+            <p>{submission.message}</p>
+            <button type="button" onClick={retryProviders}>
+              Recarregar modelos
+            </button>
           </div>
         )}
 
-        {submission.phase === 'error' && (
-          <p role="alert" className="home__error">
-            {submission.message}
+        {submission.phase === 'insufficient_without_record' && (
+          <p role="alert" className="notice notice--neutral">
+            Poucos modelos responderam para montar uma resposta.
+            {submission.message ? ` ${submission.message}` : ''}
           </p>
+        )}
+
+        {submission.phase === 'outcome_uncertain' && (
+          <div role="alert" className="notice notice--warning">
+            <p>
+              Não foi possível confirmar o resultado desta pergunta. Ela pode ter sido processada
+              pelos modelos mesmo assim — confira o Histórico antes de perguntar de novo.
+            </p>
+            <Link to="/runs">Abrir o Histórico</Link>
+          </div>
         )}
       </div>
     </main>

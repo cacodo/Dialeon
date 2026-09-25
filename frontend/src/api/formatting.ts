@@ -81,13 +81,29 @@ export function formatFailureCategory(type: string): string {
   return FAILURE_CATEGORY_LABELS[type] ?? 'motivo não identificado'
 }
 
+// Custo de EXIBIÇÃO em dólar, no formato numérico pt-BR da interface
+// (vírgula decimal). Até 4 casas: custos de uma pergunta costumam ser
+// frações de centavo.
+const ESTIMATED_COST_FORMAT = new Intl.NumberFormat('pt-BR', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+})
+const SMALLEST_DISPLAYED_COST = 0.0001
+
 /** UNKNOWN NÃO PODE SER FORMATADO COMO ZERO -- distinção explícita entre
- * os 3 estados reais (>0 conhecido, ===0 conhecido, null desconhecido). */
+ * os 3 estados reais (>0 conhecido, ===0 conhecido, null desconhecido). Um
+ * valor positivo abaixo da menor casa exibida também nunca vira "0,00":
+ * aparece como "< US$ 0,0001" (o valor exato fica na Auditoria técnica). */
 export function formatEstimatedCost(cost: number | null, hasUnknown: boolean): string {
   if (cost === null) {
     return 'Estimativa indisponível'
   }
-  const formatted = cost === 0 ? '$0,00 (estimativa conhecida)' : `~$${cost.toFixed(4)}`
+  const formatted =
+    cost === 0
+      ? 'US$ 0,00 (estimativa conhecida)'
+      : cost < SMALLEST_DISPLAYED_COST
+        ? `< US$ ${ESTIMATED_COST_FORMAT.format(SMALLEST_DISPLAYED_COST)}`
+        : `~US$ ${ESTIMATED_COST_FORMAT.format(cost)}`
   return hasUnknown ? `${formatted} · estimativa parcial (dados incompletos)` : formatted
 }
 
@@ -121,8 +137,8 @@ export function formatPricingCanonicalModelId(canonicalModelId: string | null): 
 
 // Auditoria técnica -- valor EXATO de `cost_usd` como persistido, sem
 // arredondar valores positivos minúsculos pra algo que pareça zero
-// (`formatEstimatedCost` acima usa `.toFixed(4)` pra exibição AMIGÁVEL,
-// o que arredondaria 0.00001 pra "0,0000" -- aceitável lá, nunca aqui).
+// (`formatEstimatedCost` acima arredonda pra exibição AMIGÁVEL e mostra
+// valores minúsculos como "< US$ 0,0001" -- aceitável lá, nunca aqui).
 // `null` continua distinto de `0`, que continua distinto de qualquer
 // valor positivo, por menor que seja.
 export function formatExactCost(cost: number | null): string {
@@ -214,10 +230,10 @@ export function formatClaimVerdict(verdict: ClaimVerdict): string {
 }
 
 const ERROR_CODE_LABELS: Record<ErrorCode | 'unknown', string> = {
-  invalid_provider: 'Um ou mais participantes selecionados não existem.',
+  invalid_provider: 'Um ou mais modelos selecionados não são reconhecidos pelo servidor.',
   invalid_request: 'Verifique os dados informados.',
-  insufficient_quorum: 'Poucos participantes responderam para gerar um resultado.',
-  run_not_found: 'Execução não encontrada.',
+  insufficient_quorum: 'Poucos modelos responderam para montar uma resposta.',
+  run_not_found: 'Pergunta não encontrada.',
   internal_error: 'Algo deu errado do nosso lado. Tente novamente.',
   unknown: 'Não foi possível completar a solicitação.',
 }
@@ -437,7 +453,25 @@ export function summarizeAnswerVerdicts(blocks: AnswerBlockPublic[]): string | n
 }
 
 export function summarizeUnevaluatedClaims(count: number): string {
-  return `Sem veredito do Judge — ${count} ${count === 1 ? 'afirmação' : 'afirmações'} sem avaliação.`
+  return `Sem avaliação final — ${count} ${count === 1 ? 'afirmação ficou' : 'afirmações ficaram'} sem avaliação.`
+}
+
+// Nomes de modelo numa frase ("GPT, Claude e Gemini") -- a lista vem do
+// servidor, nunca de uma suposição fixa sobre quais/quantos existem.
+const MODEL_LIST_FORMAT = new Intl.ListFormat('pt-BR', { style: 'long', type: 'conjunction' })
+
+export function formatModelList(providerIds: readonly string[]): string {
+  return MODEL_LIST_FORMAT.format(providerIds.map(formatProviderName))
+}
+
+// Duração registrada de uma execução (início -> fim, relógio do servidor).
+// `null` se algum dos instantes estiver ausente ou inválido -- nunca inventa.
+export function formatRecordedDuration(startedAt: string, endedAt: string | null): string | null {
+  if (endedAt === null) return null
+  const start = Date.parse(startedAt)
+  const end = Date.parse(endedAt)
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null
+  return formatElapsed((end - start) / 1000)
 }
 
 // Tempo decorrido LOCAL (relógio do navegador) da espera por uma execução.

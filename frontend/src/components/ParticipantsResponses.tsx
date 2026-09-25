@@ -98,7 +98,7 @@ export function ParticipantsResponses({ responses, round }: ParticipantsResponse
 
   return (
     <section aria-labelledby={headingId} className="participant-responses-round">
-      <h3 id={headingId}>{heading}</h3>
+      <h4 id={headingId}>{heading}</h4>
       <ul className="participant-responses">
         {responses.map((response, index) => {
           const seen = (seenSoFar.get(response.provider) ?? 0) + 1

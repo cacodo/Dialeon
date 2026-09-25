@@ -107,7 +107,7 @@ textarea,
 input,
 select {
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-control-border);
   border-radius: var(--radius);
   padding: var(--space-2) var(--space-3);
   transition:
@@ -118,15 +118,15 @@ select {
 textarea:hover,
 input:hover,
 select:hover {
-  border-color: var(--color-border-strong);
+  border-color: var(--color-control-border-hover);
 }
 
 textarea:focus-visible,
 input:focus-visible,
 select:focus-visible {
   outline: none;
-  border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px var(--brand-100);
+  border-color: var(--color-focus-ring);
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
 }
 
 textarea:disabled,
@@ -152,12 +152,13 @@ legend {
 
 /* --- Botões ---
    Reset único de base -- todo <button> (com ou sem classe própria) ganha
-   uma aparência de controle secundário coerente; `.run-composer__submit`
+   uma aparência de controle secundário coerente; `.composer__submit`
    sobrescreve pra virar o botão primário (preenchido) da tela. */
 
 button {
+  min-height: 2.25rem;
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-strong);
   border-radius: var(--radius);
   padding: var(--space-2) var(--space-3);
   cursor: pointer;
@@ -169,7 +170,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--color-border-strong);
+  border-color: var(--color-control-border);
   background: var(--color-bg);
 }
 
@@ -205,7 +206,7 @@ button:disabled {
 /* --- Container / legibilidade responsiva --- */
 
 main {
-  max-width: 860px;
+  max-width: var(--width-page);
   margin: 0 auto;
   padding: var(--space-4);
 }
@@ -227,9 +228,27 @@ main {
     gap: var(--space-3);
   }
 
-  .run-composer__input--question {
+  .composer {
+    margin-top: var(--space-3);
+  }
+
+  .composer__input {
     padding: var(--space-3);
     font-size: var(--font-size-base);
+  }
+
+  .composer__bar {
+    padding: var(--space-2);
+  }
+
+  /* Envio sempre inteiro e alcançável: ocupa a própria linha. */
+  .composer__submit {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .composer__panel {
+    padding: var(--space-3);
   }
 }
 
@@ -299,179 +318,245 @@ main {
 .app-shell__nav-link[aria-current='page'] {
   color: var(--color-fg);
   font-weight: 700;
-  border-bottom-color: var(--brand-500);
+  border-bottom-color: var(--color-current);
 }
 
-/* --- Componentes existentes, restyled sobre os novos tokens --- */
+/* --- Composer (pergunta) ---
+   UMA superfície: moldura com o campo da pergunta e a barra de controles
+   (fonte, modelos, enviar). A moldura é o controle -- seu contorno usa
+   `--color-control-border` (>= 3:1) e o foco aparece nela inteira
+   (`:focus-within`), já que o textarea interno não tem borda própria. */
 
-.run-composer__input {
+.composer {
+  max-width: var(--width-composer);
+  margin: var(--space-5) auto 0;
+}
+
+.composer__heading {
+  margin: 0 0 var(--space-2);
+}
+
+.composer__lede {
+  margin: 0 0 var(--space-4);
+  color: var(--color-fg-muted);
+}
+
+.composer__frame {
+  background: var(--color-surface);
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.composer__frame:hover {
+  border-color: var(--color-control-border-hover);
+}
+
+.composer__frame:focus-within {
+  border-color: var(--color-focus-ring);
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+
+/* O campo não desenha contorno próprio: a moldura é o limite do controle
+   e o foco dela (acima) é o indicador visível. */
+.composer__input {
+  display: block;
   width: 100%;
+  min-height: 7.5rem;
+  max-height: 40vh;
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  border: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: transparent;
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-base);
   resize: vertical;
 }
 
-.run-composer__question {
-  margin-bottom: var(--space-2);
+.composer__input:hover,
+.composer__input:focus-visible {
+  border: none;
+  box-shadow: none;
 }
 
-/* Heading único da tela (Polimento visual UI Slice 2) -- colapsa a
-   hierarquia redundante "Nova pergunta" / "Faça uma pergunta" / "O que
-   você quer investigar?" numa única frase, que É o h1 desta página. */
-.run-composer__heading {
-  margin-bottom: var(--space-3);
-}
-
-/* Campo protagonista -- composição espaçosa e intencional (UI Slice 2):
-   fonte maior, respiro generoso, sombra sutil de elevação. Nunca se
-   confunde com a caixa de fonte opcional abaixo, que continua usando só
-   `.run-composer__input`. */
-.run-composer__input--question {
-  font-size: var(--font-size-lg);
-  padding: var(--space-4);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  min-height: 8rem;
-}
-
-/* Barra de configuração secundária -- fonte opcional + participantes,
-   deliberadamente pequena/discreta (nunca do mesmo peso visual da
-   pergunta ou do botão de submit). Fonte e Participantes são
-   controles-irmãos DENTRO do mesmo flex container: os dois botões ficam
-   na mesma linha (`align-items: center`), e cada painel que um deles
-   abre usa `flex-basis: 100%` (ver `.run-composer__control-panel`) pra
-   sempre quebrar numa linha cheia própria logo abaixo do botão que o
-   controla -- nunca dividindo espaço com o botão do outro controle, nem
-   ficando um sub-item estreito flutuando dentro de uma coluna diferente. */
-.run-composer__toolbar {
+.composer__bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-3);
-  margin: 0 0 var(--space-3);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
 }
 
-.run-composer__providers-status {
-  margin: 0;
-  color: var(--color-fg-muted);
-  font-size: var(--font-size-sm);
-}
-
-.run-composer__label {
-  display: block;
-  margin-bottom: var(--space-1);
-  font-weight: 600;
-}
-
-/* Afordância de disclosure compartilhada por Fonte e Participantes --
-   mesmo tamanho, mesmo peso, mesmo estado de hover/foco/expandido, pra
-   que os dois botões leiam como o MESMO tipo de controle (Polish dos
-   controles secundários do composer). O estado expandido nunca depende
-   só de cor: a borda fica mais forte, o fundo muda de leve, E o chevron
-   gira -- três sinais redundantes, não um só. */
-.run-composer__control-toggle {
+/* Controles secundários da barra (Fonte, Modelos) -- mesmo tipo de
+   controle, mais quietos que o envio. O estado aberto nunca depende só de
+   cor: contorno + fundo mudam e o chevron gira. */
+.composer__control {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-1) var(--space-3);
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);
   font-weight: 600;
 }
 
-.run-composer__control-toggle:hover:not(:disabled) {
+.composer__control:hover:not(:disabled) {
   color: var(--color-fg);
-  border-color: var(--color-border-strong);
 }
 
-.run-composer__control-toggle[aria-expanded='true'] {
+.composer__control[aria-expanded='true'] {
   color: var(--color-fg);
-  border-color: var(--color-border-strong);
+  border-color: var(--color-control-border);
   background: var(--color-bg);
 }
 
-.run-composer__control-chevron {
+.composer__models-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__control-chevron {
+  flex: none;
   font-size: 0.7em;
   line-height: 1;
   transition: transform var(--duration-fast) var(--ease-standard);
 }
 
-.run-composer__control-toggle[aria-expanded='true'] .run-composer__control-chevron {
+.composer__control[aria-expanded='true'] .composer__control-chevron {
   transform: rotate(180deg);
 }
 
-/* Painel expandido compartilhado por Fonte e Participantes -- mesma
-   moldura em ambos, e `flex-basis: 100%` dentro do `.run-composer__toolbar`
-   (que já é `flex-wrap`) garante que QUALQUER um dos dois sempre quebre
-   pra própria linha cheia, na ordem em que aparece no documento (Fonte
-   antes de Participantes) -- nunca competindo por coluna com o botão do
-   controle vizinho, mesmo quando os dois estão abertos ao mesmo tempo.
-   Moldura é a mesma linguagem de disclosure já usada em
-   `.claim-inspection-list__details`/`.participant-perspective__panel`
-   (traço esquerdo + indentação, nunca card fechado com fundo/borda
-   nos 4 lados) -- painel aberto lê como conteúdo SUBORDINADO ao
-   controle que o abriu, nunca como um card de configuração equivalente
-   à pergunta/CTA. Controles internos (textarea, checkboxes) mantêm sua
-   própria moldura própria de input -- só o CONTAINER externo fica quieto. */
-.run-composer__control-panel {
-  flex-basis: 100%;
-  width: 100%;
-  margin-top: var(--space-1);
-  padding-left: var(--space-4);
-  border-left: 2px solid var(--color-border);
+.composer__status {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* Envio: a única ação primária da tela (papel de marca "ação"). Fica à
+   direita da barra; em telas estreitas ocupa a linha inteira (ver media
+   query). */
+.composer__submit {
+  margin-left: auto;
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-action-bg);
+  color: var(--color-action-fg);
+  border: 1px solid var(--color-action-bg);
+  font-weight: 600;
+}
+
+.composer__submit:hover:not(:disabled) {
+  background: var(--color-action-bg-hover);
+  border-color: var(--color-action-bg-hover);
+}
+
+.composer__submit:disabled {
+  background: var(--color-bg);
+  border-color: var(--color-border-strong);
+  color: var(--color-fg-muted);
+}
+
+/* Painéis abertos pela barra (fonte, modelos) -- ficam DENTRO da mesma
+   moldura, separados por um traço sutil: conteúdo subordinado ao controle
+   que o abriu, nunca um card de configuração competindo com a pergunta. */
+.composer__panel {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border: none;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
   animation: fade-in-up var(--duration-base) var(--ease-out);
 }
 
-.run-composer__source-hint {
-  color: var(--color-fg-muted);
-  font-size: var(--font-size-sm);
-  margin-bottom: 0;
-}
-
-.run-composer__submit {
-  margin-top: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  background: var(--brand-500);
-  color: #ffffff;
-  border: 1px solid var(--brand-500);
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
-}
-
-.run-composer__submit:hover:not(:disabled) {
-  background: var(--brand-700);
-  border-color: var(--brand-700);
-}
-
-.run-composer__submit:disabled {
-  background: var(--color-border);
-  border-color: var(--color-border);
-  color: var(--color-fg-muted);
-  box-shadow: none;
-}
-
-.run-composer__error {
-  color: var(--color-danger);
-}
-
-/* Contador de caracteres -- discreto; só ganha ênfase (cor + peso, nunca só
-   cor) quando excede o limite. */
-.run-composer__limit {
-  color: var(--color-fg-muted);
-  font-size: var(--font-size-sm);
-  margin: var(--space-1) 0 0;
-}
-
-.run-composer__limit--exceeded {
-  color: var(--color-danger);
-  font-weight: 600;
-}
-
-/* Participantes reusa inteiramente a afordância compartilhada
-   (`.run-composer__control-toggle` / `.run-composer__control-panel`) --
-   as únicas regras próprias que sobram aqui são as que não têm
-   equivalente em Fonte (o layout de cada opção de checkbox). */
-.provider-selector__option {
+.composer__label {
   display: block;
-  padding: var(--space-1) 0;
+  margin-bottom: var(--space-1);
+  font-weight: 600;
+}
+
+.composer__source-input {
+  width: 100%;
+  resize: vertical;
+}
+
+.composer__meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-2);
+  padding: 0 var(--space-1);
+}
+
+.composer__hint {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* Contador de caracteres -- sempre presente, discreto; só ganha ênfase
+   (cor + peso, nunca só cor) quando excede o limite. */
+.composer__limit {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.composer__panel .composer__limit {
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.composer__limit--exceeded {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.composer__providers-error {
+  margin-top: var(--space-3);
+}
+
+.composer__providers-error p {
+  margin-bottom: var(--space-2);
+}
+
+/* Seleção de modelos -- lista simples de opções (uma por linha em telas
+   estreitas, fluindo em linha quando há espaço). */
+.model-selection legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+
+.model-selection__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+.model-selection__option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  overflow-wrap: anywhere;
+}
+
+.model-selection__option input {
+  width: 1.125rem;
+  height: 1.125rem;
+  margin: 0;
+  accent-color: var(--color-action-bg);
+}
+
+.model-selection__hint {
+  margin: var(--space-2) 0 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
 }
 
 /* Pergunta em RunDetail -- contexto pra resposta, nunca protagonista
@@ -520,38 +605,37 @@ main {
   overflow-wrap: anywhere;
   padding: var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md, 6px);
+  border-radius: var(--radius-sm);
   font-family: inherit;
   font-size: var(--font-size-sm);
   margin: 0;
 }
 
-.run-detail__reuse {
-  margin: 0 0 var(--space-4);
-}
-
-.run-detail__reuse-hint {
-  color: var(--color-fg-muted);
-  font-size: var(--font-size-sm);
-}
-
-/* Resposta -- superfície de leitura primária (UI Slice 2): mais elevação
-   que os demais cards da tela, pra reforçar que este é o conteúdo
-   protagonista depois da execução. */
+/* Resposta -- a ÚNICA superfície emoldurada da página da pergunta (a
+   protagonista). Tudo que é mais profundo (detalhes, inspeção, auditoria)
+   fica sem moldura, como documento: nunca card dentro de card. No escuro a
+   moldura vem do passo de superfície + contorno, não de sombra. */
 .final-answer {
   margin-top: var(--space-4);
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-4) clamp(var(--space-3), 4vw, var(--space-5));
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
   animation: fade-in-up var(--duration-base) var(--ease-out);
 }
 
 .final-answer__text {
   font-size: var(--font-size-md);
-  max-width: var(--measure);
+  max-width: var(--width-reading);
   line-height: var(--line-height-base);
+  overflow-wrap: anywhere;
+}
+
+/* Destino do "Voltar à resposta" (tabIndex -1): recebe foco programático
+   sem mostrar anel de clique; o anel de teclado global continua valendo. */
+.final-answer__header h2:focus:not(:focus-visible) {
+  outline: none;
 }
 
 /* Cada bloco separado por linha em branco no texto original vira um
@@ -701,11 +785,6 @@ main {
   content: ':';
 }
 
-.final-answer__status {
-  color: var(--color-fg-muted);
-  font-size: var(--font-size-sm);
-}
-
 /* Cabeçalho da resposta: título + ação de copiar. Empilha em telas estreitas
    (flex-wrap) -- o botão nunca espreme o título. */
 .final-answer__header {
@@ -767,7 +846,7 @@ main {
 }
 
 .final-answer__claim-why summary:hover {
-  color: var(--brand-700);
+  color: var(--color-link);
 }
 
 .final-answer__claim-why[open] summary {
@@ -832,27 +911,88 @@ main {
   padding: var(--space-1) 0;
 }
 
-.final-answer--nested {
-  margin-top: var(--space-2);
-  box-shadow: none;
-  animation: none;
+/* Detalhes da resposta (profundidade 1, dentro de "Como esta resposta foi
+   produzida") -- documento, sem moldura: seções separadas por espaço e um
+   traço sutil. */
+.answer-details {
+  margin-bottom: var(--space-4);
 }
 
-/* Espera por uma investigação -- calma, sem barra de progresso. */
-.pending-investigation {
+.answer-details__provenance {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.answer-details__provenance-label {
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.answer-details__section {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.answer-details__section .final-answer__header h3 {
+  margin: 0;
+}
+
+/* Espera por uma resposta -- calma, sem barra/etapas/percentual. */
+.pending-answer {
+  max-width: var(--width-composer);
+  margin: var(--space-4) auto 0;
   padding: var(--space-3) 0;
 }
 
-.pending-investigation__title {
+.pending-answer__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   margin: 0 0 var(--space-1);
   font-weight: 600;
 }
 
-.pending-investigation__elapsed,
-.pending-investigation__note {
+.pending-answer__elapsed,
+.pending-answer__note {
   margin: 0 0 var(--space-1);
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);
+}
+
+/* Indicador de atividade neutro (sem marca): três pontos que pulsam em
+   opacidade. Com movimento reduzido, a regra global zera a animação e os
+   pontos ficam parados. */
+.activity-indicator {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.activity-indicator span {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--radius-full);
+  background: var(--color-fg-muted);
+  opacity: 0.35;
+  animation: activity-pulse 1.2s var(--ease-standard) infinite;
+}
+
+.activity-indicator span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.activity-indicator span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes activity-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .final-answer__unevaluated-claims-note {
@@ -870,7 +1010,7 @@ main {
 }
 
 .final-answer__unevaluated-claims summary:hover {
-  color: var(--brand-700);
+  color: var(--color-link);
 }
 
 .final-answer__unevaluated-claims-list {
@@ -950,7 +1090,7 @@ main {
 }
 
 .history__link:hover .history__question {
-  color: var(--brand-700);
+  color: var(--color-link);
 }
 
 .history__question {
@@ -1070,17 +1210,38 @@ main {
   font-size: var(--font-size-sm);
 }
 
-/* role="alert" continua um sinal de ATENÇÃO genérico (erro de request,
-   quórum insuficiente, falha inesperada) -- deliberadamente restrito a um
-   traço lateral discreto, nunca um bloco colorido cheio: uma seção de
-   "quórum insuficiente" não é o mesmo tipo de evento que uma falha
-   inesperada, e um preenchimento sólido de "danger" pra ambos exageraria
-   a severidade da primeira. A distinção fina entre esses subtipos de
-   alerta permanece só no texto desta slice (fora de escopo -- ver
-   "redesign da informação de auditoria"). */
-[role='alert'] {
+/* Avisos -- severidade explícita por classe, nunca "todo alerta é
+   vermelho": traço lateral discreto (nunca bloco colorido cheio) cuja cor
+   só REFORÇA o texto, que sempre diz o que aconteceu.
+   - validation: algo a corrigir na entrada (nada foi executado);
+   - error: falha real;
+   - warning: resultado incerto (ex.: não foi possível confirmar);
+   - neutral: condição legítima sem resposta (ex.: respostas insuficientes). */
+.notice {
+  margin: var(--space-3) 0;
   padding-left: var(--space-3);
-  border-left: 3px solid var(--color-danger);
+  border-left: 3px solid var(--color-border-strong);
+}
+
+.notice > :last-child {
+  margin-bottom: 0;
+}
+
+.notice--validation {
+  color: var(--color-danger);
+  border-left-color: var(--color-danger);
+}
+
+.notice--error {
+  border-left-color: var(--color-danger);
+}
+
+.notice--warning {
+  border-left-color: var(--state-warning-border);
+}
+
+.notice--neutral {
+  border-left-color: var(--color-border-strong);
 }
 
 /* Claim-centered semantic inspection (UI Slice -- visual polish) -- a
@@ -1125,11 +1286,11 @@ main {
 .claim-inspection-list__toggle:hover:not(:disabled) {
   background: none;
   border: none;
-  color: var(--brand-700);
+  color: var(--color-link);
 }
 
 .claim-inspection-list__toggle[aria-expanded='true'] {
-  color: var(--brand-700);
+  color: var(--color-link);
 }
 
 .claim-inspection-list__claim-text {
@@ -1146,7 +1307,7 @@ main {
 
 .claim-inspection-list__toggle[aria-expanded='true'] .claim-inspection-list__chevron {
   transform: rotate(180deg);
-  color: var(--brand-500);
+  color: var(--color-current);
 }
 
 /* Canais expandidos (Debate/Juiz/Fonte/Reconciliação) precisam ler como
@@ -1264,11 +1425,11 @@ main {
 .participant-perspective__toggle:hover:not(:disabled) {
   background: none;
   border: none;
-  color: var(--brand-700);
+  color: var(--color-link);
 }
 
 .participant-perspective__toggle[aria-expanded='true'] {
-  color: var(--brand-700);
+  color: var(--color-link);
 }
 
 .participant-perspective__label {
@@ -1284,7 +1445,7 @@ main {
 
 .participant-perspective__toggle[aria-expanded='true'] .participant-perspective__chevron {
   transform: rotate(180deg);
-  color: var(--brand-500);
+  color: var(--color-current);
 }
 
 .participant-perspective__panel {
@@ -1405,4 +1566,149 @@ main {
 .inspection-panel__quarantine-list ul {
   list-style: none;
   padding-left: var(--space-3);
+}
+
+/* --- Página da pergunta: resumo, ações e desfechos --- */
+
+/* Link de pular pro conteúdo -- fora da tela até receber foco. */
+.skip-link {
+  position: absolute;
+  left: var(--space-3);
+  top: -100%;
+  z-index: 10;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius);
+}
+
+.skip-link:focus {
+  top: var(--space-2);
+}
+
+.run-detail__back {
+  margin-bottom: var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+/* Texto longo sem quebra natural (URL, código, identificadores) nunca
+   estoura a coluna -- quebra onde precisar. */
+.run-detail__question-text,
+.history__question,
+.final-answer__claim-text,
+.final-answer__primary-claim,
+.final-answer__limitations li,
+.claim-inspection-list__claim-text {
+  overflow-wrap: anywhere;
+}
+
+/* Resumo factual curto logo abaixo da resposta: uma linha de metadados
+   (quebra em telas estreitas), bem mais quieta que a resposta. */
+.run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.run-meta li {
+  overflow-wrap: anywhere;
+}
+
+/* Próximas ações comuns -- links com alvo confortável, secundários. */
+.run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+}
+
+.run-actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.run-actions a:hover {
+  border-color: var(--color-control-border);
+}
+
+.run-outcome {
+  margin-top: var(--space-4);
+}
+
+.run-outcome h2 {
+  margin-top: 0;
+}
+
+/* "Como esta resposta foi produzida" -- profundidade 1. Heading com o
+   botão de disclosure dentro; o conteúdo aberto é documento (sem moldura),
+   separado da resposta por espaço e um traço. */
+.inspection-panel {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.inspection-panel__heading {
+  margin: 0;
+}
+
+.inspection-panel__heading .inspection-panel__open {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  color: var(--color-fg);
+  font-size: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+
+.inspection-panel__heading .inspection-panel__open:hover:not(:disabled) {
+  color: var(--color-link);
+}
+
+.inspection-panel__chevron {
+  flex: none;
+  font-size: 0.6em;
+  color: var(--color-fg-muted);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.inspection-panel__open[aria-expanded='true'] .inspection-panel__chevron {
+  transform: rotate(180deg);
+}
+
+.inspection-panel__intro {
+  margin: var(--space-1) 0 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.inspection-panel__body {
+  margin-top: var(--space-4);
+  animation: fade-in-up var(--duration-base) var(--ease-out);
+}
+
+.inspection-panel__return {
+  margin: var(--space-5) 0 0;
+}
+
+.inspection-panel__return-button {
+  font-size: var(--font-size-sm);
+}
+
+.history__empty p {
+  margin-bottom: var(--space-2);
 }

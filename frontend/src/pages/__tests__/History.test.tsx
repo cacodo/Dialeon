@@ -57,7 +57,7 @@ describe('History — estado de carregamento e vazio', () => {
     vi.mocked(apiClient.listRuns).mockResolvedValue({ runs: [], limit: 21, offset: 0 })
     renderHistory()
 
-    expect(await screen.findByText(/nenhuma execução ainda/i)).toBeInTheDocument()
+    expect(await screen.findByText(/nenhuma pergunta ainda/i)).toBeInTheDocument()
   })
 })
 
@@ -138,7 +138,7 @@ describe('History — usa só os dados do summary (sem N+1)', () => {
     renderHistory()
 
     expect(await screen.findByText('Concluída')).toBeInTheDocument()
-    expect(await screen.findByText('Quórum insuficiente')).toBeInTheDocument()
+    expect(await screen.findByText('Sem respostas suficientes')).toBeInTheDocument()
     expect(vi.mocked(apiClient.getRun)).not.toHaveBeenCalled()
     expect(vi.mocked(apiClient.getRunAudit)).not.toHaveBeenCalled()
   })
@@ -157,7 +157,7 @@ describe('History — usa só os dados do summary (sem N+1)', () => {
     renderHistory()
 
     expect(await screen.findByText('Concluída')).toBeInTheDocument()
-    expect(screen.getByText('Quórum insuficiente')).toBeInTheDocument()
+    expect(screen.getByText('Sem respostas suficientes')).toBeInTheDocument()
     expect(screen.getByText('Sem desfecho registrado')).toBeInTheDocument()
     expect(screen.getByText('Falhou durante a execução')).toBeInTheDocument()
     expect(screen.queryByText(/em andamento/i)).not.toBeInTheDocument()
@@ -208,7 +208,7 @@ describe('History — paginação e estado de URL', () => {
     vi.mocked(apiClient.listRuns).mockResolvedValue({ runs: [], limit: 21, offset: 0 })
     renderHistory('/runs')
 
-    await screen.findByText(/nenhuma execução ainda/i)
+    await screen.findByText(/nenhuma pergunta ainda/i)
     expect(apiClient.listRuns).toHaveBeenCalledWith(21, 0)
   })
 
@@ -231,7 +231,7 @@ describe('History — paginação e estado de URL', () => {
       vi.mocked(apiClient.listRuns).mockResolvedValue({ runs: [], limit: 21, offset: 0 })
       renderHistory(`/runs?page=${invalid}`)
 
-      await screen.findByText(/nenhuma execução ainda/i)
+      await screen.findByText(/nenhuma pergunta ainda/i)
       expect(apiClient.listRuns).toHaveBeenCalledWith(21, 0)
     },
   )
@@ -243,7 +243,7 @@ describe('History — paginação e estado de URL', () => {
       vi.mocked(apiClient.listRuns).mockResolvedValue({ runs: [], limit: 21, offset: (page - 1) * 20 })
       renderHistory(`/runs?page=${valid}`)
 
-      await screen.findByText(page === 1 ? /nenhuma execução ainda/i : /esta página não tem execuções/i)
+      await screen.findByText(page === 1 ? /nenhuma pergunta ainda/i : /esta página não tem perguntas/i)
       expect(apiClient.listRuns).toHaveBeenCalledWith(21, (page - 1) * 20)
     },
   )
@@ -298,12 +298,12 @@ describe('History — paginação e estado de URL', () => {
 })
 
 describe('History — página além do fim (out-of-range) é distinta de histórico vazio', () => {
-  it('page=1 vazio diz "Nenhuma execução ainda"; page=5 vazio NUNCA diz isso', async () => {
+  it('page=1 vazio diz "Nenhuma pergunta ainda"; page=5 vazio NUNCA diz isso', async () => {
     vi.mocked(apiClient.listRuns).mockResolvedValue({ runs: [], limit: 21, offset: 80 })
     renderHistory('/runs?page=5')
 
-    await screen.findByText(/esta página não tem execuções/i)
-    expect(screen.queryByText(/nenhuma execução ainda/i)).not.toBeInTheDocument()
+    await screen.findByText(/esta página não tem perguntas/i)
+    expect(screen.queryByText(/nenhuma pergunta ainda/i)).not.toBeInTheDocument()
   })
 
   it('página vazia além do fim oferece rota de volta pra uma página existente', async () => {
@@ -347,7 +347,7 @@ describe('History — erro e retry', () => {
     vi.mocked(apiClient.listRuns).mockResolvedValueOnce({ runs: [], limit: 21, offset: 40 })
     await userEvent.click(screen.getByRole('button', { name: /tentar novamente/i }))
 
-    await screen.findByText(/esta página não tem execuções/i)
+    await screen.findByText(/esta página não tem perguntas/i)
     expect(apiClient.listRuns).toHaveBeenLastCalledWith(21, 40)
   })
 })

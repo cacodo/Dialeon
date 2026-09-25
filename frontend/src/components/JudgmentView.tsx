@@ -23,7 +23,7 @@ export function JudgmentView({ verdict }: JudgmentViewProps) {
 
   return (
     <section aria-labelledby="judgment-heading">
-      <h3 id="judgment-heading">Avaliação</h3>
+      <h4 id="judgment-heading">Avaliação</h4>
       <p className="judgment__reasoning">{verdict.reasoning}</p>
       <p className="judgment__confidence-caveat">
         Confiança declarada pelo juiz: {(verdict.confidence * 100).toFixed(0)}% — uma avaliação
@@ -31,7 +31,7 @@ export function JudgmentView({ verdict }: JudgmentViewProps) {
       </p>
       {verdict.debate_limitations.length > 0 && (
         <div>
-          <h4>Limitações do debate</h4>
+          <h5>Limitações do debate</h5>
           <ul>
             {verdict.debate_limitations.map((limitation, index) => (
               <li key={index}>{limitation}</li>

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { Home } from '../Home'
+import { RunDetail } from '../RunDetail'
 import { apiClient, ApiError } from '../../api/client'
 
 vi.mock('../../api/client', async () => {
@@ -19,13 +20,28 @@ vi.mock('../../api/client', async () => {
   }
 })
 
-function renderHome() {
+// Rotas reais do app que importam aqui: a Home navega pra /runs/:id ao
+// receber um desfecho persistido. O probe expõe o caminho atual pra
+// asserções de navegação.
+function LocationProbe() {
+  const location = useLocation()
+  return <span data-testid="location">{location.pathname}</span>
+}
+
+function renderHome(initialEntry: string | { pathname: string; state: unknown } = '/') {
   return render(
-    <MemoryRouter>
-      <Home />
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/runs" element={<p>Página do Histórico</p>} />
+        <Route path="/runs/:runId" element={<RunDetail />} />
+      </Routes>
+      <LocationProbe />
     </MemoryRouter>,
   )
 }
+
+const currentPath = () => screen.getByTestId('location').textContent
 
 const completedResult = {
   status: 'completed' as const,
@@ -75,6 +91,8 @@ const completedResult = {
 beforeEach(() => {
   vi.mocked(apiClient.getProviders).mockReset()
   vi.mocked(apiClient.createRun).mockReset()
+  vi.mocked(apiClient.getRun).mockReset()
+  vi.mocked(apiClient.getRunAudit).mockReset()
 })
 
 describe('Home', () => {
@@ -84,7 +102,7 @@ describe('Home', () => {
     )
     renderHome()
 
-    expect(await screen.findByText(/não foi possível carregar os participantes/i)).toBeInTheDocument()
+    expect(await screen.findByText(/não foi possível carregar os modelos/i)).toBeInTheDocument()
   })
 
   it('pré-seleciona todos os providers retornados por GET /providers após discovery bem-sucedido', async () => {
@@ -93,7 +111,7 @@ describe('Home', () => {
     })
     renderHome()
 
-    const toggle = await screen.findByRole('button', { name: /3 selecionados/i })
+    const toggle = await screen.findByRole('button', { name: 'Modelos: GPT, Claude, Gemini' })
 
     await userEvent.click(toggle)
     expect(screen.getByLabelText('GPT')).toBeChecked()
@@ -106,13 +124,14 @@ describe('Home', () => {
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
-    await screen.findByRole('button', { name: /2 selecionados/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })
 
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'Qual a capital do Brasil?')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
     expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
+    expect(currentPath()).toBe('/runs/run-abc')
   })
 
   it('envia exatamente os IDs retornados por GET /providers, sem hardcode', async () => {
@@ -122,10 +141,10 @@ describe('Home', () => {
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
-    await screen.findByRole('button', { name: /3 selecionados/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT, Claude, Gemini' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
     expect(apiClient.createRun).toHaveBeenCalledWith({
       question: 'pergunta',
@@ -139,13 +158,13 @@ describe('Home', () => {
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
-    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     // userEvent.type digita caractere a caractere -- inclui os espaços
     // literalmente, nunca colapsados/removidos pelo próprio evento de
     // digitação.
     await userEvent.type(question, '  pergunta válida  ')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
     expect(apiClient.createRun).toHaveBeenCalledWith({
       question: '  pergunta válida  ',
@@ -158,11 +177,11 @@ describe('Home', () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
     renderHome()
 
-    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, '   ')
 
-    expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
     expect(apiClient.createRun).not.toHaveBeenCalled()
   })
 
@@ -171,15 +190,15 @@ describe('Home', () => {
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
-    const toggle = await screen.findByRole('button', { name: /2 selecionados/i })
+    const toggle = await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })
     await userEvent.click(toggle)
     await userEvent.click(screen.getByLabelText('Claude'))
 
-    expect(await screen.findByRole('button', { name: /1 selecionado\b/i })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
 
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
     expect(apiClient.createRun).toHaveBeenCalledWith({
       question: 'pergunta',
@@ -192,7 +211,7 @@ describe('Home', () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
     renderHome()
 
-    const toggle = await screen.findByRole('button', { name: /2 selecionados/i })
+    const toggle = await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })
     await userEvent.click(toggle)
     await userEvent.click(screen.getByLabelText('GPT'))
     await userEvent.click(screen.getByLabelText('Claude'))
@@ -200,19 +219,19 @@ describe('Home', () => {
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
 
-    expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
   })
 
   it('resposta vazia de GET /providers mantém seleção vazia e submit bloqueado', async () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: [] })
     renderHome()
 
-    const toggle = await screen.findByRole('button', { name: /0 selecionados/i })
+    const toggle = await screen.findByRole('button', { name: 'Modelos: nenhum' })
     expect(toggle).toBeInTheDocument()
 
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
   })
 
   it('mostra loading honesto (sem progresso falso) durante a execução', async () => {
@@ -220,12 +239,13 @@ describe('Home', () => {
     vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
     renderHome()
 
-    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent('Investigando…')
+    expect(await screen.findByRole('status')).toHaveTextContent('Aguardando a resposta…')
+    expect(screen.getByRole('button', { name: 'Perguntando…' })).toBeDisabled()
     expect(screen.getByText(/tempo decorrido/i)).toBeInTheDocument()
     expect(screen.getByText(/pode levar vários minutos/i)).toBeInTheDocument()
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
@@ -233,26 +253,30 @@ describe('Home', () => {
     expect(screen.queryByText(/debatendo/i)).not.toBeInTheDocument()
   })
 
-  it('mostra a resposta final ao completar com sucesso', async () => {
+  it('ao completar, abre a página estável da pergunta (/runs/:id) com o resultado em mãos -- sem novo GET', async () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
     vi.mocked(apiClient.createRun).mockResolvedValue(completedResult)
     renderHome()
 
-    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'Qual a capital do Brasil?')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
     expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
+    expect(currentPath()).toBe('/runs/run-abc')
+    // a mesma superfície de uma pergunta reaberta: pergunta, resposta, limitações
+    expect(screen.getByText('Qual a capital do Brasil?')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
     expect(screen.getByText('Só uma rodada de debate.')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /ver detalhes desta execução/i })).toHaveAttribute(
-      'href',
-      '/runs/run-abc',
-    )
+    expect(screen.queryByText(/carregando pergunta/i)).not.toBeInTheDocument()
+    expect(apiClient.getRun).not.toHaveBeenCalled()
+    expect(apiClient.createRun).toHaveBeenCalledTimes(1)
   })
 
-  it('mostra quorum insuficiente com link usando details.run_id', async () => {
+  it('quórum insuficiente com details.run_id abre o registro persistido da pergunta', async () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+    vi.mocked(apiClient.getRun).mockImplementation(() => new Promise(() => {}))
     vi.mocked(apiClient.createRun).mockRejectedValue(
       new ApiError(409, 'insufficient_quorum', 'Quórum insuficiente.', {
         run_id: 'failed-run-42',
@@ -263,55 +287,153 @@ describe('Home', () => {
     )
     renderHome()
 
-    await screen.findByRole('button', { name: /2 selecionados/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
-    expect(await screen.findByText(/não houve participantes suficientes/i)).toBeInTheDocument()
-    const link = screen.getByRole('link', { name: /ver detalhes/i })
-    expect(link).toHaveAttribute('href', '/runs/failed-run-42')
+    await waitFor(() => expect(currentPath()).toBe('/runs/failed-run-42'))
+    // o registro persistido é buscado normalmente (não há resultado em mãos)
+    expect(apiClient.getRun).toHaveBeenCalledWith('failed-run-42')
+    expect(apiClient.createRun).toHaveBeenCalledTimes(1)
   })
 
-  it('mostra mensagem de validação em 422', async () => {
+  it('quórum insuficiente sem run_id: aviso neutro (não erro), sem navegação', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai', 'anthropic'] })
+    vi.mocked(apiClient.createRun).mockRejectedValue(
+      new ApiError(409, 'insufficient_quorum', 'Quórum insuficiente.', null),
+    )
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(/poucos modelos responderam para montar uma resposta/i)
+    expect(notice).toHaveClass('notice--neutral')
+    expect(currentPath()).toBe('/')
+  })
+
+  it('invalid_provider: aviso de validação com recarga (segura) da lista de modelos', async () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
     vi.mocked(apiClient.createRun).mockRejectedValue(
       new ApiError(422, 'invalid_provider', 'provider inválido', null),
     )
     renderHome()
 
-    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
-    expect(await screen.findByText(/participantes selecionados não existem/i)).toBeInTheDocument()
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(/um ou mais modelos selecionados não são reconhecidos pelo servidor/i)
+    expect(notice).toHaveClass('notice--validation')
+
+    // recarregar refaz só GET /providers -- nunca reenvia a pergunta
+    await userEvent.click(screen.getByRole('button', { name: 'Recarregar modelos' }))
+    await waitFor(() => expect(apiClient.getProviders).toHaveBeenCalledTimes(2))
+    expect(apiClient.createRun).toHaveBeenCalledTimes(1)
   })
 
-  it('mostra mensagem genérica segura em 500', async () => {
+  it('500: desfecho incerto -- aponta o Histórico, NUNCA oferece reenvio de um clique, sem vazar detalhes', async () => {
     vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
     vi.mocked(apiClient.createRun).mockRejectedValue(
       new ApiError(500, 'internal_error', 'stack trace secreta aqui', null),
     )
     renderHome()
 
-    await screen.findByRole('button', { name: /1 selecionado\b/i })
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
     const question = screen.getByLabelText(/faça uma pergunta/i)
     await userEvent.type(question, 'pergunta')
-    await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
-    const errorText = await screen.findByText(/algo deu errado do nosso lado/i)
-    expect(errorText).toBeInTheDocument()
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(/não foi possível confirmar o resultado desta pergunta/i)
+    expect(notice).toHaveTextContent(/pode ter sido processada pelos modelos mesmo assim/i)
+    expect(notice).toHaveTextContent(/confira o histórico antes de perguntar de novo/i)
+    expect(notice).toHaveClass('notice--warning')
     expect(screen.queryByText(/stack trace secreta/i)).not.toBeInTheDocument()
+    // nenhuma ação de reenvio no aviso -- só o caminho pro Histórico
+    expect(within(notice).queryByRole('button')).toBeNull()
+    expect(within(notice).getByRole('link', { name: 'Abrir o Histórico' })).toHaveAttribute('href', '/runs')
+    // a pergunta continua no composer pra um reenvio DELIBERADO
+    expect(screen.getByLabelText(/faça uma pergunta/i)).toHaveValue('pergunta')
+    expect(apiClient.createRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('erro de rede depois do envio também é desfecho incerto (nunca "falhou, tente de novo")', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.createRun).mockRejectedValue(new TypeError('Failed to fetch'))
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(/não foi possível confirmar o resultado desta pergunta/i)
+    expect(within(notice).queryByRole('button')).toBeNull()
+    expect(screen.queryByText(/tente novamente|tentar novamente/i)).not.toBeInTheDocument()
+  })
+
+  it('falha ao carregar modelos: erro com "Tentar novamente", que refaz só GET /providers', async () => {
+    vi.mocked(apiClient.getProviders)
+      .mockRejectedValueOnce(new ApiError(500, 'internal_error', 'falhou', null))
+      .mockResolvedValueOnce({ providers: ['openai', 'anthropic'] })
+    renderHome()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveClass('notice--error')
+    await userEvent.click(within(alert).getByRole('button', { name: 'Tentar novamente' }))
+
+    expect(await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })).toBeInTheDocument()
+    expect(screen.queryByText(/não foi possível carregar os modelos/i)).not.toBeInTheDocument()
+    expect(apiClient.getProviders).toHaveBeenCalledTimes(2)
+    expect(apiClient.createRun).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl/⌘+Enter envia; Enter sozinho só insere nova linha', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    const question = screen.getByLabelText(/faça uma pergunta/i)
+    expect(question).toHaveAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
+    await userEvent.type(question, 'linha 1{Enter}linha 2')
+    expect(question).toHaveValue('linha 1\nlinha 2')
+    expect(apiClient.createRun).not.toHaveBeenCalled()
+
+    await userEvent.type(question, '{Control>}{Enter}{/Control}')
+    expect(apiClient.createRun).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(apiClient.createRun).mock.calls[0][0].question).toBe('linha 1\nlinha 2')
+  })
+
+  it('Meta+Enter (⌘) também envia', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    const question = screen.getByLabelText(/faça uma pergunta/i)
+    await userEvent.type(question, 'q{Meta>}{Enter}{/Meta}')
+    expect(apiClient.createRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('Ctrl+Enter não envia quando o envio está bloqueado (pergunta em branco)', async () => {
+    vi.mocked(apiClient.getProviders).mockResolvedValue({ providers: ['openai'] })
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), '  {Control>}{Enter}{/Control}')
+    expect(apiClient.createRun).not.toHaveBeenCalled()
   })
 
   describe('Reutilizar pergunta (prefill de ENTRADA do usuário)', () => {
     function renderHomeWithState(state: unknown) {
-      return render(
-        <MemoryRouter initialEntries={[{ pathname: '/', state }]}>
-          <Home />
-        </MemoryRouter>,
-      )
+      return renderHome({ pathname: '/', state })
     }
 
     it('preenche pergunta, fonte e participantes; o envio usa ids canônicos e nenhum campo extra', async () => {
@@ -327,9 +449,9 @@ describe('Home', () => {
 
       expect(await screen.findByLabelText(/faça uma pergunta/i)).toHaveValue('Pergunta reutilizada')
       expect(screen.getByLabelText(/fonte de texto/i)).toHaveValue('Fonte reutilizada')
-      expect(await screen.findByRole('button', { name: /2 selecionados/i })).toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })).toBeInTheDocument()
 
-      await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+      await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
       expect(apiClient.createRun).toHaveBeenCalledWith({
         question: 'Pergunta reutilizada',
@@ -344,7 +466,7 @@ describe('Home', () => {
         reuseInput: { question: 'q', sourceText: null, enabledProviders: ['provider-removido'] },
       })
 
-      expect(await screen.findByRole('button', { name: /2 selecionados/i })).toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: 'Modelos: GPT, Claude' })).toBeInTheDocument()
     })
 
     it('state malformado é ignorado (composer vazio, comportamento normal)', async () => {
@@ -385,7 +507,7 @@ describe('Home', () => {
 
       expect(screen.getByRole('alert')).toHaveTextContent(/a pergunta passa do limite de 20\.000/i)
       expect(input).toHaveAttribute('aria-invalid', 'true')
-      expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
     })
 
     it('exatamente 20.000 caracteres continua válido', async () => {
@@ -395,7 +517,7 @@ describe('Home', () => {
       fireEvent.change(input, { target: { value: 'a'.repeat(20_000) } })
 
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: /investigar/i })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Perguntar' })).toBeEnabled()
     })
 
     it('conta por code point como o servidor: 10.000 emojis (20.000 unidades UTF-16) são válidos', async () => {
@@ -403,7 +525,7 @@ describe('Home', () => {
 
       fireEvent.change(input, { target: { value: '😀'.repeat(10_000) } })
 
-      expect(screen.getByRole('button', { name: /investigar/i })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Perguntar' })).toBeEnabled()
       expect(screen.getByText(/10\.000 \/ 20\.000 caracteres/)).toBeInTheDocument()
     })
 
@@ -415,7 +537,7 @@ describe('Home', () => {
       await userEvent.click(screen.getByRole('button', { name: /fonte \(opcional\)/i })) // recolhe
 
       expect(screen.getByRole('alert')).toHaveTextContent(/a fonte passa do limite de 20\.000/i)
-      expect(screen.getByRole('button', { name: /investigar/i })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
     })
 
     it('fonte só com espaços não conta pro limite (é enviada como ausente)', async () => {
@@ -424,7 +546,7 @@ describe('Home', () => {
       await userEvent.click(screen.getByRole('button', { name: /fonte \(opcional\)/i }))
       fireEvent.change(screen.getByLabelText(/fonte de texto/i), { target: { value: ' '.repeat(25_000) } })
 
-      expect(screen.getByRole('button', { name: /investigar/i })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Perguntar' })).toBeEnabled()
     })
 
     describe('fonte enviada VERBATIM, como API/CLI (whitespace só decide se está vazia)', () => {
@@ -434,7 +556,7 @@ describe('Home', () => {
         await userEvent.type(input, 'q')
         await userEvent.click(screen.getByRole('button', { name: /fonte \(opcional\)/i }))
         fireEvent.change(screen.getByLabelText(/fonte de texto/i), { target: { value: source } })
-        const submit = screen.getByRole('button', { name: /investigar/i })
+        const submit = screen.getByRole('button', { name: 'Perguntar' })
         return submit
       }
 
@@ -490,7 +612,7 @@ describe('Home', () => {
       )
       const input = await ready()
       await userEvent.type(input, 'pergunta')
-      await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+      await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
       const alert = await screen.findByRole('alert')
       expect(alert).toHaveTextContent(/a fonte não é válida.*20\.000/i)
@@ -503,7 +625,7 @@ describe('Home', () => {
       )
       const input = await ready()
       await userEvent.type(input, 'pergunta')
-      await userEvent.click(screen.getByRole('button', { name: /investigar/i }))
+      await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
 
       expect(await screen.findByRole('alert')).toHaveTextContent('Verifique os dados informados.')
     })

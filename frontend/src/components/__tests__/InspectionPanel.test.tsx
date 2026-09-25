@@ -158,7 +158,7 @@ describe('InspectionPanel — Answer First / inspeção progressiva (patch de vi
   it('J: começa recolhido e não busca o audit até o usuário pedir', () => {
     render(<InspectionPanel runId="run-1" />)
 
-    expect(screen.getByRole('button', { name: /inspecionar execução/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /como esta resposta foi produzida/i })).toBeInTheDocument()
     expect(apiClient.getRunAudit).not.toHaveBeenCalled()
   })
 
@@ -166,7 +166,7 @@ describe('InspectionPanel — Answer First / inspeção progressiva (patch de vi
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const claimsHeading = await screen.findByRole('heading', { name: /afirmações/i })
     const claimsSection = claimsHeading.closest('section') as HTMLElement
@@ -204,7 +204,7 @@ describe('InspectionPanel — Answer First / inspeção progressiva (patch de vi
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const claimsHeading = await screen.findByRole('heading', { name: /afirmações/i })
     const claimsSection = claimsHeading.closest('section') as HTMLElement
@@ -233,7 +233,7 @@ describe('InspectionPanel — Answer First / inspeção progressiva (patch de vi
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     expect(
       await screen.findByText(/falha de comunicação durante a análise da fonte/i),
@@ -246,7 +246,7 @@ describe('InspectionPanel — claim-centered: sem duplicação standalone', () =
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     await screen.findByRole('heading', { name: /afirmações/i })
 
@@ -261,7 +261,7 @@ describe('InspectionPanel — claim-centered: sem duplicação standalone', () =
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await userEvent.click(await screen.findByRole('button', { name: /ver auditoria técnica/i }))
 
     expect(screen.queryByRole('heading', { name: /^relação com a fonte$/i })).not.toBeInTheDocument()
@@ -277,32 +277,72 @@ describe('InspectionPanel — claim-centered: sem duplicação standalone', () =
 })
 
 describe('InspectionPanel — disclosure reversível (colapsar/reabrir sem refetch)', () => {
-  it('expande ao clicar, trocando o rótulo e aria-expanded pra true', async () => {
+  it('expande ao clicar, com rótulo estável (estado só via aria-expanded) e aria-expanded pra true', async () => {
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    const toggle = screen.getByRole('button', { name: /inspecionar execução/i })
+    const toggle = screen.getByRole('button', { name: /como esta resposta foi produzida/i })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
     await userEvent.click(toggle)
     await screen.findByRole('heading', { name: /afirmações/i })
 
-    const expandedToggle = screen.getByRole('button', { name: /ocultar inspeção/i })
+    const expandedToggle = screen.getByRole('button', { name: /como esta resposta foi produzida/i })
+    // O MESMO controle (rótulo estável): o estado é comunicado só por aria-expanded.
+    expect(expandedToggle).toBe(toggle)
     expect(expandedToggle).toHaveAttribute('aria-expanded', 'true')
     expect(expandedToggle).toHaveAttribute('aria-controls', 'inspection-panel-content')
+    expect(document.getElementById('inspection-panel-content')).not.toBeNull()
+  })
+
+  it('o controle fica dentro de um heading (h2) com o mesmo nome acessível', () => {
+    render(<InspectionPanel runId="run-1" />)
+    const heading = screen.getByRole('heading', { level: 2, name: /como esta resposta foi produzida/i })
+    expect(within(heading).getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('título e introdução podem ser trocados (ex.: quórum insuficiente) sem mudar o comportamento', () => {
+    render(
+      <InspectionPanel
+        runId="run-1"
+        title="O que aconteceu nesta pergunta"
+        intro="O que cada modelo respondeu e o motivo de cada falha."
+      />,
+    )
+    expect(screen.getByRole('button', { name: /o que aconteceu nesta pergunta/i })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.getByText('O que cada modelo respondeu e o motivo de cada falha.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /como esta resposta foi produzida/i })).toBeNull()
+  })
+
+  it('"Voltar à resposta" move o foco pro alvo indicado', async () => {
+    vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
+    render(
+      <>
+        <h2 id="final-answer-heading" tabIndex={-1}>
+          Resposta
+        </h2>
+        <InspectionPanel runId="run-1" returnTargetId="final-answer-heading" />
+      </>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /voltar à resposta/i }))
+    expect(screen.getByRole('heading', { name: 'Resposta' })).toHaveFocus()
   })
 
   it('colapsa ao clicar de novo, escondendo as seções mas mantendo o botão disponível pra reabrir', async () => {
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await screen.findByRole('heading', { name: /afirmações/i })
 
-    await userEvent.click(screen.getByRole('button', { name: /ocultar inspeção/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     expect(screen.queryByRole('heading', { name: /afirmações/i })).not.toBeInTheDocument()
-    const toggle = screen.getByRole('button', { name: /inspecionar execução/i })
+    const toggle = screen.getByRole('button', { name: /como esta resposta foi produzida/i })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
   })
 
@@ -310,12 +350,12 @@ describe('InspectionPanel — disclosure reversível (colapsar/reabrir sem refet
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await screen.findByRole('heading', { name: /afirmações/i })
     expect(apiClient.getRunAudit).toHaveBeenCalledTimes(1)
 
-    await userEvent.click(screen.getByRole('button', { name: /ocultar inspeção/i }))
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     // As seções reaparecem imediatamente -- nenhum novo "Carregando..."
     // nem novo request, prova de que o audit reusado é o mesmo da
@@ -339,7 +379,7 @@ describe('InspectionPanel — hierarquia: notas da execução e auditoria técni
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const notesHeading = await screen.findByRole('heading', { name: /notas da execução/i })
     expect(notesHeading).toBeInTheDocument()
@@ -350,7 +390,7 @@ describe('InspectionPanel — hierarquia: notas da execução e auditoria técni
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     await screen.findByRole('heading', { name: /notas da execução/i })
     expect(screen.getByText(/nenhum desvio material/i)).toBeInTheDocument()
@@ -364,7 +404,7 @@ describe('InspectionPanel — hierarquia: notas da execução e auditoria técni
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const technicalToggle = await screen.findByRole('button', { name: /ver auditoria técnica/i })
     expect(technicalToggle).toHaveAttribute('aria-expanded', 'false')
@@ -384,7 +424,7 @@ describe('InspectionPanel — H: análise da fonte nunca altera a Resposta final
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit())
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     await screen.findByRole('heading', { name: /afirmações/i })
 
@@ -418,7 +458,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const claimsHeading = await screen.findByRole('heading', { name: /afirmações/i })
     const claimsSection = claimsHeading.closest('section') as HTMLElement
@@ -492,7 +532,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     // Nenhuma unidade semântica pra claim_id ambíguo -- a lista de
     // afirmações fica vazia (mensagem honesta, não um placeholder vazio).
@@ -572,7 +612,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const claimsHeading = await screen.findByRole('heading', { name: /afirmações/i })
     const claimsSection = claimsHeading.closest('section') as HTMLElement
@@ -635,7 +675,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const claimsHeading = await screen.findByRole('heading', { name: /afirmações/i })
     const claimsSection = claimsHeading.closest('section') as HTMLElement
@@ -685,7 +725,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const claimsHeading = await screen.findByRole('heading', { name: /afirmações/i })
     const claimsSection = claimsHeading.closest('section') as HTMLElement
@@ -738,7 +778,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     // Nenhuma das duas aparece na apresentação product-facing de
     // "entradas descartadas sem afirmação identificada".
@@ -808,7 +848,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await screen.findByRole('heading', { name: /afirmações/i })
     await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
 
@@ -856,7 +896,7 @@ describe('InspectionPanel — repair de integridade: registros em quarentena nun
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await screen.findByRole('heading', { name: /afirmações/i })
     await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
 
@@ -913,7 +953,7 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const participantsHeading = await screen.findByRole('heading', {
       name: /perspectivas dos participantes/i,
@@ -981,7 +1021,7 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const participantsHeading = await screen.findByRole('heading', {
       name: /perspectivas dos participantes/i,
@@ -1055,7 +1095,7 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await screen.findByRole('heading', { name: /perspectivas dos participantes/i })
 
     await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
@@ -1068,7 +1108,7 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
     // MAIS o custo exato persistido (também 0) -- três "0" honestos,
     // nunca confundidos com null.
     expect(within(technicalPanel).getAllByText('0')).toHaveLength(3)
-    expect(within(technicalPanel).getByText('$0,00 (estimativa conhecida)')).toBeInTheDocument()
+    expect(within(technicalPanel).getByText('US$ 0,00 (estimativa conhecida)')).toBeInTheDocument()
     expect(within(technicalPanel).queryByText('Estimativa indisponível')).not.toBeInTheDocument()
   })
 
@@ -1076,7 +1116,7 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
     vi.mocked(apiClient.getRunAudit).mockResolvedValue(makeAudit({ critique_round: null }))
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     await screen.findByRole('heading', { name: /perspectivas dos participantes/i })
     expect(screen.getByRole('heading', { name: 'Perspectivas iniciais' })).toBeInTheDocument()
@@ -1125,12 +1165,12 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
     )
 
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
 
     const aggregateHeading = screen.getByRole('heading', { name: /^consumo e custo$/i })
     const aggregatePanel = aggregateHeading.nextElementSibling as HTMLElement
-    expect(within(aggregatePanel).getByText('~$0.5000')).toBeInTheDocument()
+    expect(within(aggregatePanel).getByText('~US$ 0,50')).toBeInTheDocument()
 
     const perResponseHeading = screen.getByRole('heading', {
       name: /respostas dos participantes — registros técnicos/i,
@@ -1139,7 +1179,7 @@ describe('InspectionPanel — Participant Perspectives Document Disclosure', () 
     // O custo por-resposta (0.001) é um registro DISTINTO do agregado
     // (0.5) -- nunca a mesma seção, nunca duplicado como se fosse o
     // mesmo dado.
-    expect(within(perResponsePanel).getByText('~$0.0010')).toBeInTheDocument()
+    expect(within(perResponsePanel).getByText('~US$ 0,001')).toBeInTheDocument()
     expect(aggregateHeading).not.toBe(perResponseHeading)
   })
 })
@@ -1171,7 +1211,7 @@ describe('InspectionPanel — repair pós-revisão adversarial: fidelidade de au
 
   async function openTechnicalAudit() {
     render(<InspectionPanel runId="run-1" />)
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     await screen.findByRole('heading', { name: /perspectivas dos participantes/i })
     await userEvent.click(screen.getByRole('button', { name: /ver auditoria técnica/i }))
     const technicalHeading = screen.getByRole('heading', {

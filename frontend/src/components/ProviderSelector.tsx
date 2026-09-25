@@ -1,69 +1,99 @@
-// Controle secundário/expansível (Decision Delta secao 6) -- provider
-// selection nunca é a identidade principal da tela. IDs vêm SEMPRE de
-// GET /providers (prop `providers`), nunca hardcoded aqui.
+// Seleção dos modelos que respondem a uma pergunta -- controle SECUNDÁRIO do
+// composer (nunca a identidade principal da tela).
+//
+// Recebe opções `{ id, label }` em vez de uma lista fixa de nomes: a lista
+// vem de GET /providers e pode crescer. O resumo mostra NOMES (mais útil que
+// uma contagem abstrata) e continua curto com muitos modelos ("+N"). Nada
+// aqui afirma prontidão/credenciais de um modelo -- isso não é conhecido
+// pela interface.
 
-import { useState } from 'react'
-
-import { formatProviderName } from '../api/formatting'
-
-interface ProviderSelectorProps {
-  providers: string[]
-  selected: string[]
-  onChange: (selected: string[]) => void
-  disabled?: boolean
+export interface ModelOption {
+  id: string
+  label: string
 }
 
-export function ProviderSelector({ providers, selected, onChange, disabled }: ProviderSelectorProps) {
-  const [expanded, setExpanded] = useState(false)
+const SUMMARY_NAME_LIMIT = 3
 
-  function toggle(providerId: string) {
-    if (selected.includes(providerId)) {
-      onChange(selected.filter((p) => p !== providerId))
-    } else {
-      onChange([...selected, providerId])
-    }
+function modelSummaryText(options: readonly ModelOption[], selected: readonly string[]): string {
+  const names = options.filter((option) => selected.includes(option.id)).map((option) => option.label)
+  if (names.length === 0) return 'Modelos: nenhum'
+  const shown = names.slice(0, SUMMARY_NAME_LIMIT).join(', ')
+  const hidden = names.length - SUMMARY_NAME_LIMIT
+  return hidden > 0 ? `Modelos: ${shown} +${hidden}` : `Modelos: ${shown}`
+}
+
+interface ModelSummaryButtonProps {
+  options: readonly ModelOption[]
+  selected: readonly string[]
+  expanded: boolean
+  onToggle: () => void
+  disabled?: boolean
+  panelId: string
+}
+
+export function ModelSummaryButton({
+  options,
+  selected,
+  expanded,
+  onToggle,
+  disabled,
+  panelId,
+}: ModelSummaryButtonProps) {
+  return (
+    <button
+      type="button"
+      className="composer__control composer__models"
+      aria-expanded={expanded}
+      aria-controls={panelId}
+      onClick={onToggle}
+      disabled={disabled}
+    >
+      <span className="composer__models-text">{modelSummaryText(options, selected)}</span>
+      <span className="composer__control-chevron" aria-hidden="true">
+        ▾
+      </span>
+    </button>
+  )
+}
+
+interface ModelSelectionPanelProps {
+  options: readonly ModelOption[]
+  selected: readonly string[]
+  onChange: (selected: string[]) => void
+  disabled?: boolean
+  panelId: string
+}
+
+export function ModelSelectionPanel({
+  options,
+  selected,
+  onChange,
+  disabled,
+  panelId,
+}: ModelSelectionPanelProps) {
+  function toggle(id: string) {
+    onChange(selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id])
   }
 
-  // Fragment (não `<div>` wrapper) -- botão e painel viram filhos diretos
-  // de `.run-composer__toolbar`, o mesmo container flex que o controle de
-  // Fonte usa, pra que os dois leiam como controles-irmãos genuínos (não
-  // um aninhado dentro do outro) e o painel expandido quebre pra própria
-  // linha do jeito previsível de `.run-composer__control-panel` (Polish
-  // dos controles secundários do composer).
   return (
-    <>
-      <button
-        type="button"
-        className="run-composer__control-toggle provider-selector__summary"
-        aria-expanded={expanded}
-        aria-controls="provider-selector-panel"
-        onClick={() => setExpanded((v) => !v)}
-        disabled={disabled}
-      >
-        Participantes: {selected.length} selecionado{selected.length === 1 ? '' : 's'}
-        <span className="run-composer__control-chevron" aria-hidden="true">
-          ▾
-        </span>
-      </button>
-      {expanded && (
-        <fieldset
-          id="provider-selector-panel"
-          className="run-composer__control-panel provider-selector__panel"
-        >
-          <legend>Escolha os participantes</legend>
-          {providers.map((providerId) => (
-            <label key={providerId} className="provider-selector__option">
-              <input
-                type="checkbox"
-                checked={selected.includes(providerId)}
-                onChange={() => toggle(providerId)}
-                disabled={disabled}
-              />
-              {formatProviderName(providerId)}
-            </label>
-          ))}
-        </fieldset>
+    <fieldset id={panelId} className="composer__panel model-selection">
+      <legend>Modelos que vão responder</legend>
+      <div className="model-selection__options">
+        {options.map((option) => (
+          <label key={option.id} className="model-selection__option">
+            <input
+              type="checkbox"
+              checked={selected.includes(option.id)}
+              onChange={() => toggle(option.id)}
+              disabled={disabled}
+            />
+            <span>{option.label}</span>
+          </label>
+        ))}
+      </div>
+      {selected.length === 0 && (
+        <p className="model-selection__hint">Escolha pelo menos um modelo para perguntar.</p>
       )}
-    </>
+    </fieldset>
   )
 }

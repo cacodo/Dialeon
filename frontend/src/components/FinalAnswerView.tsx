@@ -1,45 +1,17 @@
-// Resposta final -- protagonista absoluta (ANSWER FIRST). limitations
-// aparecem logo abaixo, sempre que existirem (nunca escondidas).
+// Resposta final em DUAS profundidades:
 //
-// UI Slice 3 (Structured Final Answer) -- quando `answer_blocks` existe
-// (runs novos), a resposta é renderizada como elementos semânticos reais
-// (h3/ul/li) diretamente a partir do JSON tipado do backend -- NUNCA por
-// parsing de `answer_text`. `answer_blocks === null` (runs históricos,
-// ou o caminho sem veredito) cai de volta pro comportamento anterior
-// (`splitAnswerParagraphs` sobre `answer_text`), inalterado.
+// - `FinalAnswerView` (profundidade 0): a resposta que o usuário lê, mais as
+//   limitações/escopo necessários pra interpretá-la. Escolhe UMA apresentação
+//   pela ordem de fallback já estabelecida: realização linguística (elegível)
+//   -> resposta natural (elegível) -> resposta principal estruturada ->
+//   avaliação completa. Nunca aninha outra resposta dentro de si.
+// - `AnswerAssessmentDetails` (profundidade 1, dentro de "Como esta resposta
+//   foi produzida"): como a resposta foi montada, a resposta principal
+//   estruturada (quando a apresentação escolhida foi outra) e a avaliação
+//   completa das afirmações, com a explicação de cada uma (profundidade 2).
 //
-// `claim_text`/`explanation`/`source_relationship_note` continuam NÃO
-// CONFIÁVEIS (modelo participante do debate/Judge/fonte fornecida pelo
-// usuário) -- sempre interpolados como filhos de texto do React
-// (`{item.claim_text}`), NUNCA via `dangerouslySetInnerHTML`: o React já
-// escapa texto por padrão, então mesmo conteúdo malicioso (`<script>`,
-// `# Heading`, `- item forjado`, `\n\n`) permanece texto visível inerte,
-// nunca é interpretado como marcação/estrutura nova.
-//
-// Repair (revisão adversarial, achados 4 e 5) -- `answer_blocks` é
-// TUDO OU NADA (`isSupportedAnswerBlocks`): `null`/ausente/vazio/algum
-// `kind` desconhecido (mesmo misturado com blocos conhecidos) sempre
-// caem pro MESMO fallback completo de texto, nunca uma renderização
-// parcial que descarta blocos silenciosamente. A seção dedicada de
-// `limitations` é suprimida especificamente quando o fallback de texto
-// é usado E `status` é um dos dois que SEMPRE embutem esse mesmo
-// conteúdo em `answer_text` (`FALLBACK_TEXT_STATUSES_THAT_ALREADY_INCLUDE_LIMITATIONS`)
-// -- decisão baseada só em `status`, nunca por inspecionar o texto.
-//
-// Repair (adversarial review -- Structured Unevaluated Claims) --
-// `status="deterministic_no_verdict"` com `unevaluated_claims` populado
-// (backend-derivado, ver app/editor/compose.py) usa uma disclosure
-// NATIVA (`<details>`/`<summary>`) em vez de `splitAnswerParagraphs`
-// sobre `answer_text` -- NUNCA parsing de texto humano pra separar
-// "motivo" de "lista de claims" (o contrato de `answer_text` não expõe
-// fronteira estrutural nenhuma pra isso, ver relatório desta slice). O
-// motivo continua visível via a seção "Limitações" já existente
-// (`finalAnswer.limitations[0]`, sempre presente e sempre renderizada
-// pra este status, nunca suprimida -- ver `showDedicatedLimitations`
-// abaixo), nunca duplicado/reconstruído aqui. `null`/`undefined`/vazio
-// (histórico, ou sem claims correntes) cai pro MESMO fallback de texto
-// de sempre, inalterado -- mesma disciplina "tudo ou nada" de
-// `isSupportedAnswerBlocks`.
+// Conteúdo vindo de modelo é sempre texto inerte (sem Markdown/HTML). Nenhuma
+// cor/selo codifica veredito -- o rótulo textual é o portador do sentido.
 
 import type {
   AnswerBlockPublic,
@@ -62,27 +34,19 @@ interface FinalAnswerViewProps {
   finalAnswer: FinalAnswerPublic
 }
 
-// Repair (revisão adversarial, achado 4) -- os únicos `kind`s que este
-// frontend sabe renderizar hoje. A checagem abaixo é DELIBERADAMENTE em
-// tempo de EXECUÇÃO (não só o tipo `AnswerBlockPublic['kind']`, que o
-// TypeScript trataria como sempre-fechado): o JSON vem de uma resposta
-// HTTP não validada em tempo de execução -- um backend futuro/mais novo
-// que o frontend, ou um dado corrompido, pode legitimamente conter um
-// `kind` que esta versão não conhece.
+type HeadingLevel = 3 | 4
+
+function Heading({ level, children, id }: { level: HeadingLevel; children: string; id?: string }) {
+  return level === 3 ? <h3 id={id}>{children}</h3> : <h4 id={id}>{children}</h4>
+}
+
+// Mesma regra de sempre: só renderiza `answer_blocks` se TODO bloco for de um
+// kind conhecido (tudo-ou-nada); caso contrário cai pro texto canônico.
 const KNOWN_ANSWER_BLOCK_KINDS: ReadonlySet<string> = new Set<AnswerBlockPublic['kind']>([
   'paragraph',
   'claim_section',
 ])
 
-// Renderização estruturada é TUDO OU NADA -- nunca um meio-termo onde
-// blocos conhecidos são renderizados e blocos desconhecidos são
-// silenciosamente descartados (isso apresentaria uma resposta
-// INCOMPLETA como se fosse completa, sem nenhum sinal pro usuário).
-// `null`/ausente/`undefined`/vazio/qualquer `kind` desconhecido (mesmo
-// misturado com blocos conhecidos) -- todos caem pro MESMO fallback
-// completo (`splitAnswerParagraphs` sobre `answer_text`, que sempre
-// contém o conteúdo INTEIRO e já é o comportamento testado/aceito de
-// antes desta slice).
 function isSupportedAnswerBlocks(
   blocks: AnswerBlockPublic[] | null | undefined,
 ): blocks is AnswerBlockPublic[] {
@@ -93,42 +57,65 @@ function isSupportedAnswerBlocks(
   )
 }
 
-// Repair (revisão adversarial, achado 5) -- política explícita de
-// NÃO-parsing pra decidir se a seção dedicada de limitações duplicaria
-// conteúdo já presente no fallback de texto (`answer_text`). Decisão
-// baseada INTEIRAMENTE em `status` (nunca inspecionando/tentando
-// reconhecer substring de `answer_text`):
-//
-// - 'llm_planned'/'deterministic_from_verdict': `_compose_answer`
-//   (app/editor/compose.py) SEMPRE embute `debate_limitations` dentro
-//   de `answer_text`, textualmente, sempre que a lista é não-vazia --
-//   em AMBOS os `closing_style`s. Quando o fallback de texto é usado
-//   pra um destes dois status (só pode acontecer numa linha histórica
-//   persistida antes desta coluna existir -- ver
-//   `FinalAnswer.answer_blocks`, app/editor/result.py), o texto JÁ
-//   contém a mesma informação -- a seção dedicada duplicaria.
-// - 'deterministic_no_verdict': o texto de limitações é uma frase
-//   SINTÉTICA própria ("Avaliação final não realizada: ..."), nunca
-//   embutida em `answer_text` (que usa uma frase diferente) -- nunca
-//   duplica, continua mostrando a seção dedicada.
-// - 'llm_composed' (só histórico -- nenhum código novo produz este
-//   status): prosa livre escrita por uma LLM no passado -- nenhum
-//   campo aqui garante se ela já menciona as limitações ou não.
-//   Comportamento honesto: preserva o que sempre foi mostrado (a seção
-//   dedicada), nunca tenta adivinhar a partir do texto.
+// Status cujo `answer_text` (fallback de texto) já embute as limitações --
+// a seção dedicada seria duplicação nesses casos.
 const FALLBACK_TEXT_STATUSES_THAT_ALREADY_INCLUDE_LIMITATIONS: ReadonlySet<FinalAnswerStatus> = new Set([
   'llm_planned',
   'deterministic_from_verdict',
 ])
 
-// Visual polish (Structured Final Answer) -- "Avaliação"/"Fonte" abaixo
-// são rótulos ESTÁTICOS escritos por este componente (nunca vindos do
-// backend); só existem pra dar ao rótulo/valor um tratamento tipográfico
-// separado (rótulo quieto vs. valor). `verdict_label`/`explanation`/
-// `source_relationship_note` continuam interpolados como filhos de texto
-// puro do React, cada um em seu próprio nó -- nenhuma reinterpretação de
-// conteúdo, nenhuma mudança de palavra, só mais estrutura de
-// apresentação em cima do mesmo texto.
+type Presentation =
+  | { kind: 'realization'; realization: LinguisticRealizationPublic; primary: PrimaryAnswerPublic }
+  | { kind: 'natural'; natural: NaturalAnswerPublic; primary: PrimaryAnswerPublic }
+  | { kind: 'primary'; primary: PrimaryAnswerPublic }
+  | { kind: 'complete' }
+
+function selectPresentation(finalAnswer: FinalAnswerPublic): Presentation {
+  if (
+    finalAnswer.linguistic_realization != null &&
+    finalAnswer.primary_answer != null &&
+    finalAnswer.linguistic_realization_presentation_eligible === true
+  ) {
+    return {
+      kind: 'realization',
+      realization: finalAnswer.linguistic_realization,
+      primary: finalAnswer.primary_answer,
+    }
+  }
+  if (
+    finalAnswer.natural_answer != null &&
+    finalAnswer.primary_answer != null &&
+    finalAnswer.natural_answer_presentation_eligible === true
+  ) {
+    return { kind: 'natural', natural: finalAnswer.natural_answer, primary: finalAnswer.primary_answer }
+  }
+  if (finalAnswer.primary_answer != null) {
+    return { kind: 'primary', primary: finalAnswer.primary_answer }
+  }
+  return { kind: 'complete' }
+}
+
+function LimitationsList({
+  heading,
+  items,
+  level,
+}: {
+  heading: string
+  items: string[]
+  level: HeadingLevel
+}) {
+  return (
+    <div className="final-answer__limitations">
+      <Heading level={level}>{heading}</Heading>
+      <ul>
+        {items.map((limitation, index) => (
+          <li key={index}>{limitation}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function ClaimItemView({ item }: { item: AnswerClaimItemPublic }) {
   return (
     <li className="final-answer__claim-item">
@@ -138,7 +125,7 @@ function ClaimItemView({ item }: { item: AnswerClaimItemPublic }) {
         <span className="final-answer__claim-verdict-value">{item.verdict_label}</span>
       </p>
       {/* Material SECUNDÁRIO do item atrás de disclosure nativo, fechada por
-          padrão (o texto continua no DOM): explicação do Judge e nota de
+          padrão (o texto continua no DOM): explicação do juiz e nota de
           fonte. Claim e veredito NUNCA ficam escondidos. */}
       <details className="final-answer__claim-why">
         <summary>Por quê?</summary>
@@ -156,21 +143,12 @@ function ClaimItemView({ item }: { item: AnswerClaimItemPublic }) {
   )
 }
 
-// Repair (adversarial review -- Structured Unevaluated Claims) --
-// consome SÓ o campo estruturado já ordenado/completo que o backend
-// fornece -- nunca reordena/filtra/deduplica/resume/seleciona um
-// subconjunto por conta própria (a lista inteira, sempre). Toda string
-// é interpolada como filho de texto puro do React (nunca
-// `dangerouslySetInnerHTML`), mesma disciplina de `ClaimItemView`
-// acima -- conteúdo malicioso permanece texto visível inerte.
-// Inicialmente FECHADA (`<details>` nativo, sem atributo `open`) --
-// colapsar só ESCONDE da tela; o DOM continua contendo todos os itens.
 function UnevaluatedClaimsDisclosure({ claims }: { claims: string[] }) {
   return (
     <div className="final-answer__unevaluated-claims">
       <p className="final-answer__unevaluated-claims-note">
-        Algumas alegações não foram avaliadas pelo Judge e podem se sobrepor a outras alegações ou
-        permanecer sem verificação. Elas não são fatos verificados nem conclusões do Dialeon.
+        Estas afirmações não foram avaliadas e podem se sobrepor a outras ou permanecer sem
+        verificação. Elas não são fatos verificados nem conclusões do Dialeon.
       </p>
       <details>
         <summary>Mostrar todas as {claims.length} afirmações não avaliadas</summary>
@@ -184,14 +162,14 @@ function UnevaluatedClaimsDisclosure({ claims }: { claims: string[] }) {
   )
 }
 
-function AnswerBlockView({ block }: { block: AnswerBlockPublic }) {
+function AnswerBlockView({ block, level }: { block: AnswerBlockPublic; level: HeadingLevel }) {
   if (block.kind === 'paragraph') {
     return <p>{block.text}</p>
   }
   if (block.kind === 'claim_section') {
     return (
       <div className="final-answer__claim-section">
-        <h3>{block.heading}</h3>
+        <Heading level={level}>{block.heading}</Heading>
         <ul className="final-answer__claim-list">
           {block.items.map((item, index) => (
             <ClaimItemView key={index} item={item} />
@@ -200,37 +178,23 @@ function AnswerBlockView({ block }: { block: AnswerBlockPublic }) {
       </div>
     )
   }
-  // Inalcançável em produção -- `isSupportedAnswerBlocks` já garante que
-  // só chega aqui com blocos de `kind` conhecido (ver seu uso abaixo).
-  // Mantido só como defesa em profundidade: se essa garantia algum dia
-  // for violada por um refactor, ainda assim nunca renderiza estrutura
-  // pra um bloco que não sabe interpretar.
   return null
 }
 
-// Avaliação COMPLETA determinística (o registro investigativo e o fallback).
-// `nested`: renderizada DENTRO da disclosure da resposta principal -- sem o
-// título "Resposta" (o <summary> da disclosure é o rótulo) e com a própria
-// ação de copiar, que copia o `answer_text` completo (nunca a resposta
-// principal).
-function CompleteAnswerView({
+// Corpo da avaliação completa (answer_blocks / afirmações não avaliadas /
+// texto canônico) -- usado como resposta de profundidade 0 quando não há
+// resposta principal, e dentro dos detalhes (profundidade 1) quando há.
+function CompleteAnswerBody({
   finalAnswer,
-  nested = false,
+  level,
 }: {
   finalAnswer: FinalAnswerPublic
-  nested?: boolean
+  level: HeadingLevel
 }) {
   const structuredBlocks = isSupportedAnswerBlocks(finalAnswer.answer_blocks)
     ? finalAnswer.answer_blocks
     : null
 
-  // Repair (adversarial review -- Structured Unevaluated Claims) --
-  // `unevaluated_claims` é opcional no tipo (`?`) pra tolerar payloads
-  // históricos/externos onde o campo está ausente (`undefined`), não só
-  // `null` -- ambos os casos caem no mesmo fallback de texto de sempre.
-  // Coleção vazia nunca deveria acontecer (contrato do backend: não-nulo
-  // implica não-vazio), mas a checagem de `.length > 0` é defesa em
-  // profundidade -- nunca renderiza uma disclosure vazia/enganosa.
   const unevaluatedClaims =
     finalAnswer.status === 'deterministic_no_verdict' &&
     finalAnswer.unevaluated_claims != null &&
@@ -243,9 +207,6 @@ function CompleteAnswerView({
     (structuredBlocks !== null ||
       !FALLBACK_TEXT_STATUSES_THAT_ALREADY_INCLUDE_LIMITATIONS.has(finalAnswer.status))
 
-  // Resumo determinístico -- ver `summarizeAnswerVerdicts`. Só existe quando os
-  // dados estruturados permitem produzi-lo com verdade; resposta histórica
-  // sem blocos (fallback de texto) e qualquer dado inesperado => sem resumo.
   const summary =
     structuredBlocks !== null
       ? summarizeAnswerVerdicts(structuredBlocks)
@@ -254,23 +215,13 @@ function CompleteAnswerView({
         : null
 
   return (
-    <section
-      {...(nested
-        ? { 'aria-label': 'Avaliação completa' }
-        : { 'aria-labelledby': 'final-answer-heading' })}
-      className={`final-answer${nested ? ' final-answer--nested' : ''}`}
-    >
-      <div className="final-answer__header">
-        {nested ? null : <h2 id="final-answer-heading">Resposta</h2>}
-        <CopyAnswerButton
-          text={finalAnswer.answer_text}
-          label={nested ? 'Copiar avaliação completa' : undefined}
-        />
-      </div>
+    <>
       {summary !== null && <p className="final-answer__summary">{summary}</p>}
       <div className="final-answer__text">
         {structuredBlocks !== null ? (
-          structuredBlocks.map((block, index) => <AnswerBlockView key={index} block={block} />)
+          structuredBlocks.map((block, index) => (
+            <AnswerBlockView key={index} block={block} level={level} />
+          ))
         ) : unevaluatedClaims !== null ? (
           <UnevaluatedClaimsDisclosure claims={unevaluatedClaims} />
         ) : (
@@ -279,61 +230,21 @@ function CompleteAnswerView({
           ))
         )}
       </div>
-
       {showDedicatedLimitations && (
-        <div className="final-answer__limitations">
-          <h3>Limitações</h3>
-          <ul>
-            {finalAnswer.limitations.map((limitation, index) => (
-              <li key={index}>{limitation}</li>
-            ))}
-          </ul>
-        </div>
+        <LimitationsList heading="Limitações" items={finalAnswer.limitations} level={level} />
       )}
-
-      <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
-    </section>
+    </>
   )
 }
 
-// Resposta PRINCIPAL -- seleção tipada por ids (validada pela aplicação) e
-// renderizada deterministicamente no backend. É o objeto visual dominante
-// quando existe; a avaliação completa continua a um clique. Todo conteúdo
-// vindo do backend é texto (claim_text é não confiável): nenhum Markdown/HTML.
-// `inNaturalDisclosure`: renderizada DENTRO da disclosure "Ver avaliação
-// completa" de `NaturalAnswerView` (mesmo espírito do `nested` de
-// `CompleteAnswerView`) -- sem o `<h2>`/título próprios (o `<summary>` que
-// a envolve já rotula o conteúdo) e sem `aria-labelledby` apontando pro id
-// já usado pelo `<h2>` externo, evitando um id de heading duplicado no
-// documento.
-function PrimaryAnswerView({
-  finalAnswer,
-  primary,
-  inNaturalDisclosure = false,
-}: {
-  finalAnswer: FinalAnswerPublic
-  primary: PrimaryAnswerPublic
-  inNaturalDisclosure?: boolean
-}) {
+function PrimaryAnswerBody({ primary, level }: { primary: PrimaryAnswerPublic; level: HeadingLevel }) {
   return (
-    <section
-      {...(inNaturalDisclosure
-        ? { 'aria-label': 'Resposta principal (estruturada)' }
-        : { 'aria-labelledby': 'final-answer-heading' })}
-      className="final-answer final-answer--primary"
-    >
-      <div className="final-answer__header">
-        {inNaturalDisclosure ? null : <h2 id="final-answer-heading">Resposta</h2>}
-        <CopyAnswerButton
-          text={primary.rendered_text}
-          label={inNaturalDisclosure ? 'Copiar resposta principal' : undefined}
-        />
-      </div>
+    <>
       <p className="final-answer__lead-in">{primary.lead_in}</p>
       <div className="final-answer__text">
         {primary.sections.map((section) => (
           <div className="final-answer__primary-section" key={section.role}>
-            <h3>{section.heading}</h3>
+            <Heading level={level}>{section.heading}</Heading>
             <ul className="final-answer__primary-list">
               {section.items.map((item) => (
                 <li key={item.claim_id} className="final-answer__primary-item">
@@ -346,149 +257,126 @@ function PrimaryAnswerView({
         ))}
       </div>
       {primary.limitations.length > 0 && (
-        <div className="final-answer__limitations">
-          <h3>Limitações registradas</h3>
-          <ul>
-            {primary.limitations.map((limitation, index) => (
-              <li key={index}>{limitation}</li>
-            ))}
-          </ul>
-        </div>
+        <LimitationsList heading="Limitações registradas" items={primary.limitations} level={level} />
       )}
       <p className="final-answer__scope-note">{primary.scope_note}</p>
-      <details className="final-answer__complete">
-        <summary>
-          Ver avaliação completa ({primary.assessed_claim_count}{' '}
-          {primary.assessed_claim_count === 1 ? 'afirmação avaliada' : 'afirmações avaliadas'})
-        </summary>
-        <CompleteAnswerView finalAnswer={finalAnswer} nested />
-      </details>
-      {inNaturalDisclosure ? null : (
-        <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
-      )}
-    </section>
+    </>
   )
 }
 
-// Resposta NATURAL -- leitura conversacional, determinística, do
-// PrimaryAnswer (backend: app/editor/natural_answer.py). Quando presente, é
-// o objeto visual dominante -- mais concisa/legível que a listagem por
-// papéis da resposta principal estruturada, mas nunca substitui o acesso a
-// ela nem à avaliação completa: uma disclosure exterior dá acesso à
-// resposta principal estruturada, que por sua vez mantém sua PRÓPRIA
-// disclosure "Ver avaliação completa (N afirmações avaliadas)" pra
-// avaliação completa -- o mesmo texto/afordance já existente, nunca
-// duplicado/renomeado. `rendered_text` é texto puro (claims não confiáveis
-// já estão embutidas nele verbatim, escritas pela aplicação) -- interpolado
-// como filho de texto do React, nunca via `dangerouslySetInnerHTML`. Copiar
-// copia EXATAMENTE `natural.rendered_text`, nunca `primary.rendered_text`.
-function NaturalAnswerView({
-  finalAnswer,
-  natural,
-  primary,
-}: {
-  finalAnswer: FinalAnswerPublic
-  natural: NaturalAnswerPublic
-  primary: PrimaryAnswerPublic
-}) {
+function AnswerHeader({ copyText }: { copyText: string }) {
   return (
-    <section aria-labelledby="final-answer-heading" className="final-answer final-answer--natural">
-      <div className="final-answer__header">
-        <h2 id="final-answer-heading">Resposta</h2>
-        <CopyAnswerButton text={natural.rendered_text} />
-      </div>
-      <div className="final-answer__text">
-        {splitAnswerParagraphs(natural.rendered_text).map((paragraph, index) => (
-          <p key={index}>{paragraph}</p>
-        ))}
-      </div>
-      <details className="final-answer__inspect">
-        <summary>Ver resposta principal e avaliação completa</summary>
-        <PrimaryAnswerView finalAnswer={finalAnswer} primary={primary} inNaturalDisclosure />
-      </details>
-      <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
-    </section>
-  )
-}
-
-function LinguisticRealizationView({
-  finalAnswer,
-  realization,
-  primary,
-}: {
-  finalAnswer: FinalAnswerPublic
-  realization: LinguisticRealizationPublic
-  primary: PrimaryAnswerPublic
-}) {
-  return (
-    <section aria-labelledby="final-answer-heading" className="final-answer final-answer--natural">
-      <div className="final-answer__header">
-        <h2 id="final-answer-heading">Resposta</h2>
-        <CopyAnswerButton text={realization.rendered_text} />
-      </div>
-      <div className="final-answer__text">
-        {realization.blocks.map((block, index) => (
-          <p key={index}>{block.text}</p>
-        ))}
-      </div>
-      <p className="final-answer__scope-note">
-        A redação foi gerada por modelo a partir de afirmações selecionadas e avaliadas pelo
-        Judge. A revisão indica consistência com essa resposta estruturada; não é verificação
-        externa nem garantia de verdade.
-      </p>
-      {finalAnswer.limitations.length > 0 && (
-        <div className="final-answer__limitations">
-          <h3>Limitações registradas</h3>
-          <ul>
-            {finalAnswer.limitations.map((limitation, index) => (
-              <li key={index}>{limitation}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <details className="final-answer__inspect">
-        <summary>Ver resposta principal estruturada e avaliação completa</summary>
-        <PrimaryAnswerView finalAnswer={finalAnswer} primary={primary} inNaturalDisclosure />
-      </details>
-      <p className="final-answer__status">{formatFinalAnswerStatus(finalAnswer.status)}</p>
-    </section>
+    <div className="final-answer__header">
+      {/* tabIndex -1: destino programático do "Voltar à resposta" da inspeção. */}
+      <h2 id="final-answer-heading" tabIndex={-1}>
+        Resposta
+      </h2>
+      <CopyAnswerButton text={copyText} />
+    </div>
   )
 }
 
 export function FinalAnswerView({ finalAnswer }: FinalAnswerViewProps) {
-  // Ordem de fallback FIXA: NaturalAnswer atualmente elegível -> resposta principal
-  // estruturada -> avaliação completa (comportamento de sempre, inclusive
-  // histórico). NaturalAnswer só é exibida quando também há uma resposta
-  // principal e o sinal derivado da política atual é explicitamente true.
-  // O default defensivo pra payloads sem o sinal é PrimaryAnswer.
-  if (
-    finalAnswer.linguistic_realization != null &&
-    finalAnswer.primary_answer != null &&
-    finalAnswer.linguistic_realization_presentation_eligible === true
-  ) {
+  const presentation = selectPresentation(finalAnswer)
+
+  if (presentation.kind === 'realization') {
+    const { realization } = presentation
     return (
-      <LinguisticRealizationView
-        finalAnswer={finalAnswer}
-        realization={finalAnswer.linguistic_realization}
-        primary={finalAnswer.primary_answer}
-      />
+      <section aria-labelledby="final-answer-heading" className="final-answer final-answer--natural">
+        <AnswerHeader copyText={realization.rendered_text} />
+        <div className="final-answer__text">
+          {realization.blocks.map((block, index) => (
+            <p key={index}>{block.text}</p>
+          ))}
+        </div>
+        <p className="final-answer__scope-note">
+          Texto redigido por um modelo a partir das afirmações selecionadas e avaliadas. Uma revisão
+          indicou consistência com a resposta estruturada; não é verificação externa nem garantia de
+          verdade.
+        </p>
+        {finalAnswer.limitations.length > 0 && (
+          <LimitationsList heading="Limitações registradas" items={finalAnswer.limitations} level={3} />
+        )}
+      </section>
     )
   }
-  if (
-    finalAnswer.natural_answer != null &&
-    finalAnswer.primary_answer != null &&
-    finalAnswer.natural_answer_presentation_eligible === true
-  ) {
+
+  if (presentation.kind === 'natural') {
+    const { natural } = presentation
+    // O texto natural já inclui as limitações registradas e o aviso de
+    // escopo (renderização determinística da resposta principal).
     return (
-      <NaturalAnswerView
-        finalAnswer={finalAnswer}
-        natural={finalAnswer.natural_answer}
-        primary={finalAnswer.primary_answer}
-      />
+      <section aria-labelledby="final-answer-heading" className="final-answer final-answer--natural">
+        <AnswerHeader copyText={natural.rendered_text} />
+        <div className="final-answer__text">
+          {splitAnswerParagraphs(natural.rendered_text).map((paragraph, index) => (
+            <p key={index}>{paragraph}</p>
+          ))}
+        </div>
+      </section>
     )
   }
-  if (finalAnswer.primary_answer != null) {
-    return <PrimaryAnswerView finalAnswer={finalAnswer} primary={finalAnswer.primary_answer} />
+
+  if (presentation.kind === 'primary') {
+    const { primary } = presentation
+    return (
+      <section aria-labelledby="final-answer-heading" className="final-answer final-answer--primary">
+        <AnswerHeader copyText={primary.rendered_text} />
+        <PrimaryAnswerBody primary={primary} level={3} />
+      </section>
+    )
   }
-  return <CompleteAnswerView finalAnswer={finalAnswer} />
+
+  return (
+    <section aria-labelledby="final-answer-heading" className="final-answer">
+      <AnswerHeader copyText={finalAnswer.answer_text} />
+      <CompleteAnswerBody finalAnswer={finalAnswer} level={3} />
+    </section>
+  )
+}
+
+// Profundidade 1: o que está por trás da resposta mostrada, com o vocabulário
+// preciso (juiz, avaliação, resposta principal) -- aqui o usuário pediu pra
+// ver como a resposta foi produzida.
+export function AnswerAssessmentDetails({ finalAnswer }: FinalAnswerViewProps) {
+  const presentation = selectPresentation(finalAnswer)
+  const showStructured = presentation.kind === 'realization' || presentation.kind === 'natural'
+
+  return (
+    <div className="answer-details">
+      <p className="answer-details__provenance">
+        <span className="answer-details__provenance-label">Como a resposta foi montada:</span>{' '}
+        {formatFinalAnswerStatus(finalAnswer.status)}.
+      </p>
+
+      {showStructured && (
+        <section aria-labelledby="structured-answer-heading" className="answer-details__section">
+          <div className="final-answer__header">
+            <h3 id="structured-answer-heading">Resposta principal (estruturada)</h3>
+            <CopyAnswerButton text={presentation.primary.rendered_text} label="Copiar resposta principal" />
+          </div>
+          <PrimaryAnswerBody primary={presentation.primary} level={4} />
+        </section>
+      )}
+
+      {presentation.kind !== 'complete' && (
+        <section aria-labelledby="complete-assessment-heading" className="answer-details__section">
+          <div className="final-answer__header">
+            <h3 id="complete-assessment-heading">Avaliação completa</h3>
+            <CopyAnswerButton text={finalAnswer.answer_text} label="Copiar avaliação completa" />
+          </div>
+          <details className="final-answer__complete">
+            <summary>
+              Ver avaliação completa ({presentation.primary.assessed_claim_count}{' '}
+              {presentation.primary.assessed_claim_count === 1
+                ? 'afirmação avaliada'
+                : 'afirmações avaliadas'}
+              )
+            </summary>
+            <CompleteAnswerBody finalAnswer={finalAnswer} level={4} />
+          </details>
+        </section>
+      )}
+    </div>
+  )
 }

@@ -29,7 +29,7 @@ describe('PendingInvestigation', () => {
     render(<PendingInvestigation />)
 
     const status = screen.getByRole('status')
-    expect(status).toHaveTextContent('Investigando…')
+    expect(status).toHaveTextContent('Aguardando a resposta…')
     expect(status).not.toHaveTextContent(/tempo decorrido|\d+ s/)
   })
 

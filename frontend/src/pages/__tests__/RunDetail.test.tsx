@@ -185,22 +185,21 @@ describe('RunDetail', () => {
     expect(screen.getByText('Qual a capital do Brasil?')).toBeInTheDocument()
   })
 
-  it('resumo da execução é quieto: sem identificadores brutos de provider nem política de execução -- só o que ajuda a interpretar a resposta', async () => {
+  it('resumo da resposta é quieto: sem identificadores brutos de provider nem política de execução -- só o que ajuda a interpretar a resposta', async () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
     renderDetail('run-1')
 
     await screen.findByText('Brasília é a capital do Brasil.')
 
-    const summary = screen.getByRole('heading', { name: /resumo da execução/i }).closest('section')
-    expect(summary).not.toBeNull()
-    // Contagem, não lista bruta de IDs de provider.
-    expect(within(summary as HTMLElement).getByText(/1 participante no debate/i)).toBeInTheDocument()
+    const summary = screen.getByRole('list', { name: 'Resumo da resposta' })
     // Nome de exibição (GPT) para o usuário; o id canônico não aparece aqui.
-    expect(within(summary as HTMLElement).getByText(/\(GPT\)/)).toBeInTheDocument()
-    expect(within(summary as HTMLElement).queryByText('openai')).not.toBeInTheDocument()
+    expect(within(summary).getByText('Modelos: GPT')).toBeInTheDocument()
+    expect(within(summary).queryByText(/openai/)).not.toBeInTheDocument()
+    expect(within(summary).getByText(/custo estimado: ~US\$ 0,01/i)).toBeInTheDocument()
+    expect(within(summary).getByText(/concluída em/i)).toBeInTheDocument()
     // Política de execução (detalhe técnico) não aparece no resumo
-    // imediato -- só dentro da auditoria técnica, atrás de "Inspecionar
-    // execução" + "Ver auditoria técnica".
+    // imediato -- só dentro da auditoria técnica, atrás de "Como esta
+    // resposta foi produzida" + "Ver auditoria técnica".
     expect(screen.queryByText('45s')).not.toBeInTheDocument()
     expect(screen.queryByText(/timeout por tentativa/i)).not.toBeInTheDocument()
   })
@@ -209,8 +208,22 @@ describe('RunDetail', () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(quorumRun)
     renderDetail('run-2')
 
-    expect(await screen.findByText(/quórum insuficiente/i)).toBeInTheDocument()
-    expect(screen.getByText(/1 de 3 participantes responderam/i)).toBeInTheDocument()
+    // linguagem simples; sem o termo técnico "quórum" na superfície
+    const heading = await screen.findByRole('heading', { level: 2, name: 'Não houve respostas suficientes' })
+    const outcome = heading.closest('section') as HTMLElement
+    expect(outcome).toHaveClass('notice--neutral')
+    expect(outcome).not.toHaveAttribute('role', 'alert')
+    expect(within(outcome).getByText(/1 de 3 modelos responderam/i)).toBeInTheDocument()
+    expect(within(outcome).getByText(/eram necessárias pelo menos 2/i)).toBeInTheDocument()
+    expect(within(outcome).getByText(/nenhuma resposta foi produzida/i)).toBeInTheDocument()
+    expect(within(outcome).getByText('Modelos: GPT, Claude e Gemini')).toBeInTheDocument()
+    // o motivo de cada modelo está a um gesto explícito (auditoria lazy)
+    expect(within(outcome).getByText(/o motivo de cada modelo aparece em “o que aconteceu nesta pergunta”/i)).toBeInTheDocument()
+    const inspect = screen.getByRole('button', { name: 'O que aconteceu nesta pergunta' })
+    expect(inspect).toHaveAttribute('aria-expanded', 'false')
+    expect(apiClient.getRunAudit).not.toHaveBeenCalled()
+    // nenhuma resposta inventada
+    expect(screen.queryByRole('heading', { name: 'Resposta' })).not.toBeInTheDocument()
   })
 
   it('mostra 404 quando a run não existe', async () => {
@@ -219,7 +232,7 @@ describe('RunDetail', () => {
     )
     renderDetail('id-inexistente')
 
-    expect(await screen.findByText(/execução não encontrada/i)).toBeInTheDocument()
+    expect(await screen.findByText(/pergunta não encontrada/i)).toBeInTheDocument()
   })
 
   const completedAudit = {
@@ -276,7 +289,7 @@ describe('RunDetail', () => {
     await screen.findByText('Brasília é a capital do Brasil.')
     expect(apiClient.getRunAudit).not.toHaveBeenCalled()
 
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
     expect(apiClient.getRunAudit).toHaveBeenCalledWith('run-1')
   })
 
@@ -286,7 +299,7 @@ describe('RunDetail', () => {
     renderDetail('run-1')
 
     await screen.findByText('Brasília é a capital do Brasil.')
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
     const technicalHeading = await screen.findByRole('heading', { name: /auditoria técnica/i })
     // Ainda não expandida -- o detalhe técnico não aparece só por ter
@@ -309,9 +322,9 @@ describe('RunDetail', () => {
     renderDetail('run-1')
 
     await screen.findByText('Brasília é a capital do Brasil.')
-    await userEvent.click(screen.getByRole('button', { name: /inspecionar execução/i }))
+    await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
 
-    expect(await screen.findByText(/não foi possível carregar a inspeção/i)).toBeInTheDocument()
+    expect(await screen.findByText(/não foi possível carregar os detalhes/i)).toBeInTheDocument()
     // o detail continua visível, intacto
     expect(screen.getByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
   })
@@ -320,8 +333,10 @@ describe('RunDetail', () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(quorumRun)
     renderDetail('run-2')
 
-    await screen.findByText(/quórum insuficiente/i)
+    await screen.findByRole('heading', { name: 'Não houve respostas suficientes' })
     expect(screen.getByText(/estimativa parcial/i)).toBeInTheDocument()
+    expect(screen.getByText(/~US\$ 0,002 · estimativa parcial/)).toBeInTheDocument()
+    expect(screen.queryByText(/estimativa conhecida/)).not.toBeInTheDocument()
   })
 
   it('T02.4: mostra detail de uma run running, sem inventar desfecho nem oferecer inspeção', async () => {
@@ -335,7 +350,7 @@ describe('RunDetail', () => {
     expect(screen.queryByText(/em andamento/i)).not.toBeInTheDocument()
     expect(screen.getByText(/pode ainda estar ativa ou ter sido interrompida/i)).toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: /inspecionar execução/i }),
+      screen.queryByRole('button', { name: /como esta resposta foi produzida/i }),
     ).not.toBeInTheDocument()
     expect(apiClient.getRunAudit).not.toHaveBeenCalled()
     // T02.2 -- policy=null (histórico/desconhecido) renderiza honestamente.
@@ -349,7 +364,7 @@ describe('RunDetail', () => {
     expect(await screen.findByRole('heading', { name: /falhou/i })).toBeInTheDocument()
     expect(screen.getByText(failedRun.message)).toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: /inspecionar execução/i }),
+      screen.queryByRole('button', { name: /como esta resposta foi produzida/i }),
     ).not.toBeInTheDocument()
   })
 
@@ -368,7 +383,7 @@ describe('RunDetail', () => {
     expect(screen.getByText(/persistência do resultado falhou/i)).toBeInTheDocument()
     expect(screen.getByText(persistenceFailure.message)).toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: /inspecionar execução/i }),
+      screen.queryByRole('button', { name: /como esta resposta foi produzida/i }),
     ).not.toBeInTheDocument()
   })
 
@@ -406,7 +421,7 @@ describe('RunDetail', () => {
       )
       renderDetailFromHistoryPage('id-inexistente', 2)
 
-      await screen.findByText(/execução não encontrada/i)
+      await screen.findByText(/pergunta não encontrada/i)
       expect(screen.getByRole('link', { name: /voltar ao histórico/i })).toHaveAttribute(
         'href',
         '/runs?page=2',
@@ -566,7 +581,7 @@ describe('RunDetail', () => {
         </MemoryRouter>,
       )
 
-      await userEvent.click(await screen.findByRole('link', { name: 'Reutilizar pergunta' }))
+      await userEvent.click(await screen.findByRole('link', { name: 'Perguntar de novo' }))
 
       expect(onHomeState).toHaveBeenLastCalledWith({
         reuseInput: {
@@ -582,7 +597,7 @@ describe('RunDetail', () => {
       vi.mocked(apiClient.getRun).mockResolvedValue(failedRun)
       renderDetail('run-4')
 
-      expect(await screen.findByRole('link', { name: 'Reutilizar pergunta' })).toBeInTheDocument()
+      expect(await screen.findByRole('link', { name: 'Perguntar de novo' })).toBeInTheDocument()
       expect(screen.getByText(/nada do resultado anterior é enviado/i)).toBeInTheDocument()
       expect(screen.queryByText(/continuar (a )?conversa/i)).not.toBeInTheDocument()
     })
@@ -645,16 +660,26 @@ describe('RunDetail', () => {
       rendered_text: 'TEXTO CANÔNICO',
     }
 
-    it('domina a página, mantém a avaliação completa e o caminho de inspeção', async () => {
+    it('domina a página; a avaliação completa segue alcançável em "Como esta resposta foi produzida"', async () => {
       vi.mocked(apiClient.getRun).mockResolvedValue({
         ...completedRun,
         final_answer: { ...completedRun.final_answer, primary_answer: primary },
       })
+      vi.mocked(apiClient.getRunAudit).mockResolvedValue(completedAudit)
       renderDetail('run-1')
 
       expect(await screen.findByRole('heading', { level: 3, name: 'Conclusão central:' })).toBeVisible()
-      expect(screen.getByText(/Ver avaliação completa/)).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: /inspecionar execução/i })).toBeInTheDocument()
+      // profundidade 0: só a resposta -- nada da avaliação completa ainda
+      expect(screen.queryByText(/Ver avaliação completa/)).not.toBeInTheDocument()
+
+      await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
+
+      expect(await screen.findByText(/Ver avaliação completa/)).toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 3, name: 'Avaliação completa' })).toBeInTheDocument()
+      // a resposta principal JÁ é a resposta: não é duplicada na profundidade 1
+      expect(screen.queryByRole('heading', { name: 'Resposta principal (estruturada)' })).not.toBeInTheDocument()
+      // a resposta continua lá, no mesmo lugar
+      expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
     })
 
     it('sem resposta principal (registro histórico) mostra a avaliação completa de sempre', async () => {
@@ -664,5 +689,27 @@ describe('RunDetail', () => {
       expect(await screen.findByText('Brasília é a capital do Brasil.')).toBeVisible()
       expect(screen.queryByText(/Ver avaliação completa/)).not.toBeInTheDocument()
     })
+  })
+})
+
+// Resultado recém-concluído entregue pela Home (state da navegação): a
+// página mostra o que já está em mãos, sem segundo GET; qualquer state que
+// não seja da MESMA Run é ignorado e o registro é buscado normalmente.
+describe('RunDetail — resultado entregue pela Home', () => {
+  it('mostra o resultado em mãos sem GET e sem tela de carregamento', () => {
+    renderDetailWithRawState('run-1', { completedRun })
+
+    expect(screen.getByText('Brasília é a capital do Brasil.')).toBeInTheDocument()
+    expect(screen.queryByText(/carregando pergunta/i)).not.toBeInTheDocument()
+    expect(apiClient.getRun).not.toHaveBeenCalled()
+  })
+
+  it('state de outra Run é ignorado: busca o registro da URL', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue({ ...completedRun, id: 'run-9' })
+    renderDetailWithRawState('run-9', { completedRun })
+
+    expect(screen.getByText(/carregando pergunta/i)).toBeInTheDocument()
+    await screen.findByText('Brasília é a capital do Brasil.')
+    expect(apiClient.getRun).toHaveBeenCalledWith('run-9')
   })
 })

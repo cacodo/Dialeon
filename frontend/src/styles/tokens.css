@@ -76,6 +76,30 @@
   --color-warning: var(--state-warning-fg);
   --color-muted: var(--color-fg-muted);
 
+  /* --- Papéis funcionais sobre a marca ---
+     A marca aparece em TRÊS papéis só: ação primária, foco e "onde estou"
+     (navegação/seleção). Componentes usam estes papéis, nunca `--brand-*`
+     diretamente -- reconciliar a paleta com a identidade visual definitiva
+     vira uma troca de token, não uma caça a seletores. */
+  --color-action-bg: var(--brand-500);
+  --color-action-bg-hover: var(--brand-700);
+  --color-action-fg: #ffffff;
+  --color-current: var(--brand-500);
+  --color-focus-halo: var(--brand-100);
+
+  /* Contorno de CONTROLE (campo, moldura do composer, checkbox): >= 3:1
+     contra a superfície (WCAG 1.4.11), ao contrário de `--color-border`,
+     que é só separador decorativo. */
+  --color-control-border: #8f8ca1;
+  --color-control-border-hover: #6f6c82;
+
+  /* --- Larguras ---
+     reading: medida de leitura do texto corrido; composer: moldura da
+     pergunta; page: coluna do conteúdo; wide: só tabelas técnicas. */
+  --width-reading: var(--measure);
+  --width-composer: 46rem;
+  --width-page: 56rem;
+
   /* --- Espaçamento --- */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -179,6 +203,19 @@
     --color-warning: var(--state-warning-fg);
     --color-muted: var(--color-fg-muted);
 
+    /* Texto branco sobre o indigo claro do tema escuro ficava em 3.5:1;
+       este tom mantém >= 4.5:1 com o texto e >= 3:1 contra o fundo. */
+    --color-action-bg: #6558e8;
+    --color-action-bg-hover: #564adf;
+    --color-action-fg: #ffffff;
+    --color-current: var(--brand-700);
+    --color-focus-halo: var(--brand-100);
+
+    --color-control-border: #737088;
+    --color-control-border-hover: #9491a8;
+
+    /* No escuro, sombra quase não se vê: hierarquia vem de passos de
+       superfície + contorno, nunca de sombra. */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
     --shadow-lg: 0 20px 44px rgba(0, 0, 0, 0.55);
