@@ -26,6 +26,9 @@ from app.orchestrator.config import RunConfig
 from app.storage import models as _storage_models  # noqa: F401 - import maps the real ORM
 
 
+# Exercise the shipped Host policy (loopback only), not a developer override.
+os.environ.pop("ALLOWED_HOSTS", None)
+
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
 assert not Path(app.__file__).resolve().is_relative_to(SOURCE_ROOT), app.__file__
 subprocess.run(
@@ -114,7 +117,7 @@ async def factory_smoke():
 
 asyncio.run(factory_smoke())
 
-with TestClient(create_app(settings=settings())) as client:
+with TestClient(create_app(settings=settings()), base_url="http://localhost") as client:
     assert client.get("/providers").status_code == 200
     service = client.app.state.components.service
     service.run = AsyncMock(wraps=service.run)
@@ -157,7 +160,9 @@ class UvicornRootPathScope:
 
 for root_path in ("", "/", "/api", "/api/"):
     application = create_app(settings=settings())
-    with TestClient(UvicornRootPathScope(application), root_path=root_path) as client:
+    with TestClient(
+        UvicornRootPathScope(application), root_path=root_path, base_url="http://localhost"
+    ) as client:
         service = application.state.components.service
         service.run = AsyncMock(side_effect=AssertionError("rejected request reached service"))
         response = client.post("/runs", content=raw)
@@ -200,6 +205,11 @@ async def uvicorn_smoke():
             )
             assert rejected.status_code == 422, rejected.text
             assert (await client.get("/runs")).json()["runs"] == []
+            # M3: DNS rebinding -- a page's own hostname never reaches a route.
+            rebound = await client.get(
+                "/runs", headers={"Host": f"attacker.example:{port}", "Origin": f"http://attacker.example:{port}"}
+            )
+            assert (rebound.status_code, rebound.text) == (400, "Invalid host header"), rebound.text
     finally:
         server.should_exit = True
         async with asyncio.timeout(15):

@@ -31,8 +31,12 @@ que esta slice existe pra fechar. Auditoria confirmou ZERO mutação de
 nenhum código legítimo depende de reatribuir um campo depois de
 `Settings()` retornar, então congelar não quebra nenhum uso real."""
 
+from typing import Annotated
+
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from app.host_authority import DEFAULT_ALLOWED_HOSTS, parse_allowed_hosts
 
 
 class Settings(BaseSettings):
@@ -65,6 +69,13 @@ class Settings(BaseSettings):
 
     # --- Banco de dados ---
     database_url: str = "sqlite+aiosqlite:///./llm_council.db"
+
+    # --- API HTTP: autoridade de Host (M3, DNS rebinding) ---
+    # Hosts que a API aceita no header `Host`; ver app/host_authority.py.
+    # Env: `ALLOWED_HOSTS=dialeon.lan,192.168.1.20` (lista separada por
+    # vírgula, nunca JSON). Explícito SUBSTITUI o default local; `*` desliga
+    # a proteção. Configuração malformada é erro, nunca proteção desligada.
+    allowed_hosts: Annotated[tuple[str, ...], NoDecode] = DEFAULT_ALLOWED_HOSTS
 
     # --- Limites padrão de execução ---
     # Aplicados a toda execução via `RunConfig.from_settings` -- as
@@ -249,6 +260,13 @@ class Settings(BaseSettings):
 
     # --- App ---
     log_level: str = "INFO"
+
+    @field_validator("allowed_hosts", mode="before")
+    @classmethod
+    def _allowed_hosts_are_explicit_and_well_formed(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            value = value.split(",")
+        return parse_allowed_hosts(value)  # type: ignore[arg-type]
 
     @field_validator(
         "openai_default_model", "anthropic_default_model", "gemini_default_model"

@@ -152,7 +152,11 @@ existentes; os códigos de status/erro HTTP (`error.code`); os comandos,
 opções, formatos de `--json` e códigos de saída documentados da CLI; os
 nomes das variáveis de ambiente documentadas; o entrypoint instalado
 `dialeon` e o entrypoint Uvicorn `app.api.app:create_app`; e a leitura de
-runs históricas válidas e suportadas (a partir da era v0.9).
+runs históricas válidas e suportadas (a partir da era v0.9). Por
+segurança, requests cujo `Host` não esteja em `ALLOWED_HOSTS` (default: só
+loopback) são rejeitadas com 400 antes de qualquer endpoint — acesso por
+LAN, hostname próprio ou proxy exige declarar o nome (ver
+[Configuração](#configuração)).
 
 **Evolução compatível durante 1.x:** novos endpoints, novos campos
 **opcionais** de resposta, informação adicional de auditoria e novos
@@ -317,6 +321,36 @@ existir). Para um histórico único, rode sempre do mesmo diretório ou
 defina `DATABASE_URL` com caminho absoluto (ex.:
 `sqlite+aiosqlite:////home/voce/dialeon/llm_council.db`) — variáveis de
 ambiente têm precedência sobre o `.env`.
+
+**Hosts aceitos pela API (`ALLOWED_HOSTS`).** A API só responde a requests
+cujo header `Host` seja um nome permitido; qualquer outro recebe
+`400 Invalid host header` antes de qualquer rota (execução, histórico,
+audit, frontend). Isso impede que uma página maliciosa, fazendo o próprio
+hostname apontar pra sua máquina (DNS rebinding), dispare Runs pagas ou
+leia o histórico. O default aceita só `localhost`, `127.0.0.1` e `[::1]`,
+em qualquer porta — o uso local documentado acima (inclusive o proxy do
+`npm run dev`) funciona sem configuração.
+
+Para acessar por outro nome, declare-o: `ALLOWED_HOSTS` é uma lista
+separada por vírgula, sem porta, que **substitui** o default (inclua
+`localhost` se também quiser acesso local). O endereço de bind não é um
+Host: `--host 0.0.0.0` só escolhe onde o servidor escuta; os clientes
+continuam chamando por um nome ou IP, e é esse que precisa estar na lista.
+
+```bash
+# LAN: clientes usam http://192.168.1.20:8000
+ALLOWED_HOSTS=192.168.1.20,localhost uvicorn app.api.app:create_app --factory --host 0.0.0.0
+# reverse proxy que preserva o Host original (ex.: nginx com
+# `proxy_set_header Host $host`)
+ALLOWED_HOSTS=dialeon.example.internal
+```
+
+Um proxy que reescreve o `Host` para o upstream (ex.: `127.0.0.1:8000`)
+funciona com o default. `X-Forwarded-Host`, `Origin` e `Referer` nunca são
+consultados. `ALLOWED_HOSTS=*` desliga a validação — só faz sentido quando
+outra camada já garante o Host. Configuração malformada (item vazio,
+porta, curinga parcial) impede a inicialização em vez de desligar a
+proteção.
 
 **Nunca** imprima, logue ou serialize o objeto de configurações inteiro
 (por exemplo `Settings().model_dump()`) — isso inclui as API keys em

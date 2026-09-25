@@ -23,6 +23,7 @@ from app.api.frontend_serving import mount_frontend
 from app.api.openapi import install_public_contract_policy
 from app.api.routes import router, run_creation_router
 from app.config import Settings
+from app.host_authority import HostAuthorityMiddleware
 from app.version import get_product_version
 
 ComponentsFactory = Callable[[Settings], Awaitable[AppComponents]]
@@ -55,6 +56,9 @@ def create_app(
     # `info.version` acompanha a versão do PRODUTO (pyproject.toml) -- não
     # existe versão de API HTTP independente (ver app/version.py).
     app = FastAPI(title="LLM Council API", version=get_product_version(), lifespan=lifespan)
+    # M3 (DNS rebinding) -- antes de qualquer rota: execução, histórico,
+    # audit, OpenAPI e frontend estático. Ver app/host_authority.py.
+    app.add_middleware(HostAuthorityMiddleware, allowed_hosts=settings.allowed_hosts)
     install_public_contract_policy(app)
     register_exception_handlers(app)
     app.include_router(router)
