@@ -29,6 +29,7 @@ from app.council.result import CouncilRunResult
 from app.debate.claims import get_current_claims
 from app.debate.result import CritiqueResult, DebateResult
 from app.editor.result import EditorResult
+from app.editor.linguistic_realization import parse_semantic_review
 from app.judge.result import JudgeResult
 from app.source_analysis.result import SourceAnalysisResult
 from app.models.domain import ClaimAssessment, ClaimSupport
@@ -188,25 +189,31 @@ _REALIZATION_PERSISTENCE_PREFLIGHT_FAILED = "realization_persistence_preflight_f
 
 
 def _drop_linguistic_realization(result: CouncilRunResult) -> CouncilRunResult:
-    """Closure repair (adversarial review, audit-truth pass) -- degrada SÓ
-    a camada opcional de LinguisticRealization: um Run de resto
-    bem-sucedido (debate/judge/primary_answer/natural_answer/answer_text)
-    nunca é tocado, e nenhum attempt/usage/custo/provider já verdadeiro é
-    apagado -- só a LinguisticRealization ACEITA em si deixa de ser
-    persistida/preferida. Não há mais um segundo caminho que também
-    apaga tentativas: coerência falhando pra um resultado ACEITO nunca
-    prova que as chamadas nunca aconteceram (ver docstring de
-    `app/editor/linguistic_realization_coherence.py`), então este é o
-    único destino possível -- se mesmo este estado reduzido não for
-    coerente, isso é agora estruturalmente impossível (branch B daquele
-    módulo nunca reconstrói/exige nada que dependa da PrimaryAnswer
-    atual), não algo que precise de um fallback mais extremo."""
+    """Drop only optional presentation, retaining every completed call.
+
+    A matching rejected review remains the reason presentation is absent.
+    Otherwise the deterministic preflight failure explains the absence;
+    accepted reviews remain in the attempt history.
+    """
     editor = result.editor_result
     final_answer = editor.final_answer.model_copy(update={"linguistic_realization": None})
+    reason = _REALIZATION_PERSISTENCE_PREFLIGHT_FAILED
+    accepted_reviews = [
+        attempt
+        for attempt in editor.linguistic_semantic_review_attempts
+        if attempt.parse_status == "accepted"
+    ]
+    if accepted_reviews:
+        try:
+            review = parse_semantic_review(accepted_reviews[-1].raw_output_text)
+        except Exception:
+            review = None
+        if review is not None and review.decision == "reject":
+            reason = "semantic_review_rejection"
     editor = editor.model_copy(
         update={
             "final_answer": final_answer,
-            "linguistic_realization_fallback_reason": _REALIZATION_PERSISTENCE_PREFLIGHT_FAILED,
+            "linguistic_realization_fallback_reason": reason,
         }
     )
     return result.model_copy(update={"editor_result": editor})
@@ -246,7 +253,14 @@ def _preflight_linguistic_realization(result: CouncilRunResult) -> CouncilRunRes
         _check_linguistic_realization_persistable(result)
         return result
     except Exception:
-        return _drop_linguistic_realization(result)
+        degraded = _drop_linguistic_realization(result)
+        _check_linguistic_realization_persistable(degraded)
+        # Reparse the whole reduced value so nested domain validators run,
+        # just as they will on reload. Failure here must propagate: removing
+        # genuine attempts would manufacture a different audit history.
+        return CouncilRunResult.model_validate(
+            degraded.model_dump(mode="json", exclude_computed_fields=True)
+        )
 
 
 class CouncilRepository:

@@ -314,3 +314,32 @@ def test_a_rejected_review_with_the_matching_fallback_reason_passes():
         }
     )
     _check(forged_final, forged_editor)  # não levanta
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_declined_rejection_is_bound_to_the_realization_attempt_digest(matching):
+    final_answer, editor, _, digest, _ = _valid_state()
+    review = editor.linguistic_semantic_review_attempts[0].model_copy(
+        update={
+            "raw_output_text": json.dumps(
+                {
+                    "candidate_digest": digest if matching else "f" * 64,
+                    "decision": "reject",
+                    "issue_codes": ["semantic_omission"],
+                }
+            )
+        }
+    )
+    declined = final_answer.model_copy(update={"linguistic_realization": None})
+    editor = editor.model_copy(
+        update={
+            "final_answer": declined,
+            "linguistic_semantic_review_attempts": [review],
+            "linguistic_realization_fallback_reason": "semantic_review_rejection",
+        }
+    )
+    if matching:
+        _check(declined, editor)
+    else:
+        with pytest.raises(LinguisticRealizationCoherenceError, match="digest"):
+            _check(declined, editor)

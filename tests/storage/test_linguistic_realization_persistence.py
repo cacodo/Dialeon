@@ -247,6 +247,42 @@ async def test_save_success_gracefully_degrades_a_realization_that_diverges_from
 
 
 @pytest.mark.asyncio
+async def test_rejected_review_preflight_result_constructs_persists_and_reloads(repo):
+    result, primary, _ = _with_linguistic_realization(full_council_run_result())
+    editor = result.editor_result
+    review = editor.linguistic_semantic_review_attempts[0]
+    review_payload = json.loads(review.raw_output_text)
+    review_payload.update(decision="reject", issue_codes=["semantic_omission"])
+    rejecting_review = review.model_copy(update={"raw_output_text": json.dumps(review_payload)})
+    contradictory_editor = editor.model_copy(
+        update={"linguistic_semantic_review_attempts": [rejecting_review]}
+    )
+    contradictory = result.model_copy(update={"editor_result": contradictory_editor})
+
+    degraded = repository_module._preflight_linguistic_realization(contradictory)
+    repository_module._check_linguistic_realization_persistable(degraded)
+    reconstructed = CouncilRunResult(
+        **{name: getattr(degraded, name) for name in CouncilRunResult.model_fields}
+    )
+    assert reconstructed.status == result.status
+    assert reconstructed.editor_result.final_answer.primary_answer == primary
+    assert reconstructed.editor_result.final_answer.linguistic_realization is None
+    assert reconstructed.editor_result.linguistic_realization_fallback_reason == "semantic_review_rejection"
+    assert reconstructed.editor_result.linguistic_realization_attempts == editor.linguistic_realization_attempts
+    assert reconstructed.editor_result.linguistic_semantic_review_attempts == [rejecting_review]
+    assert reconstructed.editor_result.linguistic_semantic_review_provider == editor.linguistic_semantic_review_provider
+    assert reconstructed.editor_result.editor_input_tokens == editor.editor_input_tokens
+    assert reconstructed.editor_result.editor_output_tokens == editor.editor_output_tokens
+    assert reconstructed.editor_result.editor_cost_usd == editor.editor_cost_usd
+
+    await repo.save_success(contradictory)
+    loaded = (await repo.get_run(result.id)).council_run_result
+    repository_module._check_linguistic_realization_persistable(loaded)
+    assert loaded.editor_result == reconstructed.editor_result
+    assert loaded.status == result.status
+
+
+@pytest.mark.asyncio
 async def test_a_general_database_failure_is_never_disguised_as_an_optional_realization_failure(
     repo,
 ):

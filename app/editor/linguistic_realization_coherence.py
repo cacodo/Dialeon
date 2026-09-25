@@ -1,8 +1,6 @@
 """Fail-closed cross-record coherence for LinguisticRealization.
 
-Closure repair (adversarial review, audit-truth pass) -- this module
-separates two DIFFERENT questions that used to be conflated into a single
-unconditional reconstruction:
+This module separates two questions:
 
 A. Is an ACCEPTED/PERSISTED LinguisticRealization
    (`final_answer.linguistic_realization is not None`) coherent with the
@@ -15,15 +13,11 @@ A. Is an ACCEPTED/PERSISTED LinguisticRealization
 B. Is a set of realization/semantic-review ATTEMPTS, from an optional
    layer that was NOT accepted/persisted (declined, rejected, budget-
    closed, failed to interpret, failed to persist), still a TRUTHFUL
-   audit record? A provider call that genuinely completed is a
-   historical fact independent of whether interpreting/persisting/
-   reconstructing it LATER succeeds -- this branch never reconstructs
-   attempt content against the current `PrimaryAnswer` (that
-   reconstruction is what branch A needs, and only branch A, because
-   only branch A is about to present the result to a user), so it can
-   never be the reason a truthful completed attempt gets treated as
-   invalid/dropped. Coherence failure of an ACCEPTED result does not
-   retroactively prove that the underlying calls never happened.
+   audit record? A completed call remains historical evidence even if
+   presentation later fails. A semantic rejection used as the fallback
+   must nevertheless identify the exact candidate in the accepted
+   realization attempt. Later persistence failures may retain attempts
+   whose current interpretation cannot be established.
 """
 
 from __future__ import annotations
@@ -58,17 +52,12 @@ def _fail(message: str) -> None:
     raise LinguisticRealizationCoherenceError(message)
 
 
-def _safe_review_decision(attempt) -> str | None:
-    """Reconstrói SÓ o `decision` de uma tentativa de revisão aceita --
-    reconstrução AUTOCONTIDA (nunca depende de `PrimaryAnswer`, nunca
-    fragilizada pela evolução dela) -- usada exclusivamente pelas
-    checagens de AUDITORIA do branch B. Uma falha aqui NUNCA vira
-    `LinguisticRealizationCoherenceError` (ver docstring do módulo): só
-    significa "não é possível confirmar a decisão agora", e as checagens
-    que dependeriam dela ficam inconclusivas (não aplicadas) em vez de
-    derrubar um attempt truthfully completado."""
+def _safe_review(attempt):
+    """Read an accepted review without discarding a completed call if its
+    interpretation no longer succeeds. Such a review cannot justify a
+    semantic rejection fallback."""
     try:
-        return parse_semantic_review(attempt.raw_output_text).decision
+        return parse_semantic_review(attempt.raw_output_text)
     except Exception:
         return None
 
@@ -95,16 +84,16 @@ def validate_linguistic_realization_coherence(
         _fail("semantic review sem candidato estruturalmente aceito")
 
     if realization is None:
-        # B. Audit validity of ATTEMPTS from a failed/declined optional
-        # realization. Ver docstring do módulo -- NUNCA reconstrói o
-        # candidato contra a PrimaryAnswer atual aqui.
+        # B. Audit validity of declined attempts. Reconstruct a candidate
+        # only when a rejection decision is used to justify this fallback.
         if reason is None:
             _fail("tentativas de linguistic realization sem resultado exigem motivo")
 
         accepted_reviews = [a for a in review_attempts if a.parse_status == "accepted"]
-        review_decision = (
-            _safe_review_decision(accepted_reviews[-1]) if accepted_reviews else None
-        )
+        review = _safe_review(accepted_reviews[-1]) if accepted_reviews else None
+        review_decision = review.decision if review is not None else None
+        if reason == "semantic_review_provider_unavailable" and review_attempts:
+            _fail("provider de revisão indisponível não pode ter tentativa de revisão")
         if review_decision == "accept" and reason not in (
             _DECLINED_DESPITE_ACCEPTED_REVIEW_REASONS
         ):
@@ -114,6 +103,28 @@ def validate_linguistic_realization_coherence(
         if reason == "semantic_review_rejection":
             if review_decision != "reject":
                 _fail("semantic_review_rejection exige revisão válida com decision='reject'")
+            attempt = accepted_realization[-1]
+            if (
+                attempt.request_provenance is None
+                or attempt.request_provenance.contract_version
+                != LINGUISTIC_REALIZATION_CONTRACT_VERSION
+                or accepted_reviews[-1].request_provenance is None
+                or accepted_reviews[-1].request_provenance.contract_version
+                != LINGUISTIC_SEMANTIC_REVIEW_CONTRACT_VERSION
+            ):
+                _fail("rejeição semântica exige contratos v1 das tentativas aceitas")
+            try:
+                proposal = parse_realization_proposal(attempt.raw_output_text)
+                validate_realization_proposal(proposal, primary=primary, question=question)
+                digest = candidate_digest(
+                    proposal, based_on_primary_answer_digest=primary_answer_digest(primary)
+                )
+            except Exception as exc:
+                raise LinguisticRealizationCoherenceError(
+                    "rejeição semântica não reconstrói o candidato da tentativa aceita"
+                ) from exc
+            if review.candidate_digest != digest:
+                _fail("semantic review rejeitada diverge do digest exato do candidato")
         elif review_decision == "reject":
             _fail("revisão rejeitada exige fallback semantic_review_rejection")
         return
