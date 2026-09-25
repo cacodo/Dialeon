@@ -346,11 +346,14 @@ ALLOWED_HOSTS=dialeon.example.internal
 ```
 
 Um proxy que reescreve o `Host` para o upstream (ex.: `127.0.0.1:8000`)
-funciona com o default. `X-Forwarded-Host`, `Origin` e `Referer` nunca são
-consultados. `ALLOWED_HOSTS=*` desliga a validação — só faz sentido quando
-outra camada já garante o Host. Configuração malformada (item vazio,
-porta, curinga parcial) impede a inicialização em vez de desligar a
-proteção.
+funciona com o default, mas aí o Dialeon só consegue validar o `Host` que
+recebe do proxy: validar o `Host` original do cliente (e assim barrar DNS
+rebinding) passa a ser responsabilidade do proxy. `X-Forwarded-Host`,
+`Origin` e `Referer` nunca são consultados. `ALLOWED_HOSTS=*` desliga a
+validação — só faz sentido quando outra camada já garante o Host.
+Configuração malformada (item vazio, porta, curinga parcial) impede a API
+de iniciar em vez de desligar a proteção; os comandos da CLI, que não
+servem HTTP, não usam essa configuração.
 
 **Nunca** imprima, logue ou serialize o objeto de configurações inteiro
 (por exemplo `Settings().model_dump()`) — isso inclui as API keys em

@@ -23,7 +23,7 @@ from app.api.frontend_serving import mount_frontend
 from app.api.openapi import install_public_contract_policy
 from app.api.routes import router, run_creation_router
 from app.config import Settings
-from app.host_authority import HostAuthorityMiddleware
+from app.host_authority import HostAuthorityMiddleware, parse_allowed_hosts
 from app.version import get_product_version
 
 ComponentsFactory = Callable[[Settings], Awaitable[AppComponents]]
@@ -42,6 +42,11 @@ def create_app(
     `npm run build` já ter rodado no ambiente). `None` usa o default
     (`DEFAULT_FRONTEND_DIST`, ver app/api/frontend_serving.py)."""
     settings = settings or Settings()
+    # M3 -- `ALLOWED_HOSTS` só existe pra esta borda HTTP: validado AQUI, na
+    # criação da API (ValueError antes de qualquer request, inclusive antes
+    # do uvicorn abrir o socket quando usado como factory), e não no
+    # carregamento de Settings, que a CLI também faz.
+    allowed_hosts = parse_allowed_hosts(settings.allowed_hosts)
     factory: ComponentsFactory = components_factory or build_app_components
 
     @asynccontextmanager
@@ -58,7 +63,7 @@ def create_app(
     app = FastAPI(title="LLM Council API", version=get_product_version(), lifespan=lifespan)
     # M3 (DNS rebinding) -- antes de qualquer rota: execução, histórico,
     # audit, OpenAPI e frontend estático. Ver app/host_authority.py.
-    app.add_middleware(HostAuthorityMiddleware, allowed_hosts=settings.allowed_hosts)
+    app.add_middleware(HostAuthorityMiddleware, allowed_hosts=allowed_hosts)
     install_public_contract_policy(app)
     register_exception_handlers(app)
     app.include_router(router)

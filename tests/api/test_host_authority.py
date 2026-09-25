@@ -107,15 +107,44 @@ def test_settings_default_is_loopback_only(monkeypatch):
     ],
 )
 def test_settings_reads_a_comma_separated_env_list(monkeypatch, env, expected):
+    """Settings guarda a lista crua; a borda HTTP normaliza."""
     monkeypatch.setenv("ALLOWED_HOSTS", env)
-    assert Settings(_env_file=None).allowed_hosts == expected
+    settings = Settings(_env_file=None)
+    assert settings.allowed_hosts == tuple(env.split(","))
+    assert parse_allowed_hosts(settings.allowed_hosts) == expected
 
 
-@pytest.mark.parametrize("env", ["", " , ", "localhost:8000", '["dialeon.lan"]', "*,localhost"])
-def test_settings_rejects_malformed_env(monkeypatch, env):
+MALFORMED_ENV = ["", " , ", "localhost:8000", '["dialeon.lan"]', "*,localhost", "*.lan"]
+
+
+@pytest.mark.parametrize("env", MALFORMED_ENV)
+def test_malformed_env_fails_closed_when_the_api_is_created(monkeypatch, env):
+    """LOW M3-A: o valor malformado não derruba o carregamento de Settings
+    (a CLI também carrega), mas a API NUNCA é criada com ele -- nem vira
+    default nem curinga."""
     monkeypatch.setenv("ALLOWED_HOSTS", env)
+    settings = Settings(_env_file=None)
     with pytest.raises(ValueError):
-        Settings(_env_file=None)
+        create_app(settings=settings, components_factory=make_components_factory())
+
+
+@pytest.mark.parametrize("env", ["localhost:8000", "*.lan", ""])
+async def test_malformed_env_stops_the_documented_uvicorn_factory_before_listening(monkeypatch, env):
+    monkeypatch.setenv("ALLOWED_HOSTS", env)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.setenv(key, "")
+    server = uvicorn.Server(
+        uvicorn.Config("app.api.app:create_app", factory=True, host="127.0.0.1", port=0, log_level="critical")
+    )
+
+    # uvicorn chama a factory em `config.load()`, antes de `startup()` abrir
+    # o socket; o ValueError da borda HTTP propaga e o servidor nunca sobe.
+    with pytest.raises(ValueError):
+        await server.serve()
+
+    assert server.started is False
+    assert not getattr(server, "servers", [])  # nenhum socket chegou a escutar
 
 
 # ---------------------------------------------------------------------------

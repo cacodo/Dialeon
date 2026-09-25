@@ -19,6 +19,10 @@ qualquer rota (execução, histórico, audit, OpenAPI, frontend estático):
   acesso local;
 - `ALLOWED_HOSTS=*` desliga a proteção -- decisão consciente do operador.
 
+A configuração é validada na borda HTTP (`create_app`), não ao carregar
+Settings: um valor malformado impede a API de ser criada, sem afetar os
+comandos da CLI, que não servem HTTP.
+
 `Origin`, `Referer` e `X-Forwarded-Host` nunca são autoridade: sob DNS
 rebinding o `Origin` é o do atacante e bate com o `Host`, e headers
 encaminhados só teriam valor atrás de um proxy confiável (fora de escopo).
