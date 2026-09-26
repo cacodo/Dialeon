@@ -38,6 +38,8 @@ alimentados pelos mesmos objetos de provider resolvidos
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from typing import Literal
 
@@ -49,7 +51,20 @@ from app.orchestrator.config import RunConfig
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
 COUNCIL_READINESS_CONTRACT_VERSION = "council_local_readiness_v1"
-COUNCIL_ADMISSION_CONTRACT_VERSION = "council_admission_v1"
+# v2: um reconhecimento de degradação carrega a identidade da degradação
+# reconhecida (`acknowledged_degradation_fingerprint`). v1 (gravado só em
+# desenvolvimento, antes desse campo) continua legível: nele essa identidade
+# não foi capturada.
+COUNCIL_ADMISSION_CONTRACT_VERSION = "council_admission_v2"
+
+# Identidade CANÔNICA de uma degradação local conhecida: digest SHA-256 (a
+# mesma convenção de digest de `RequestProvenance`) do conjunto ordenado de
+# (papel, provider, modelo configurado) das dependências aplicáveis com
+# ausência local conhecida. Não é credencial nem token de autenticação: é
+# só uma forma estável e comparável de dizer "esta degradação", derivada
+# sempre pelo servidor a partir da própria avaliação.
+_DEGRADATION_FINGERPRINT_CONTRACT = "council_known_degradation_v1"
+DEGRADATION_FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
 # Papel de cada dependência, na ordem em que o pipeline do Conselho pode
 # alcançá-la. `semantic_review` é a revisão semântica da realização
@@ -165,6 +180,23 @@ class CouncilReadiness(BaseModel):
             return "some_unknown"
         return "all_met"
 
+    @property
+    def known_degradation_fingerprint(self) -> str | None:
+        """Identidade canônica da degradação local CONHECIDA desta avaliação
+        (ver `_DEGRADATION_FINGERPRINT_CONTRACT`), ou `None` quando nada do
+        caminho pedido tem ausência conhecida. Só os fatos materiais das
+        dependências `missing` entram -- mudanças em `met`/`unknown` não a
+        alteram; a ordem das dependências também não."""
+        missing = sorted({(d.role, d.provider, d.configured_default_model) for d in self.known_missing})
+        if not missing:
+            return None
+        canonical = json.dumps(
+            {"contract": _DEGRADATION_FINGERPRINT_CONTRACT, "missing": missing},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 def evaluate_council_readiness(
     dependencies: CouncilExecutionDependencies,
@@ -226,23 +258,53 @@ def strict_admission_blockers(
 class CouncilAdmissionRequest(BaseModel):
     """O que o cliente pediu na criação. `standard` (default) é o aceite de
     sempre (v1.3.0): a run segue mesmo com degradação local conhecida.
-    `acknowledge_known_degradation` só registra que o cliente declarou seguir
-    sabendo da degradação -- não muda o aceite. `strict` recusa quando
-    `strict_admission_blockers` não é vazio; pedir `strict` e reconhecer
-    degradação ao mesmo tempo é contraditório."""
+    `strict` recusa quando `strict_admission_blockers` não é vazio.
+
+    Um reconhecimento de degradação (`acknowledge_known_degradation`) só vale
+    com a identidade da degradação que foi MOSTRADA
+    (`acknowledged_degradation_fingerprint`, vinda de uma avaliação do
+    servidor): no aceite, ela precisa ser a identidade da degradação que o
+    servidor acabou de avaliar (ver `acknowledgement_mismatch`). Um nunca vem
+    sem o outro, e nenhum dos dois combina com `strict`."""
 
     model_config = _CONFIG
 
     mode: CouncilAdmissionMode = "standard"
     acknowledge_known_degradation: bool = False
+    acknowledged_degradation_fingerprint: str | None = Field(
+        default=None, pattern=DEGRADATION_FINGERPRINT_PATTERN
+    )
 
     @model_validator(mode="after")
-    def _strict_never_acknowledges(self) -> "CouncilAdmissionRequest":
-        if self.mode == "strict" and self.acknowledge_known_degradation:
+    def _acknowledgement_is_bound_and_never_strict(self) -> "CouncilAdmissionRequest":
+        acknowledged = self.acknowledge_known_degradation
+        fingerprint = self.acknowledged_degradation_fingerprint
+        if self.mode == "strict" and (acknowledged or fingerprint is not None):
             raise ValueError(
                 "admissão estrita não aceita reconhecimento de degradação: escolha uma das duas"
             )
+        if acknowledged and fingerprint is None:
+            raise ValueError(
+                "o reconhecimento de degradação exige a identidade da degradação mostrada "
+                "(acknowledged_degradation_fingerprint)"
+            )
+        if fingerprint is not None and not acknowledged:
+            raise ValueError(
+                "acknowledged_degradation_fingerprint só vale com acknowledge_known_degradation"
+            )
         return self
+
+
+def acknowledgement_mismatch(
+    admission: CouncilAdmissionRequest, readiness: CouncilReadiness
+) -> bool:
+    """ÚNICA regra de vínculo do reconhecimento: um reconhecimento pedido só
+    vale se a identidade reconhecida é EXATAMENTE a da degradação conhecida
+    na avaliação feita agora. Sem degradação conhecida agora (identidade
+    `None`), nenhum reconhecimento antigo passa adiante."""
+    if not admission.acknowledge_known_degradation:
+        return False
+    return admission.acknowledged_degradation_fingerprint != readiness.known_degradation_fingerprint
 
 
 class CouncilAdmission(BaseModel):
@@ -255,16 +317,34 @@ class CouncilAdmission(BaseModel):
 
     model_config = _CONFIG
 
-    contract_version: Literal["council_admission_v1"] = COUNCIL_ADMISSION_CONTRACT_VERSION
+    contract_version: Literal["council_admission_v1", "council_admission_v2"] = (
+        COUNCIL_ADMISSION_CONTRACT_VERSION
+    )
     mode: CouncilAdmissionMode
     known_degradation_acknowledged: bool
     readiness: CouncilReadiness
+    # v2: a identidade da degradação reconhecida -- sempre a da avaliação do
+    # aceite (`readiness`), nunca uma degradação diferente. `None` quando não
+    # houve reconhecimento, e em v1 (não capturada).
+    acknowledged_degradation_fingerprint: str | None = Field(
+        default=None, pattern=DEGRADATION_FINGERPRINT_PATTERN
+    )
 
     @model_validator(mode="after")
     def _coherent_with_policy(self) -> "CouncilAdmission":
-        CouncilAdmissionRequest(
-            mode=self.mode, acknowledge_known_degradation=self.known_degradation_acknowledged
-        )
+        if self.mode == "strict" and self.known_degradation_acknowledged:
+            raise ValueError("admissão estrita não aceita reconhecimento de degradação")
         if self.mode == "strict" and strict_admission_blockers(self.readiness):
             raise ValueError("uma run aceita em modo estrito não pode ter ausência local conhecida")
+        if self.contract_version == "council_admission_v1":
+            if self.acknowledged_degradation_fingerprint is not None:
+                raise ValueError("council_admission_v1 não registra a identidade reconhecida")
+        elif self.known_degradation_acknowledged:
+            expected = self.readiness.known_degradation_fingerprint
+            if expected is None or self.acknowledged_degradation_fingerprint != expected:
+                raise ValueError(
+                    "o reconhecimento registrado precisa ser o da degradação avaliada no aceite"
+                )
+        elif self.acknowledged_degradation_fingerprint is not None:
+            raise ValueError("identidade reconhecida sem reconhecimento")
         return self

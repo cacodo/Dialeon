@@ -24,6 +24,9 @@
 // se a configuração tiver mudado). Com ausência local CONHECIDA em alguma
 // etapa, um aviso compacto diz qual etapa e qual modelo, e perguntar exige a
 // escolha deliberada de seguir mesmo assim (envio padrão com reconhecimento).
+// O reconhecimento vale só para ESTA entrada (pergunta, fonte, modelos) e ESTA
+// degradação (a identidade que o servidor derivou e mostrou); o envio manda
+// essa identidade, e o servidor recusa se a degradação no aceite for outra.
 // "Não verificável" (unknown) é incerteza, nunca falha: só uma nota neutra.
 // A resposta direta não usa nada disso.
 //
@@ -84,7 +87,11 @@ interface RunComposerProps {
 // conhecida) ou padrão COM reconhecimento explícito da degradação.
 export type CouncilAdmissionChoice =
   | { readiness_admission: 'strict' }
-  | { readiness_admission: 'standard'; acknowledge_known_degradation: true }
+  | {
+      readiness_admission: 'standard'
+      acknowledge_known_degradation: true
+      acknowledged_degradation_fingerprint: string
+    }
 
 // Sem resultado pra chave atual = prévia em andamento (ou indisponível).
 type ReadinessState =
@@ -368,34 +375,53 @@ export function RunComposer({
       cancelled = true
     }
   }, [readinessKey, previewReadiness])
-  // Uma recusa de admissão estrita traz a avaliação feita no aceite: ela
-  // passa a valer pra seleção atual (a seleção não mudou desde o envio).
+  // Uma recusa do servidor (admissão estrita, ou reconhecimento de outra
+  // degradação) traz a avaliação AUTORITATIVA feita no aceite, pra entrada
+  // atual. Ela tem precedência sobre QUALQUER prévia (consultiva) da mesma
+  // seleção até a próxima decisão do servidor -- então uma prévia pedida
+  // antes, que chegue depois, nunca passa por cima dela.
+  const [authoritative, setAuthoritative] = useState<{
+    key: string
+    readiness: CouncilReadiness
+  } | null>(null)
   const [seenRejection, setSeenRejection] = useState<CouncilReadiness | null>(null)
   if (rejectedReadiness !== seenRejection) {
     setSeenRejection(rejectedReadiness)
-    if (rejectedReadiness !== null && readinessKey !== null) {
-      setReadinessState({ key: readinessKey, status: 'ready', readiness: rejectedReadiness })
-    }
+    setAuthoritative(
+      rejectedReadiness !== null && readinessKey !== null
+        ? { key: readinessKey, readiness: rejectedReadiness }
+        : null,
+    )
   }
-  const readiness =
+  const previewed =
     readinessState !== null && readinessState.status === 'ready' && readinessState.key === readinessKey
       ? readinessState.readiness
       : null
+  const readiness =
+    authoritative !== null && authoritative.key === readinessKey ? authoritative.readiness : previewed
   const missingGroups =
     readiness === null ? [] : groupReadinessByProvider(readiness, 'missing', { includeParticipants: true })
   // Só etapas internas: um participante "não verificável" já foi escolhido
   // explicitamente nesse estado (ver ModelSelectionPanel).
   const unknownGroups =
     readiness === null ? [] : groupReadinessByProvider(readiness, 'unknown', { includeParticipants: false })
+  // A identidade da degradação vem sempre do servidor; o cliente nunca a
+  // calcula nem a reaproveita de outra avaliação.
+  const degradationFingerprint =
+    readiness !== null && readiness.summary === 'some_missing'
+      ? (readiness.known_degradation_fingerprint ?? null)
+      : null
   const knownDegradation = readiness !== null && readiness.summary === 'some_missing'
-  // O reconhecimento vale só pra degradação que foi mostrada: qualquer
-  // mudança na avaliação (seleção, fonte, configuração) o desfaz.
-  const degradationSignature = knownDegradation
-    ? JSON.stringify([readinessKey, missingGroups])
-    : null
-  const [acknowledgedSignature, setAcknowledgedSignature] = useState<string | null>(null)
+  // O reconhecimento vale só para a entrada EXATA em que foi dado (pergunta,
+  // fonte, modelos) e para a degradação mostrada: qualquer mudança em uma
+  // delas pede a escolha de novo. Fica só na memória da página.
+  const acknowledgementScope =
+    degradationFingerprint === null
+      ? null
+      : JSON.stringify([question, sourceBlank ? null : sourceText, validSelected, degradationFingerprint])
+  const [acknowledgedScope, setAcknowledgedScope] = useState<string | null>(null)
   const degradationAcknowledged =
-    degradationSignature !== null && acknowledgedSignature === degradationSignature
+    acknowledgementScope !== null && acknowledgedScope === acknowledgementScope
 
   const canSubmit =
     question.trim().length > 0 &&
@@ -425,8 +451,12 @@ export function RunComposer({
       validSelected,
       sourceBlank ? null : sourceText,
       undefined,
-      degradationAcknowledged
-        ? { readiness_admission: 'standard', acknowledge_known_degradation: true }
+      degradationAcknowledged && degradationFingerprint !== null
+        ? {
+            readiness_admission: 'standard',
+            acknowledge_known_degradation: true,
+            acknowledged_degradation_fingerprint: degradationFingerprint,
+          }
         : { readiness_admission: 'strict' },
     )
   }
@@ -678,10 +708,8 @@ export function RunComposer({
             <input
               type="checkbox"
               checked={degradationAcknowledged}
-              disabled={submitting}
-              onChange={(event) =>
-                setAcknowledgedSignature(event.target.checked ? degradationSignature : null)
-              }
+              disabled={submitting || acknowledgementScope === null}
+              onChange={(event) => setAcknowledgedScope(event.target.checked ? acknowledgementScope : null)}
             />
             <span>Perguntar mesmo assim, sabendo que a resposta pode sair incompleta</span>
           </label>

@@ -40,9 +40,13 @@ export function CouncilAdmissionView({ admission }: CouncilAdmissionViewProps) {
     <div className="council-admission">
       <p>
         Prontidão local no aceite: {SUMMARY_LABELS[readiness.summary]}. Admissão {mode}
-        {admission.known_degradation_acknowledged
-          ? ', enviada sabendo da configuração local ausente.'
-          : '.'}
+        {!admission.known_degradation_acknowledged
+          ? '.'
+          : admission.acknowledged_degradation_fingerprint === readiness.known_degradation_fingerprint &&
+              admission.acknowledged_degradation_fingerprint !== null
+            ? ', enviada sabendo exatamente desta configuração local ausente.'
+            : // registro anterior à identidade reconhecida: qual degradação foi vista não foi guardado
+              ', enviada com reconhecimento de configuração local ausente (qual situação foi reconhecida não foi registrado).'}
       </p>
       {missing.length > 0 && (
         <>

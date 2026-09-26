@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.application.errors import CouncilPrerequisitesMissingError, UnknownProviderError
+from app.application.errors import (
+    CouncilDegradationChangedError,
+    CouncilPrerequisitesMissingError,
+    UnknownProviderError,
+)
 from app.application.service import CouncilExecutionService
 from app.council.readiness import CouncilAdmissionRequest, CouncilExecutionDependencies
 from app.council.runner import CouncilRunner
@@ -77,6 +81,17 @@ async def _harness(providers, *, debate_exc: Exception | None = None) -> _Harnes
 
 def _no_provider_was_called(providers) -> bool:
     return all(p.requests == [] for p in providers.values())
+
+
+def _acknowledge(service, config) -> CouncilAdmissionRequest:
+    """O que o cliente faz: pede a prévia e reconhece a degradação MOSTRADA,
+    identificada pelo `known_degradation_fingerprint` que o servidor derivou."""
+    shown = service.preview_readiness(CouncilExecutionDependencies.from_run_config(config))
+    assert shown.known_degradation_fingerprint is not None
+    return CouncilAdmissionRequest(
+        acknowledge_known_degradation=True,
+        acknowledged_degradation_fingerprint=shown.known_degradation_fingerprint,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -203,13 +218,15 @@ async def test_without_admission_request_the_v130_acceptance_is_unchanged_and_fa
 async def test_acknowledged_degradation_is_recorded_with_the_readiness_that_was_acknowledged():
     h = await _harness(_providers(gemini="missing"))
 
-    result = await h.service.run(
-        _config(), admission=CouncilAdmissionRequest(acknowledge_known_degradation=True)
-    )
+    result = await h.service.run(_config(), admission=_acknowledge(h.service, _config()))
     record = await h.repository.get_run(result.id)
 
     assert record.council_admission.mode == "standard"
     assert record.council_admission.known_degradation_acknowledged is True
+    # a identidade reconhecida é a da avaliação do aceite, registrada junto
+    assert record.council_admission.acknowledged_degradation_fingerprint == (
+        record.council_admission.readiness.known_degradation_fingerprint
+    )
     assert {d.role for d in record.council_admission.readiness.known_missing} == {
         "claim_extraction",
         "judge",
@@ -276,7 +293,7 @@ async def test_preview_rejects_an_unknown_provider_exactly_like_creation():
 async def test_acceptance_time_facts_are_never_rewritten_by_a_later_configuration():
     providers = _providers(gemini="missing")
     h = await _harness(providers)
-    result = await h.service.run(_config(), admission=CouncilAdmissionRequest(acknowledge_known_degradation=True))
+    result = await h.service.run(_config(), admission=_acknowledge(h.service, _config()))
 
     # a configuração muda depois do aceite (ex.: chave adicionada e reinício)
     providers["gemini"]._prerequisite = "met"
@@ -312,7 +329,7 @@ async def test_unexpected_failure_keeps_the_acceptance_facts_on_the_failed_recor
     h = await _harness(_providers(gemini="missing"), debate_exc=RuntimeError("boom"))
 
     with pytest.raises(RuntimeError):
-        await h.service.run(_config(), admission=CouncilAdmissionRequest(acknowledge_known_degradation=True))
+        await h.service.run(_config(), admission=_acknowledge(h.service, _config()))
     [summary] = await h.repository.list_runs()
     record = await h.repository.get_run(summary.id)
 
@@ -340,4 +357,87 @@ async def test_running_record_carries_the_acceptance_facts_before_any_outcome():
     running = seen["record"]
     assert isinstance(running, AcceptedRunRecord) and running.status == "running"
     assert running.council_admission.mode == "strict"
+    await h.engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Reconhecimento vinculado à degradação mostrada
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_of_a_degradation_that_changed_is_rejected_before_anything():
+    providers = _providers(gemini="missing")  # A: papéis internos (gemini) ausentes
+    h = await _harness(providers)
+    acknowledged_a = _acknowledge(h.service, _config())
+
+    # antes do aceite, a configuração muda: A passa a met e B (participante anthropic) fica ausente
+    providers["gemini"]._prerequisite = "met"
+    providers["anthropic"]._prerequisite = "missing"
+
+    with pytest.raises(CouncilDegradationChangedError) as caught:
+        await h.service.run(_config(), admission=acknowledged_a)
+
+    fresh = caught.value.readiness
+    assert [(d.role, d.provider) for d in fresh.known_missing] == [("participant", "anthropic")]
+    assert fresh.known_degradation_fingerprint != acknowledged_a.acknowledged_degradation_fingerprint
+    assert caught.value.acknowledged_fingerprint == acknowledged_a.acknowledged_degradation_fingerprint
+    assert await h.repository.list_runs() == []  # nenhum registro de aceite
+    assert h.debate_engine.calls == []
+    assert _no_provider_was_called(providers)
+    await h.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_never_carries_forward_when_nothing_is_missing_anymore():
+    providers = _providers(gemini="missing")
+    h = await _harness(providers)
+    acknowledged = _acknowledge(h.service, _config())
+    providers["gemini"]._prerequisite = "met"
+
+    with pytest.raises(CouncilDegradationChangedError) as caught:
+        await h.service.run(_config(), admission=acknowledged)
+
+    assert caught.value.readiness.known_degradation_fingerprint is None
+    assert await h.repository.list_runs() == []
+    await h.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_changed_configured_model_of_the_missing_stage_is_a_different_degradation():
+    providers = _providers(gemini="missing")
+    h = await _harness(providers)
+    acknowledged = _acknowledge(h.service, _config())
+    providers["gemini"]._default_model_name = "gemini-reconfigured"
+
+    with pytest.raises(CouncilDegradationChangedError):
+        await h.service.run(_config(), admission=acknowledged)
+    await h.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_same_acknowledged_degradation_is_accepted_even_if_unrelated_states_change():
+    providers = _providers(gemini="missing")
+    h = await _harness(providers)
+    acknowledged = _acknowledge(h.service, _config())
+    providers["openai"]._prerequisite = "unknown"  # mudança fora das ausências reconhecidas
+
+    result = await h.service.run(_config(), admission=acknowledged)
+    record = await h.repository.get_run(result.id)
+
+    assert record.council_admission.known_degradation_acknowledged is True
+    assert record.council_admission.acknowledged_degradation_fingerprint == acknowledged.acknowledged_degradation_fingerprint
+    assert record.council_admission.readiness.summary == "some_missing"
+    await h.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_without_acknowledgement_no_identity_is_recorded():
+    h = await _harness(_providers(gemini="missing"))
+
+    result = await h.service.run(_config())
+    record = await h.repository.get_run(result.id)
+
+    assert record.council_admission.known_degradation_acknowledged is False
+    assert record.council_admission.acknowledged_degradation_fingerprint is None
     await h.engine.dispose()

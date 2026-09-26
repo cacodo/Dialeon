@@ -32,7 +32,12 @@ def _admission(**states) -> CouncilAdmission:
         local_prerequisites=local,
         configured_default_models={name: f"{name}-configured" for name in rc.all_provider_authorities},
     )
-    return CouncilAdmission(mode="standard", known_degradation_acknowledged=True, readiness=readiness)
+    return CouncilAdmission(
+        mode="standard",
+        known_degradation_acknowledged=readiness.known_degradation_fingerprint is not None,
+        acknowledged_degradation_fingerprint=readiness.known_degradation_fingerprint,
+        readiness=readiness,
+    )
 
 
 async def _columns(engine, table):
@@ -150,3 +155,35 @@ async def test_a_malformed_persisted_admission_fails_closed_instead_of_being_nor
     with pytest.raises(ValidationError):
         await repository.get_run("malformada")
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_development_v1_admission_row_stays_readable_without_an_acknowledged_identity():
+    """Linhas gravadas em desenvolvimento no contrato v1 (antes da identidade
+    reconhecida existir) continuam legíveis: o reconhecimento aparece, a
+    identidade fica `None` (não capturada), nunca é inventada."""
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    repository = CouncilRepository(make_session_factory(engine))
+    await repository.save_accepted(
+        "dev-v1",
+        run_config=run_config(),
+        started_at=now(),
+        provider_execution_policy=POLICY,
+        council_admission=_admission(anthropic="missing"),
+    )
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE accepted_runs SET council_admission_json = json_remove(json_set("
+                "council_admission_json, '$.contract_version', 'council_admission_v1'), "
+                "'$.acknowledged_degradation_fingerprint')"
+            )
+        )
+
+    record = await repository.get_run("dev-v1")
+    await engine.dispose()
+
+    assert record.council_admission.contract_version == "council_admission_v1"
+    assert record.council_admission.known_degradation_acknowledged is True
+    assert record.council_admission.acknowledged_degradation_fingerprint is None

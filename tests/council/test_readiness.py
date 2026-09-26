@@ -11,6 +11,7 @@ from app.council.readiness import (
     CouncilAdmissionRequest,
     CouncilExecutionDependencies,
     CouncilReadiness,
+    acknowledgement_mismatch,
     evaluate_council_readiness,
     strict_admission_blockers,
 )
@@ -243,24 +244,161 @@ def test_participant_applicability_is_structural():
 
 
 def test_admission_request_rejects_strict_with_acknowledgement():
+    fingerprint = _evaluate(_deps(), anthropic="missing").known_degradation_fingerprint
     with pytest.raises(ValidationError):
-        CouncilAdmissionRequest(mode="strict", acknowledge_known_degradation=True)
+        CouncilAdmissionRequest(
+            mode="strict", acknowledge_known_degradation=True, acknowledged_degradation_fingerprint=fingerprint
+        )
+    with pytest.raises(ValidationError):
+        CouncilAdmissionRequest(mode="strict", acknowledged_degradation_fingerprint=fingerprint)
     assert CouncilAdmissionRequest() == CouncilAdmissionRequest(mode="standard", acknowledge_known_degradation=False)
+
+
+def test_acknowledgement_and_its_identity_always_travel_together():
+    fingerprint = _evaluate(_deps(), anthropic="missing").known_degradation_fingerprint
+    with pytest.raises(ValidationError, match="identidade"):
+        CouncilAdmissionRequest(acknowledge_known_degradation=True)  # reconhecimento sem o que foi visto
+    with pytest.raises(ValidationError):
+        CouncilAdmissionRequest(acknowledged_degradation_fingerprint=fingerprint)  # identidade sem reconhecimento
+    with pytest.raises(ValidationError):
+        CouncilAdmissionRequest(acknowledge_known_degradation=True, acknowledged_degradation_fingerprint="sha256:xyz")
+    CouncilAdmissionRequest(acknowledge_known_degradation=True, acknowledged_degradation_fingerprint=fingerprint)
+
+
+# ---------------------------------------------------------------------------
+# Identidade canônica da degradação conhecida
+# ---------------------------------------------------------------------------
+
+
+def test_fingerprint_is_none_without_known_missing_degradation():
+    assert _evaluate(_deps()).known_degradation_fingerprint is None
+    assert _evaluate(_deps(), anthropic="unknown").known_degradation_fingerprint is None
+    # ausência fora do caminho pedido (análise da fonte sem fonte) não é degradação conhecida
+    assert _evaluate(_deps(source_analyzer="mistral"), mistral="missing").known_degradation_fingerprint is None
+
+
+def test_fingerprint_is_canonical_and_ordering_stable():
+    a = _evaluate(_deps(("openai", "gemini")), openai="missing", anthropic="missing")
+    b = _evaluate(_deps(("gemini", "openai")), openai="missing", anthropic="missing")
+
+    assert a.dependencies != b.dependencies  # ordem diferente
+    assert a.known_degradation_fingerprint == b.known_degradation_fingerprint
+    assert a.known_degradation_fingerprint.startswith("sha256:") and len(a.known_degradation_fingerprint) == 71
+
+
+def test_fingerprint_ignores_met_and_unknown_changes():
+    base = _evaluate(_deps(), anthropic="missing")
+
+    assert _evaluate(_deps(), anthropic="missing", openai="unknown").known_degradation_fingerprint == (
+        base.known_degradation_fingerprint
+    )
+    assert _evaluate(_deps(), anthropic="missing", gemini="unknown").known_degradation_fingerprint == (
+        base.known_degradation_fingerprint
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        # outro provider ausente (conjunto B em vez de A)
+        lambda: _evaluate(_deps(), gemini="missing"),
+        # mais uma ausência além de A
+        lambda: _evaluate(_deps(), anthropic="missing", openai="missing"),
+        # mesmos estados, mas um papel a mais (fonte fornecida torna a análise aplicável)
+        lambda: _evaluate(_deps(source=True), anthropic="missing"),
+        # mesmos papéis/provider, outro modelo configurado
+        lambda: evaluate_council_readiness(
+            _deps(),
+            local_prerequisites={"openai": "met", "gemini": "met", "anthropic": "missing"},
+            configured_default_models=MODELS | {"anthropic": "claude-reconfigured"},
+        ),
+    ],
+)
+def test_fingerprint_changes_when_material_missing_facts_change(changed):
+    base = _evaluate(_deps(), anthropic="missing")
+
+    assert changed().known_degradation_fingerprint not in (None, base.known_degradation_fingerprint)
+
+
+def test_acknowledgement_mismatch_rule():
+    a = _evaluate(_deps(), anthropic="missing")
+    b = _evaluate(_deps(), gemini="missing")
+    ack_a = CouncilAdmissionRequest(
+        acknowledge_known_degradation=True, acknowledged_degradation_fingerprint=a.known_degradation_fingerprint
+    )
+
+    assert acknowledgement_mismatch(ack_a, a) is False
+    assert acknowledgement_mismatch(ack_a, b) is True
+    assert acknowledgement_mismatch(ack_a, _evaluate(_deps())) is True  # nada ausente agora: nada passa adiante
+    assert acknowledgement_mismatch(CouncilAdmissionRequest(), b) is False  # sem reconhecimento: aceite de sempre
+
+
+# ---------------------------------------------------------------------------
+# Fatos de aceite persistidos
+# ---------------------------------------------------------------------------
 
 
 def test_persisted_admission_is_coherent_with_the_strict_policy():
     degraded = _evaluate(_deps(), anthropic="missing")
+    fingerprint = degraded.known_degradation_fingerprint
 
     # aceite padrão com degradação conhecida: válido, com ou sem reconhecimento
-    CouncilAdmission(mode="standard", known_degradation_acknowledged=True, readiness=degraded)
+    CouncilAdmission(
+        mode="standard",
+        known_degradation_acknowledged=True,
+        acknowledged_degradation_fingerprint=fingerprint,
+        readiness=degraded,
+    )
     CouncilAdmission(mode="standard", known_degradation_acknowledged=False, readiness=degraded)
     # um aceite estrito nunca pode ter ausência conhecida no caminho pedido
     with pytest.raises(ValidationError):
         CouncilAdmission(mode="strict", known_degradation_acknowledged=False, readiness=degraded)
 
 
+def test_persisted_acknowledgement_must_be_of_the_acceptance_time_degradation():
+    degraded = _evaluate(_deps(), anthropic="missing")
+    other = _evaluate(_deps(), gemini="missing").known_degradation_fingerprint
+
+    with pytest.raises(ValidationError):  # reconhecimento de OUTRA degradação
+        CouncilAdmission(
+            mode="standard", known_degradation_acknowledged=True, acknowledged_degradation_fingerprint=other, readiness=degraded
+        )
+    with pytest.raises(ValidationError):  # reconhecimento sem identidade (v2)
+        CouncilAdmission(mode="standard", known_degradation_acknowledged=True, readiness=degraded)
+    with pytest.raises(ValidationError):  # reconhecimento sem degradação conhecida
+        CouncilAdmission(
+            mode="standard",
+            known_degradation_acknowledged=True,
+            acknowledged_degradation_fingerprint=other,
+            readiness=_evaluate(_deps()),
+        )
+
+
+def test_development_v1_admission_without_identity_stays_readable_as_not_captured():
+    degraded = _evaluate(_deps(), anthropic="missing")
+    v1 = {
+        "contract_version": "council_admission_v1",
+        "mode": "standard",
+        "known_degradation_acknowledged": True,
+        "readiness": degraded.model_dump(mode="json"),
+    }
+
+    admission = CouncilAdmission.model_validate(v1)
+
+    assert admission.known_degradation_acknowledged is True
+    assert admission.acknowledged_degradation_fingerprint is None  # não capturada, nunca inventada
+    with pytest.raises(ValidationError):
+        CouncilAdmission.model_validate(v1 | {"acknowledged_degradation_fingerprint": degraded.known_degradation_fingerprint})
+
+
 def test_readiness_round_trips_through_json():
     readiness = _evaluate(_deps(source=True), openai="unknown", anthropic="missing")
-    admission = CouncilAdmission(mode="standard", known_degradation_acknowledged=True, readiness=readiness)
+    admission = CouncilAdmission(
+        mode="standard",
+        known_degradation_acknowledged=True,
+        acknowledged_degradation_fingerprint=readiness.known_degradation_fingerprint,
+        readiness=readiness,
+    )
 
+    assert admission.contract_version == "council_admission_v2"
     assert CouncilAdmission.model_validate(admission.model_dump(mode="json")) == admission

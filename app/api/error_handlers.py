@@ -19,6 +19,7 @@ from app.api.exceptions import RunNotFoundError
 from app.presentation.mappers import council_readiness_public
 from app.presentation.schemas import ErrorBody, ErrorResponse
 from app.application.errors import (
+    CouncilDegradationChangedError,
     CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
     InvalidQuestionError,
@@ -110,6 +111,34 @@ def register_exception_handlers(app: FastAPI) -> None:
                         "readiness": council_readiness_public(exc.readiness).model_dump(
                             mode="json"
                         )
+                    },
+                )
+            ),
+        )
+
+    @app.exception_handler(CouncilDegradationChangedError)
+    async def _handle_council_degradation_changed(
+        request: Request, exc: CouncilDegradationChangedError
+    ) -> JSONResponse:
+        # Council Local Execution Readiness & Admission V1 -- o reconhecimento
+        # enviado é de OUTRA degradação (a configuração local mudou desde a
+        # avaliação mostrada). Conflito com o estado atual, não request
+        # malformado nem falha de provider: 409, antes de qualquer registro ou
+        # chamada, com a avaliação nova pra um reconhecimento novo.
+        return _error_json(
+            status.HTTP_409_CONFLICT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="council_readiness_changed",
+                    message=(
+                        "A configuração local das etapas do Conselho mudou desde a avaliação "
+                        "reconhecida. Nada foi criado."
+                    ),
+                    details={
+                        "readiness": council_readiness_public(exc.readiness).model_dump(
+                            mode="json"
+                        ),
+                        "acknowledged_degradation_fingerprint": exc.acknowledged_fingerprint,
                     },
                 )
             ),

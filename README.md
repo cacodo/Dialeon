@@ -89,9 +89,10 @@ as respostas dos modelos escolhidos ainda são coletadas, mas as afirmações
 não são extraídas nem avaliadas. Para usar outro fornecedor nessas etapas,
 defina no mesmo `.env` `DEFAULT_CLAIM_PROCESSOR_PROVIDER`,
 `DEFAULT_JUDGE_PROVIDER`, `DEFAULT_EDITOR_PROVIDER` e
-`DEFAULT_SOURCE_ANALYZER_PROVIDER` (`openai`, `anthropic` ou `gemini`). A
-interface não mostra a situação dessas etapas internas; ela só indica a
-configuração local dos modelos que você escolhe.
+`DEFAULT_SOURCE_ANALYZER_PROVIDER` (`openai`, `anthropic` ou `gemini`). Numa
+pergunta do Conselho, a interface avisa antes do envio quando falta a
+configuração local de alguma dessas etapas (ver
+[Configuração local das etapas do Conselho](#configuração-local-das-etapas-do-conselho)).
 
 **3. Inicie a API**, a partir do mesmo diretório:
 
@@ -212,8 +213,10 @@ Na interface, o caminho normal não muda. Se faltar configuração local em
 alguma etapa, um aviso diz qual etapa e qual modelo, e perguntar exige marcar
 “Perguntar mesmo assim” (a resposta pode sair incompleta: uma etapa sem
 configuração falha sem chamar o fornecedor, e o Dialeon não troca de modelo).
-Sem essa escolha, a interface envia a pergunta com **admissão estrita**: se a
-configuração tiver mudado desde o aviso, o servidor recusa sem criar nada.
+A escolha vale só para aquele aviso e aquela pergunta: mudar a pergunta, a
+fonte ou os modelos pede a escolha de novo. Sem ela, a interface envia com
+**admissão estrita**. Se a configuração local tiver mudado entre o aviso e o
+envio, o servidor recusa sem criar nada e a interface mostra a situação nova.
 
 Pela CLI: `dialeon readiness --providers openai,gemini` mostra a avaliação
 sem executar nada (`--source` e o default de `--providers` são os mesmos de
@@ -225,8 +228,13 @@ sempre, e a saída mostra a situação registrada no aceite.
 Pela API: `POST /runs/readiness` (opcional, sem efeito) com
 `enabled_providers` e `source_supplied`; em `POST /runs`,
 `"readiness_admission": "strict"` recusa com `422`
-`council_prerequisites_missing` (a avaliação vai em `error.details.readiness`)
-e `"acknowledge_known_degradation": true` registra que o envio foi deliberado.
+`council_prerequisites_missing` (a avaliação vai em `error.details.readiness`).
+Para seguir sabendo de uma degradação, mande `"acknowledge_known_degradation":
+true` com `"acknowledged_degradation_fingerprint"` igual ao
+`known_degradation_fingerprint` da avaliação mostrada (uma identidade das
+etapas sem configuração, não uma credencial): se a degradação avaliada no
+aceite for outra, a resposta é `409` `council_readiness_changed`, sem criar
+nada, com a avaliação nova em `error.details.readiness`.
 Sem esses campos, o aceite é o da v1.3.0. Toda run nova do Conselho guarda a
 avaliação feita no aceite, o modo de admissão e o reconhecimento em
 `council_admission` (detalhe e auditoria); runs anteriores têm `null` (não
@@ -384,11 +392,12 @@ de sempre. A listagem ganhou `kind` (`council`/`direct`) em cada item.
 
 Na versão em desenvolvimento desta árvore (ver
 [Configuração local das etapas do Conselho](#configuração-local-das-etapas-do-conselho)):
-`POST /runs/readiness` é novo e opcional; `readiness_admission` e
-`acknowledge_known_degradation` são campos opcionais de `POST /runs` (só do
-Conselho); as respostas do Conselho ganharam `council_admission`; o código
-`council_prerequisites_missing` só aparece com `"readiness_admission":
-"strict"`.
+`POST /runs/readiness` é novo e opcional; `readiness_admission`,
+`acknowledge_known_degradation` e `acknowledged_degradation_fingerprint` são
+campos opcionais de `POST /runs` (só do Conselho); as respostas do Conselho
+ganharam `council_admission`; o código `council_prerequisites_missing` só
+aparece com `"readiness_admission": "strict"`, e `council_readiness_changed`
+só com um reconhecimento de degradação.
 
 **Não fazem parte da API estável:** o texto exato de mensagens da CLI e de
 erros; o schema SQLite bruto e as classes ORM; os módulos internos `app.*`,

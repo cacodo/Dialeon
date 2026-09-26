@@ -170,9 +170,16 @@ def human_council_readiness(readiness: CouncilReadinessPublic) -> str:
             "ou avaliadas). O Dialeon não troca de provider nem de modelo."
         )
     lines.append("")
+    # Só o que a prontidão local decide na admissão estrita -- nunca que a
+    # pergunta inteira seria aceita (as demais validações do pedido continuam).
     lines.append(
         "admissão estrita (dialeon run --strict-readiness): "
-        + ("recusaria esta pergunta" if readiness.strict_admission == "blocked" else "admitiria esta pergunta")
+        + (
+            "a configuração local bloquearia a pergunta"
+            if readiness.strict_admission == "blocked"
+            else "a configuração local não bloquearia a pergunta (as demais validações do "
+            "pedido continuam valendo)"
+        )
     )
     return "\n".join(lines)
 
@@ -187,7 +194,17 @@ def _human_council_admission_lines(admission: CouncilAdmissionPublic | None) -> 
     line = (
         f"prontidão_local_no_aceite: {_READINESS_SUMMARY_LABELS[readiness.summary]} "
         f"(admissão {mode}"
-        + (", degradação reconhecida no envio" if admission.known_degradation_acknowledged else "")
+        + (
+            ""
+            if not admission.known_degradation_acknowledged
+            else ", degradação reconhecida no envio: exatamente a avaliada no aceite"
+            if admission.acknowledged_degradation_fingerprint is not None
+            and admission.acknowledged_degradation_fingerprint
+            == readiness.known_degradation_fingerprint
+            # registro anterior à identidade reconhecida (v1): qual situação foi
+            # vista não foi guardado -- nunca afirmado
+            else ", degradação reconhecida no envio; qual situação foi reconhecida não foi registrado"
+        )
         + ")"
     )
     lines = [line]

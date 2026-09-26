@@ -481,6 +481,7 @@ def council_readiness_public(readiness: CouncilReadiness) -> CouncilReadinessPub
         contract_version=readiness.contract_version,
         summary=readiness.summary,
         strict_admission="blocked" if strict_admission_blockers(readiness) else "admissible",
+        known_degradation_fingerprint=readiness.known_degradation_fingerprint,
         dependencies=[
             CouncilDependencyReadinessPublic(
                 role=d.role,
@@ -502,6 +503,7 @@ def council_admission_public(admission: CouncilAdmission | None) -> CouncilAdmis
         contract_version=admission.contract_version,
         mode=admission.mode,
         known_degradation_acknowledged=admission.known_degradation_acknowledged,
+        acknowledged_degradation_fingerprint=admission.acknowledged_degradation_fingerprint,
         readiness=council_readiness_public(admission.readiness),
     )
 

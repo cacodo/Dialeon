@@ -46,7 +46,10 @@ INVALID_REQUEST_RESPONSE = error_response(
 RUN_NOT_FOUND_RESPONSE = error_response("Run não encontrada (`error.code` = `run_not_found`).")
 INSUFFICIENT_QUORUM_RESPONSE = error_response(
     "Execução despachada, mas com respostas abaixo do quórum mínimo "
-    "(`error.code` = `insufficient_quorum`; `error.details.run_id` é a falha persistida)."
+    "(`error.code` = `insufficient_quorum`; `error.details.run_id` é a falha persistida), "
+    "ou reconhecimento de degradação local que não é o da degradação avaliada no aceite "
+    "(`error.code` = `council_readiness_changed`; nada foi criado; "
+    "`error.details.readiness` é a avaliação nova)."
 )
 
 

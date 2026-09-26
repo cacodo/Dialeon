@@ -135,3 +135,18 @@ class CouncilPrerequisitesMissingError(Exception):
         self.readiness = readiness
         blockers = ", ".join(f"{d.role}={d.provider}" for d in readiness.known_missing)
         super().__init__(f"dependências do Conselho sem configuração local necessária: {blockers}")
+
+
+class CouncilDegradationChangedError(Exception):
+    """Council Local Execution Readiness & Admission V1 -- o cliente
+    reconheceu uma degradação local (`acknowledged_degradation_fingerprint`),
+    mas a avaliação feita no aceite tem OUTRA identidade de degradação (outro
+    conjunto de ausências conhecidas, ou nenhuma): o reconhecimento não vale
+    pro que seria executado. Levantada ANTES do aceite durável -- nenhum
+    registro é criado, nenhuma chamada é tentada. Carrega a avaliação nova,
+    pra que o cliente mostre o que mudou e peça um reconhecimento novo."""
+
+    def __init__(self, readiness: CouncilReadiness, acknowledged_fingerprint: str | None):
+        self.readiness = readiness
+        self.acknowledged_fingerprint = acknowledged_fingerprint
+        super().__init__("a degradação local reconhecida não é a avaliada no aceite")

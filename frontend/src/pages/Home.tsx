@@ -25,8 +25,9 @@ type SubmissionState =
   | { phase: 'outcome_uncertain' }
   | { phase: 'insufficient_without_record'; message: string }
   // Council Local Execution Readiness & Admission V1 -- admissão estrita
-  // recusada ANTES de qualquer registro ou chamada: nada foi enviado.
-  | { phase: 'readiness_blocked' }
+  // recusada, ou reconhecimento de uma degradação que mudou, ANTES de
+  // qualquer registro ou chamada: nada foi enviado.
+  | { phase: 'readiness_blocked'; code: 'council_prerequisites_missing' | 'council_readiness_changed' }
 
 // A avaliação que acompanha uma recusa (`details.readiness`) só é usada se
 // tiver a forma esperada -- nunca inventada a partir de outra coisa.
@@ -116,9 +117,12 @@ export function Home() {
         } else {
           setSubmission({ phase: 'insufficient_without_record', message: error.message })
         }
-      } else if (error instanceof ApiError && error.code === 'council_prerequisites_missing') {
+      } else if (
+        error instanceof ApiError &&
+        (error.code === 'council_prerequisites_missing' || error.code === 'council_readiness_changed')
+      ) {
         setRejectedReadiness(readinessFromDetails(error.details))
-        setSubmission({ phase: 'readiness_blocked' })
+        setSubmission({ phase: 'readiness_blocked', code: error.code })
       } else if (error instanceof ApiError && error.code === 'invalid_request') {
         setSubmission({ phase: 'invalid', message: formatInvalidRequest(error.details) })
       } else if (
@@ -167,8 +171,8 @@ export function Home() {
 
         {submission.phase === 'readiness_blocked' && (
           <p role="alert" className="notice notice--validation">
-            {formatErrorCode('council_prerequisites_missing')} Veja o aviso acima para decidir se quer
-            perguntar mesmo assim.
+            {formatErrorCode(submission.code)} Veja o aviso acima para decidir se quer perguntar
+            mesmo assim.
           </p>
         )}
 

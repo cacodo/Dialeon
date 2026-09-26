@@ -123,6 +123,10 @@ export interface CouncilReadiness {
   // 'some_unknown' = nada ausente, algo não verificável.
   summary: 'all_met' | 'some_unknown' | 'some_missing'
   strict_admission: 'admissible' | 'blocked'
+  // Identidade canônica da degradação local CONHECIDA desta avaliação (ou
+  // null sem ausência conhecida), derivada pelo servidor. É o que um
+  // reconhecimento manda de volta; nunca calculada no cliente.
+  known_degradation_fingerprint: string | null
   dependencies: CouncilDependencyReadiness[]
 }
 
@@ -132,9 +136,12 @@ export interface CouncilReadinessRequest {
 }
 
 export interface CouncilAdmission {
-  contract_version: 'council_admission_v1'
+  contract_version: 'council_admission_v1' | 'council_admission_v2'
   mode: 'standard' | 'strict'
   known_degradation_acknowledged: boolean
+  // v2: a degradação reconhecida (sempre a da avaliação do aceite); null sem
+  // reconhecimento, e em v1 (não capturada).
+  acknowledged_degradation_fingerprint: string | null
   readiness: CouncilReadiness
 }
 
@@ -834,10 +841,13 @@ export interface CreateRunRequest {
   kind?: RunKind
   // Council Local Execution Readiness & Admission V1 -- só pro Conselho.
   // 'strict' recusa (422 council_prerequisites_missing, nada criado) com
-  // ausência local conhecida; acknowledge_known_degradation só registra que
-  // o envio foi deliberado sabendo da degradação (com 'standard').
+  // ausência local conhecida. acknowledge_known_degradation (com 'standard')
+  // registra o envio deliberado sabendo da degradação MOSTRADA, identificada
+  // por acknowledged_degradation_fingerprint; se a degradação avaliada no
+  // aceite for outra: 409 council_readiness_changed, nada criado.
   readiness_admission?: 'standard' | 'strict'
   acknowledge_known_degradation?: boolean
+  acknowledged_degradation_fingerprint?: string
 }
 
 // Etapa 16 -- audit-only. Só tipagem pra consistência; nenhum componente
@@ -949,6 +959,9 @@ export type ErrorCode =
   // Council Local Execution Readiness & Admission V1: admissão estrita do
   // Conselho recusada (details.readiness traz a avaliação usada).
   | 'council_prerequisites_missing'
+  // Idem: o reconhecimento enviado é de outra degradação (a configuração local
+  // mudou); details.readiness traz a avaliação nova.
+  | 'council_readiness_changed'
 
 export interface ErrorBody {
   code: ErrorCode

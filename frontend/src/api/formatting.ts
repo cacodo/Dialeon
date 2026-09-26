@@ -253,6 +253,8 @@ const ERROR_CODE_LABELS: Record<ErrorCode | 'unknown', string> = {
     'O modelo escolhido não tem a configuração local necessária nesta instalação.',
   council_prerequisites_missing:
     'Falta configuração local nesta instalação para etapas do Conselho. Nada foi enviado aos modelos.',
+  council_readiness_changed:
+    'A configuração local das etapas do Conselho mudou desde o aviso. Nada foi enviado aos modelos.',
   unknown: 'Não foi possível completar a solicitação.',
 }
 

@@ -99,7 +99,9 @@ async def test_readiness_human_output_separates_participants_from_internal_stage
     assert "  - análise de fonte: anthropic (modelo configurado: anthropic-configured) -- não se aplica a esta pergunta (sem fonte)" in internal
     assert "  - revisão semântica da redação: anthropic (modelo configurado: anthropic-configured) -- falta a configuração local" in internal
     assert "O Dialeon não troca de provider nem de modelo." in out
-    assert out.rstrip().endswith("admissão estrita (dialeon run --strict-readiness): recusaria esta pergunta")
+    assert out.rstrip().endswith(
+        "admissão estrita (dialeon run --strict-readiness): a configuração local bloquearia a pergunta"
+    )
     assert SECRET not in out
     assert _no_calls(components)
     assert await components.repository.list_runs() == []
@@ -114,7 +116,14 @@ async def test_readiness_json_is_the_public_schema_and_uses_the_run_defaults(cap
     body = json.loads(capsys.readouterr().out)
 
     assert code == commands.EXIT_OK
-    assert list(body) == ["contract_version", "summary", "strict_admission", "dependencies"]
+    assert list(body) == [
+        "contract_version",
+        "summary",
+        "strict_admission",
+        "known_degradation_fingerprint",
+        "dependencies",
+    ]
+    assert body["known_degradation_fingerprint"] is None
     assert body["summary"] == "all_met"
     assert [d["provider"] for d in body["dependencies"] if d["role"] == "participant"] == [
         "anthropic",
@@ -123,6 +132,24 @@ async def test_readiness_json_is_the_public_schema_and_uses_the_run_defaults(cap
     ]
     source = [d for d in body["dependencies"] if d["role"] == "source_analysis"]
     assert source[0]["applicability"] == "potential"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("states", [{}, {"anthropic": "unknown"}])
+async def test_readiness_without_blockers_never_claims_the_question_would_be_admitted(capsys, states):
+    """A prévia só decide a parte LOCAL da admissão estrita: outras validações
+    do pedido (pergunta, fonte, quórum...) ainda podem recusar a execução."""
+    components = await _components(**states)
+
+    await commands.cmd_readiness(components, providers=["openai", "gemini"], source_text=None, as_json=False)
+    out = capsys.readouterr().out
+
+    last = out.rstrip().splitlines()[-1]
+    assert last == (
+        "admissão estrita (dialeon run --strict-readiness): a configuração local não bloquearia "
+        "a pergunta (as demais validações do pedido continuam valendo)"
+    )
+    assert "admitiria" not in out and "admite" not in out
 
 
 @pytest.mark.asyncio
@@ -261,3 +288,33 @@ async def test_direct_rejects_the_strict_readiness_flag(capsys):
     assert code == commands.EXIT_INVALID_INPUT
     assert error["details"]["errors"][0]["type"] == "direct_readiness_admission_not_supported"
     assert await components.repository.list_runs() == []
+
+
+def test_admission_line_names_the_acknowledged_degradation_only_when_it_was_captured():
+    from app.cli.output import _human_council_admission_lines
+    from app.council.readiness import CouncilAdmission, CouncilExecutionDependencies, evaluate_council_readiness
+    from app.presentation.mappers import council_admission_public
+    from tests.storage.fixtures import run_config
+
+    rc = run_config()
+    readiness = evaluate_council_readiness(
+        CouncilExecutionDependencies.from_run_config(rc),
+        local_prerequisites={"openai": "met", "anthropic": "missing"},
+        configured_default_models={"openai": "gpt-configured", "anthropic": "claude-configured"},
+    )
+    v2 = CouncilAdmission(
+        mode="standard",
+        known_degradation_acknowledged=True,
+        acknowledged_degradation_fingerprint=readiness.known_degradation_fingerprint,
+        readiness=readiness,
+    )
+    v1 = CouncilAdmission(
+        contract_version="council_admission_v1", mode="standard", known_degradation_acknowledged=True, readiness=readiness
+    )
+
+    assert _human_council_admission_lines(council_admission_public(v2))[0].endswith(
+        "(admissão padrão, degradação reconhecida no envio: exatamente a avaliada no aceite)"
+    )
+    assert _human_council_admission_lines(council_admission_public(v1))[0].endswith(
+        "(admissão padrão, degradação reconhecida no envio; qual situação foi reconhecida não foi registrado)"
+    )

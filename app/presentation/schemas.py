@@ -42,6 +42,7 @@ from typing_extensions import TypeAliasType
 
 from app.audit_fragment import AuditFragmentOmittedReason
 from app.council.readiness import (
+    DEGRADATION_FINGERPRINT_PATTERN,
     CouncilAdmissionMode,
     CouncilAdmissionRequest,
     CouncilDependencyRole,
@@ -122,11 +123,17 @@ class CreateRunRequest(BaseModel):
     # só pro Conselho. Omitidos = aceite de sempre (v1.3.0). "strict" recusa
     # a run (422 `council_prerequisites_missing`, nada criado) quando alguma
     # dependência do caminho pedido tem ausência local CONHECIDA.
-    # `acknowledge_known_degradation` só registra que o cliente decidiu seguir
-    # sabendo da degradação -- nunca muda o aceite.
+    # `acknowledge_known_degradation` registra que o cliente decidiu seguir
+    # sabendo da degradação MOSTRADA, identificada por
+    # `acknowledged_degradation_fingerprint` (o `known_degradation_fingerprint`
+    # de uma avaliação do servidor): se a degradação avaliada no aceite for
+    # outra, a run é recusada (409 `council_readiness_changed`, nada criado).
     readiness_admission: Literal["standard", "strict"] | None = None
     # `StrictBool`: um reconhecimento é sempre deliberado -- "yes"/1 nunca viram True.
     acknowledge_known_degradation: StrictBool | None = None
+    acknowledged_degradation_fingerprint: str | None = Field(
+        default=None, pattern=DEGRADATION_FINGERPRINT_PATTERN
+    )
 
     @model_validator(mode="after")
     def _direct_run_shape(self) -> "CreateRunRequest":
@@ -138,16 +145,21 @@ class CreateRunRequest(BaseModel):
                     "fonte não é suportada numa run direta (a resposta direta não é "
                     "comparada com nenhum texto)"
                 )
-            if self.readiness_admission is not None or self.acknowledge_known_degradation is not None:
+            if (
+                self.readiness_admission is not None
+                or self.acknowledge_known_degradation is not None
+                or self.acknowledged_degradation_fingerprint is not None
+            ):
                 raise ValueError(
-                    "readiness_admission e acknowledge_known_degradation só se aplicam ao "
-                    "Conselho (a resposta direta já recusa um provider sem a configuração "
-                    "local necessária)"
+                    "readiness_admission, acknowledge_known_degradation e "
+                    "acknowledged_degradation_fingerprint só se aplicam ao Conselho (a "
+                    "resposta direta já recusa um provider sem a configuração local necessária)"
                 )
-        elif self.readiness_admission == "strict" and self.acknowledge_known_degradation:
-            raise ValueError(
-                "admissão estrita não aceita reconhecimento de degradação: escolha uma das duas"
-            )
+        else:
+            # mesmas regras de combinação da boundary de domínio -- nunca
+            # reimplementadas aqui (strict x reconhecimento, reconhecimento
+            # sempre com a identidade da degradação e vice-versa)
+            self.council_admission()
         return self
 
     def council_admission(self) -> CouncilAdmissionRequest:
@@ -155,6 +167,7 @@ class CreateRunRequest(BaseModel):
         return CouncilAdmissionRequest(
             mode=self.readiness_admission or "standard",
             acknowledge_known_degradation=bool(self.acknowledge_known_degradation),
+            acknowledged_degradation_fingerprint=self.acknowledged_degradation_fingerprint,
         )
 
     @field_validator("source_text")
@@ -882,6 +895,12 @@ class CouncilReadinessPublic(BaseModel):
     contract_version: Literal["council_local_readiness_v1"]
     summary: CouncilReadinessSummary
     strict_admission: Literal["admissible", "blocked"]
+    # Identidade canônica da degradação local CONHECIDA desta avaliação
+    # (`sha256:<hex>` sobre as dependências aplicáveis `missing`: papel,
+    # provider, modelo configurado), ou `null` sem ausência conhecida. É o
+    # valor a mandar em `acknowledged_degradation_fingerprint` pra seguir
+    # sabendo DESTA degradação. Não é credencial nem autorização.
+    known_degradation_fingerprint: str | None
     dependencies: list[CouncilDependencyReadinessPublic]
 
 
@@ -893,9 +912,15 @@ class CouncilAdmissionPublic(BaseModel):
 
     model_config = _CONFIG
 
-    contract_version: Literal["council_admission_v1"]
+    # v2 registra a identidade da degradação reconhecida; v1 (só em
+    # desenvolvimento, antes dela) não a registrava.
+    contract_version: Literal["council_admission_v1", "council_admission_v2"]
     mode: CouncilAdmissionMode
     known_degradation_acknowledged: bool
+    # Identidade da degradação reconhecida no envio -- sempre a da avaliação
+    # do aceite (`readiness.known_degradation_fingerprint`). `null` sem
+    # reconhecimento, e em v1 (não capturada).
+    acknowledged_degradation_fingerprint: str | None
     readiness: CouncilReadinessPublic
 
 
@@ -1399,6 +1424,9 @@ class ErrorBody(BaseModel):
         # do Conselho recusada (ausência local conhecida no caminho pedido)
         # -- rejeitada antes do aceite.
         "council_prerequisites_missing",
+        # Council Local Execution Readiness & Admission V1: a degradação local
+        # reconhecida não é a avaliada no aceite -- rejeitada antes do aceite.
+        "council_readiness_changed",
     ]
     message: str
     details: dict | None = None

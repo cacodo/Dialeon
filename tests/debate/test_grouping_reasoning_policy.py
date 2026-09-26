@@ -392,6 +392,7 @@ def test_no_public_or_configuration_knob_exposes_the_reasoning_policy():
         # transporte nem de raciocínio.
         "readiness_admission",
         "acknowledge_known_degradation",
+        "acknowledged_degradation_fingerprint",
     }
 
     for rel in ("app/api", "app/cli", "app/presentation", "frontend/src/api/types.ts"):

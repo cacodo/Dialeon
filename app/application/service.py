@@ -36,7 +36,9 @@ abaixo):
          `assess_council_readiness`, com os modelos do snapshot acima) e,
          se admissão ESTRITA foi pedida, recusa com
          `CouncilPrerequisitesMissingError` quando há ausência local
-         conhecida no caminho pedido -- nenhum registro é criado
+         conhecida no caminho pedido; um reconhecimento de degradação que
+         não é o da degradação avaliada agora recusa com
+         `CouncilDegradationChangedError` -- nenhum registro é criado
       -> minta run_id + started_at (autoritativos a partir daqui)
       -> persiste o registro de aceite (repo.save_accepted) -- esta
          transação PRECISA completar antes de qualquer chamada ao runner
@@ -75,6 +77,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.application.errors import (
+    CouncilDegradationChangedError,
     CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
     InvalidQuestionError,
@@ -86,6 +89,7 @@ from app.council.readiness import (
     CouncilAdmissionRequest,
     CouncilExecutionDependencies,
     CouncilReadiness,
+    acknowledgement_mismatch,
     evaluate_council_readiness,
     strict_admission_blockers,
 )
@@ -361,7 +365,13 @@ class CouncilExecutionService:
         Readiness & Admission V1): só com `admission.mode="strict"`, e só
         quando `strict_admission_blockers` da avaliação feita AQUI não é
         vazio -- levantada ANTES de mintar run_id/`save_accepted`/chamar o
-        runner. `unknown` nunca bloqueia. Sem `admission` (ou `standard`),
+        runner. `unknown` nunca bloqueia.
+
+        `CouncilDegradationChangedError` (idem): um reconhecimento de
+        degradação cuja identidade (`acknowledged_degradation_fingerprint`)
+        não é a da degradação conhecida na avaliação feita AQUI (inclusive
+        quando agora não há degradação nenhuma) -- mesma posição, antes de
+        qualquer registro ou chamada. Sem `admission` (ou `standard`),
         o aceite é exatamente o de antes deste slice; a avaliação e o modo
         pedido são persistidos com o aceite (`council_admission`) em toda
         run nova.
@@ -438,9 +448,16 @@ class CouncilExecutionService:
         )
         if admission.mode == "strict" and strict_admission_blockers(readiness):
             raise CouncilPrerequisitesMissingError(readiness)
+        # Um reconhecimento só vale pra degradação que o cliente viu: a
+        # identidade reconhecida precisa ser a derivada AGORA pelo servidor.
+        if acknowledgement_mismatch(admission, readiness):
+            raise CouncilDegradationChangedError(
+                readiness, admission.acknowledged_degradation_fingerprint
+            )
         council_admission = CouncilAdmission(
             mode=admission.mode,
             known_degradation_acknowledged=admission.acknowledge_known_degradation,
+            acknowledged_degradation_fingerprint=admission.acknowledged_degradation_fingerprint,
             readiness=readiness,
         )
 

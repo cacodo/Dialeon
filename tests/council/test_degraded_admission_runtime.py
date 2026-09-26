@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from app.application.service import CouncilExecutionService
-from app.council.readiness import CouncilAdmissionRequest
+from app.council.readiness import CouncilAdmissionRequest, CouncilExecutionDependencies
 from app.council.runner import CouncilRunner
 from app.debate.debate_engine import DebateEngine
 from app.editor.compose import Editor
@@ -72,7 +72,14 @@ async def test_acknowledged_degradation_runs_with_honest_local_failures_and_no_s
         source_analyzer_provider="anthropic",
     )
 
-    result = await service.run(config, admission=CouncilAdmissionRequest(acknowledge_known_degradation=True))
+    shown = service.preview_readiness(CouncilExecutionDependencies.from_run_config(config))
+    result = await service.run(
+        config,
+        admission=CouncilAdmissionRequest(
+            acknowledge_known_degradation=True,
+            acknowledged_degradation_fingerprint=shown.known_degradation_fingerprint,
+        ),
+    )
     record = await repository.get_run(result.id)
     await engine.dispose()
 
@@ -81,6 +88,7 @@ async def test_acknowledged_degradation_runs_with_honest_local_failures_and_no_s
 
     # o reconhecimento fica registrado com a prontidão que foi reconhecida
     assert record.council_admission.known_degradation_acknowledged is True
+    assert record.council_admission.acknowledged_degradation_fingerprint == shown.known_degradation_fingerprint
     assert record.council_admission.readiness.summary == "some_missing"
 
     # só os participantes com configuração local chegaram a `_call_api`; nada chegou à anthropic

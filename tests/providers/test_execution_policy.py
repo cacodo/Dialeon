@@ -465,6 +465,7 @@ def test_create_run_request_contract_is_unchanged_and_exposes_no_transport_knobs
         # transporte nem de raciocínio.
         "readiness_admission",
         "acknowledge_known_degradation",
+        "acknowledged_degradation_fingerprint",
     }
 
     # cliente NÃO consegue enviar knob de transporte (extra="forbid")

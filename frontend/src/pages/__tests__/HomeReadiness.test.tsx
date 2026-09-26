@@ -26,7 +26,10 @@ vi.mock('../../api/client', async () => {
   }
 })
 
-function readiness(internalState: 'met' | 'missing'): CouncilReadiness {
+const FINGERPRINT_ANTHROPIC = `sha256:${'a'.repeat(64)}`
+const FINGERPRINT_OPENAI = `sha256:${'b'.repeat(64)}`
+
+function readiness(internalState: 'met' | 'missing', participantState: 'met' | 'missing' = 'met'): CouncilReadiness {
   const internal = (role: CouncilReadiness['dependencies'][number]['role'], applicability: 'potential' | 'not_applicable') => ({
     role,
     provider: 'anthropic',
@@ -36,10 +39,13 @@ function readiness(internalState: 'met' | 'missing'): CouncilReadiness {
   })
   return {
     contract_version: 'council_local_readiness_v1',
-    summary: internalState === 'missing' ? 'some_missing' : 'all_met',
-    strict_admission: internalState === 'missing' ? 'blocked' : 'admissible',
+    summary: internalState === 'missing' || participantState === 'missing' ? 'some_missing' : 'all_met',
+    strict_admission: internalState === 'missing' || participantState === 'missing' ? 'blocked' : 'admissible',
+    // identidade derivada pelo "servidor" (aqui, fixa por situação)
+    known_degradation_fingerprint:
+      internalState === 'missing' ? FINGERPRINT_ANTHROPIC : participantState === 'missing' ? FINGERPRINT_OPENAI : null,
     dependencies: [
-      { role: 'participant', provider: 'openai', configured_default_model: 'gpt-configured', local_prerequisite: 'met', applicability: 'selected' },
+      { role: 'participant', provider: 'openai', configured_default_model: 'gpt-configured', local_prerequisite: participantState, applicability: 'selected' },
       internal('claim_extraction', 'potential'),
       internal('source_analysis', 'not_applicable'),
       internal('judge', 'potential'),
@@ -97,6 +103,7 @@ describe('Home -- prontidão local do Conselho', () => {
       source_text: null,
       readiness_admission: 'standard',
       acknowledge_known_degradation: true,
+      acknowledged_degradation_fingerprint: FINGERPRINT_ANTHROPIC,
     })
   })
 
@@ -131,6 +138,44 @@ describe('Home -- prontidão local do Conselho', () => {
       source_text: null,
       readiness_admission: 'standard',
       acknowledge_known_degradation: true,
+      acknowledged_degradation_fingerprint: FINGERPRINT_ANTHROPIC,
+    })
+  })
+
+  it('degradação mudou entre o aviso e o envio (409): nada criado, aviso novo, escolha de novo', async () => {
+    vi.mocked(apiClient.previewCouncilReadiness).mockResolvedValue(readiness('missing'))
+    vi.mocked(apiClient.createRun)
+      .mockRejectedValueOnce(
+        new ApiError(409, 'council_readiness_changed', 'mudou', {
+          readiness: readiness('met', 'missing'),
+          acknowledged_degradation_fingerprint: FINGERPRINT_ANTHROPIC,
+        }),
+      )
+      .mockImplementation(() => new Promise(() => {}))
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await ask()
+    await userEvent.click(await screen.findByRole('checkbox', { name: /Perguntar mesmo assim/ }))
+    await submit()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'A configuração local das etapas do Conselho mudou desde o aviso. Nada foi enviado aos modelos.',
+    )
+    const notice = screen.getByRole('region', { name: 'Falta configuração local para parte do Conselho' })
+    expect(notice).toHaveTextContent('Participante: GPT')
+    expect(screen.getByRole('checkbox', { name: /Perguntar mesmo assim/ })).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Perguntar' })).toBeDisabled()
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /Perguntar mesmo assim/ }))
+    await submit()
+    expect(apiClient.createRun).toHaveBeenLastCalledWith({
+      question: 'Qual a capital?',
+      enabled_providers: ['openai'],
+      source_text: null,
+      readiness_admission: 'standard',
+      acknowledge_known_degradation: true,
+      acknowledged_degradation_fingerprint: FINGERPRINT_OPENAI,
     })
   })
 })

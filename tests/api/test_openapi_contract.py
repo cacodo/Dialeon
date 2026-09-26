@@ -124,6 +124,7 @@ def test_request_schema_remains_closed_in_the_document(openapi):
         "kind",
         "readiness_admission",  # Council Local Execution Readiness & Admission V1
         "acknowledge_known_degradation",
+        "acknowledged_degradation_fingerprint",
     }
     # `kind`/admissão opcionais: omitidos = Conselho com o aceite de sempre
     assert set(schema["required"]) == {"question", "enabled_providers"}
@@ -161,6 +162,7 @@ def test_error_response_is_a_documented_component(openapi):
         "internal_error",
         "provider_prerequisites_missing",  # Direct Answer Execution V1
         "council_prerequisites_missing",  # Council Local Execution Readiness & Admission V1
+        "council_readiness_changed",  # idem: reconhecimento de outra degradação
     }
 
 
