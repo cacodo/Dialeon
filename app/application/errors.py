@@ -150,3 +150,17 @@ class CouncilDegradationChangedError(Exception):
         self.readiness = readiness
         self.acknowledged_fingerprint = acknowledged_fingerprint
         super().__init__("a degradação local reconhecida não é a avaliada no aceite")
+
+
+class InvalidParticipantModelOverrideError(Exception):
+    """Council Accepted Effective Participant Model Choice V1 -- escolha
+    explícita de modelo inválida: para um provider que não é participante
+    selecionado, ou com identificador mal formado (ver
+    `app/orchestrator/participant_models.py`). Levantada ANTES do aceite
+    durável -- nenhum registro é criado, nenhuma chamada é tentada. Só forma
+    e seleção: nunca "o modelo não existe no fornecedor" (isso não é
+    verificável localmente)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)

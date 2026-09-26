@@ -74,7 +74,8 @@ def test_preview_reports_every_dependency_with_its_configured_model_and_no_secre
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["contract_version"] == "council_local_readiness_v1"
+    # v2 (Council Accepted Effective Participant Model Choice V1): participantes com modelo planejado
+    assert body["contract_version"] == "council_local_readiness_v2"
     assert body["summary"] == "all_met"
     assert body["strict_admission"] == "admissible"
     assert _roles(body) == [

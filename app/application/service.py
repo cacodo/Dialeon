@@ -73,6 +73,7 @@ reusem essa MESMA identidade em vez de mintar a própria."""
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -80,6 +81,7 @@ from app.application.errors import (
     CouncilDegradationChangedError,
     CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
+    InvalidParticipantModelOverrideError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     UnknownProviderError,
@@ -107,6 +109,7 @@ from app.orchestrator.config import (
     validate_quorum_feasibility,
 )
 from app.orchestrator.errors import InsufficientQuorumError
+from app.orchestrator.participant_models import ParticipantModelChoice, resolve_participant_models
 from app.providers.base import LLMProvider
 from app.storage.repository import CouncilRepository
 
@@ -200,6 +203,22 @@ def assess_council_readiness(
     )
 
 
+def _resolve_participant_models_or_reject(
+    enabled_providers: tuple[str, ...],
+    overrides: Mapping[str, str] | None,
+    configured_default_models: Mapping[str, str],
+) -> tuple[ParticipantModelChoice, ...]:
+    """Council Accepted Effective Participant Model Choice V1 -- a ÚNICA
+    resolução (`resolve_participant_models`), usada pela prévia e pelo aceite
+    com os modelos padrão do MESMO snapshot lido dos providers reais.
+    Entrada inválida vira `InvalidParticipantModelOverrideError`, antes de
+    qualquer registro ou chamada."""
+    try:
+        return resolve_participant_models(enabled_providers, overrides, configured_default_models)
+    except ValueError as exc:
+        raise InvalidParticipantModelOverrideError(str(exc)) from None
+
+
 def _sanitize_unexpected_failure(exc: Exception) -> tuple[str, str]:
     """Classificação interna estável + mensagem genérica sanitizada --
     NUNCA `str(exc)`/`repr(exc)`/traceback (item 6 do contrato T02.4:
@@ -287,7 +306,12 @@ class CouncilExecutionService:
                 unknown_providers=unknown, known_providers=sorted(self._known_providers)
             )
 
-    def preview_readiness(self, dependencies: CouncilExecutionDependencies) -> CouncilReadiness:
+    def preview_readiness(
+        self,
+        dependencies: CouncilExecutionDependencies,
+        *,
+        participant_model_overrides: Mapping[str, str] | None = None,
+    ) -> CouncilReadiness:
         """Council Local Execution Readiness & Admission V1 -- prévia SEM
         efeito: nenhum registro, nenhuma chamada. Mesma rejeição de provider
         desconhecido, mesma leitura de modelo configurado e mesmo avaliador
@@ -296,8 +320,17 @@ class CouncilExecutionService:
         reavalia no aceite."""
         self._reject_unknown_providers(dependencies.all_providers)
         snapshot = _default_model_snapshot_for(dependencies.all_providers, self._providers)
+        # Council Accepted Effective Participant Model Choice V1 -- o mesmo
+        # mapa efetivo que o aceite congelaria com esta entrada.
+        participant_models = _resolve_participant_models_or_reject(
+            dependencies.enabled_providers,
+            participant_model_overrides,
+            snapshot.configured_default_models,
+        )
         return assess_council_readiness(
-            dependencies,
+            CouncilExecutionDependencies.model_validate(
+                {**dependencies.model_dump(), "participant_models": participant_models}
+            ),
             self._providers,
             configured_default_models=snapshot.configured_default_models,
         )
@@ -307,6 +340,7 @@ class CouncilExecutionService:
         run_config: RunConfig,
         *,
         admission: CouncilAdmissionRequest | None = None,
+        participant_model_overrides: Mapping[str, str] | None = None,
     ) -> CouncilRunResult:
         """Valida, aceita (persiste ANTES de qualquer chamada ao runner),
         executa, e persiste o desfecho terminal.
@@ -376,6 +410,14 @@ class CouncilExecutionService:
         pedido são persistidos com o aceite (`council_admission`) em toda
         run nova.
 
+        `InvalidParticipantModelOverrideError` (Council Accepted Effective
+        Participant Model Choice V1): escolha explícita de modelo pra quem não
+        é participante selecionado, ou com identificador mal formado --
+        levantada ANTES da prontidão, de mintar run_id e de qualquer
+        registro/chamada. Sem escolhas, cada participante fica com o modelo
+        padrão configurado; o mapa efetivo completo é congelado no
+        `RunConfig` aceito (`participant_models`).
+
         `InsufficientQuorumError`: persiste o registro de falha de
         quórum sob a MESMA identidade aceita, anexa o id em
         `exc.persisted_failure_id` (campo formal, Etapa 11 — não um
@@ -434,6 +476,24 @@ class CouncilExecutionService:
         # todo autorizado existe em `self._providers`).
         default_model_authority_snapshot = build_default_model_authority_snapshot(
             run_config, self._providers
+        )
+
+        # Council Accepted Effective Participant Model Choice V1 -- o mapa
+        # efetivo COMPLETO (escolha explícita ou padrão configurado, por
+        # participante) é resolvido e CONGELADO aqui, antes da prontidão, do
+        # run_id e de qualquer registro/chamada. O `RunConfig` aceito passa a
+        # carregá-lo: é ele que é persistido e que a execução usa.
+        if run_config.participant_models is not None:
+            raise ValueError(
+                "participant_models é resolvido no aceite; passe as escolhas em "
+                "participant_model_overrides"
+            )
+        run_config = run_config.with_participant_models(
+            _resolve_participant_models_or_reject(
+                run_config.enabled_providers,
+                participant_model_overrides,
+                default_model_authority_snapshot.configured_default_models,
+            )
         )
 
         # Council Local Execution Readiness & Admission V1 -- a MESMA

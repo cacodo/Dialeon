@@ -261,4 +261,25 @@ describe('Home -- prontidão local do Conselho', () => {
     expect(alert).toHaveTextContent('Você pode perguntar de novo; o servidor avalia a configuração local outra vez.')
     expect(alert).not.toHaveTextContent(/não há configuração local ausente|aviso acima|mesmo assim/)
   })
+
+  it('escolha de modelo de participante vai no envio do Conselho (mesmo mapa da API)', async () => {
+    vi.mocked(apiClient.previewCouncilReadiness).mockResolvedValue(readiness('met'))
+    vi.mocked(apiClient.createRun).mockImplementation(() => new Promise(() => {}))
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await ask()
+    await userEvent.click(screen.getByRole('button', { name: 'Modelos: GPT' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Modelo de cada participante (avançado)' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Modelo para GPT' }), 'gpt-explicit')
+    await submit()
+
+    expect(apiClient.createRun).toHaveBeenLastCalledWith({
+      question: 'Qual a capital?',
+      enabled_providers: ['openai'],
+      source_text: null,
+      readiness_admission: 'strict',
+      participant_model_overrides: { openai: 'gpt-explicit' },
+    })
+  })
 })

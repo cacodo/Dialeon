@@ -39,6 +39,7 @@ import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   formatModelList,
   formatProviderName,
+  formatReadinessGroupModel,
   formatReadinessRoles,
   groupReadinessByProvider,
 } from '../api/formatting'
@@ -73,6 +74,9 @@ interface RunComposerProps {
     sourceText: string | null,
     kind?: 'direct',
     admission?: CouncilAdmissionChoice,
+    // Council Accepted Effective Participant Model Choice V1 -- só pro
+    // Conselho e só quando há escolha explícita (senão, omitido).
+    participantModelOverrides?: Record<string, string>,
   ) => void
   onRetryProviders?: () => void
   // Prévia de prontidão local do Conselho (sem efeito). Ausente = nenhuma
@@ -102,6 +106,7 @@ export type RunMode = 'council' | 'direct'
 
 const SOURCE_PANEL_ID = 'run-composer-source-panel'
 const MODELS_PANEL_ID = 'provider-selector-panel'
+const MODEL_OVERRIDES_PANEL_ID = 'model-overrides-panel'
 
 type PrerequisiteStates = Readonly<Record<string, LocalPrerequisiteState>> | undefined
 
@@ -264,6 +269,16 @@ export function RunComposer({
     )
   }
   const selected = selection.ids
+  // Council Accepted Effective Participant Model Choice V1 -- o texto de cada
+  // escolha explícita, por provider (vazio = modelo padrão configurado). O
+  // reuso só traz escolhas EXPLÍCITAS da run anterior; um participante que
+  // usou o padrão usa o padrão ATUAL.
+  const [modelOverrides, setModelOverrides] = useState<Record<string, string>>(() =>
+    initialInput?.kind === 'direct' ? {} : { ...(initialInput?.participantModelOverrides ?? {}) },
+  )
+  const [modelOverridesExpanded, setModelOverridesExpanded] = useState(
+    initialInput?.kind !== 'direct' && Object.keys(initialInput?.participantModelOverrides ?? {}).length > 0,
+  )
   const [sourceExpanded, setSourceExpanded] = useState(initialInput?.sourceText != null)
   const [sourceText, setSourceText] = useState(initialInput?.sourceText ?? '')
   const [modelsExpanded, setModelsExpanded] = useState(false)
@@ -353,17 +368,37 @@ export function RunComposer({
   const questionTooLong = questionCount > MAX_QUESTION_CHARACTERS
   const sourceTooLong = !sourceBlank && sourceCount > MAX_SOURCE_TEXT_CHARACTERS
 
+  // As escolhas que valem AGORA: só de participantes selecionados, só não
+  // vazias, VERBATIM (o servidor valida a forma; nada é trimado aqui). É o
+  // mesmo mapa semântico da API e da CLI.
+  const activeModelOverrides: Record<string, string> = {}
+  for (const id of validSelected) {
+    const value = modelOverrides[id]
+    if (value !== undefined && value.trim() !== '') activeModelOverrides[id] = value
+  }
+  const hasModelOverrides = Object.keys(activeModelOverrides).length > 0
+
   // Prévia de prontidão da seleção ATUAL do Conselho. A chave identifica o
-  // que decide as dependências (participantes e presença de fonte); uma
-  // resposta de outra chave nunca é mostrada.
+  // que decide as dependências (participantes, presença de fonte e modelos
+  // escolhidos); uma resposta de outra chave nunca é mostrada.
   const readinessKey =
-    isDirect || validSelected.length === 0 ? null : JSON.stringify([validSelected, !sourceBlank])
+    isDirect || validSelected.length === 0
+      ? null
+      : JSON.stringify([validSelected, !sourceBlank, activeModelOverrides])
   const [readinessState, setReadinessState] = useState<ReadinessState | null>(null)
   useEffect(() => {
     if (readinessKey === null || previewReadiness === undefined) return
-    const [enabledProviders, sourceSupplied] = JSON.parse(readinessKey) as [string[], boolean]
+    const [enabledProviders, sourceSupplied, overrides] = JSON.parse(readinessKey) as [
+      string[],
+      boolean,
+      Record<string, string>,
+    ]
     let cancelled = false
-    previewReadiness({ enabled_providers: enabledProviders, source_supplied: sourceSupplied })
+    previewReadiness({
+      enabled_providers: enabledProviders,
+      source_supplied: sourceSupplied,
+      ...(Object.keys(overrides).length > 0 ? { participant_model_overrides: overrides } : {}),
+    })
       .then((readiness) => {
         if (!cancelled) setReadinessState({ key: readinessKey, status: 'ready', readiness })
       })
@@ -410,6 +445,12 @@ export function RunComposer({
       : null
   const readiness =
     authoritative !== null && authoritative.key === readinessKey ? authoritative.readiness : previewed
+  // Modelo padrão configurado de um participante, como a última avaliação
+  // mostrada o informou (só para ajudar a preencher; fato de configuração
+  // local, nunca catálogo).
+  const configuredDefaultOf = (id: string): string | null =>
+    readiness?.dependencies.find((d) => d.role === 'participant' && d.provider === id)
+      ?.configured_default_model ?? null
   const missingGroups =
     readiness === null ? [] : groupReadinessByProvider(readiness, 'missing', { includeParticipants: true })
   // Só etapas internas: um participante "não verificável" já foi escolhido
@@ -429,8 +470,20 @@ export function RunComposer({
   const acknowledgementScope =
     degradationFingerprint === null
       ? null
-      : JSON.stringify([question, sourceBlank ? null : sourceText, validSelected, degradationFingerprint])
+      : JSON.stringify([
+          question,
+          sourceBlank ? null : sourceText,
+          validSelected,
+          activeModelOverrides,
+          degradationFingerprint,
+        ])
   const [acknowledgedScope, setAcknowledgedScope] = useState<string | null>(null)
+  // Uma vez que a entrada/degradação reconhecida muda, o reconhecimento cai
+  // de vez: voltar depois a uma situação igual NÃO o revive (pede a escolha
+  // de novo).
+  if (acknowledgedScope !== null && acknowledgedScope !== acknowledgementScope) {
+    setAcknowledgedScope(null)
+  }
   const degradationAcknowledged =
     acknowledgementScope !== null && acknowledgedScope === acknowledgementScope
 
@@ -469,6 +522,7 @@ export function RunComposer({
             acknowledged_degradation_fingerprint: degradationFingerprint,
           }
         : { readiness_admission: 'strict' },
+      ...(hasModelOverrides ? [activeModelOverrides] : []),
     )
   }
 
@@ -691,6 +745,54 @@ export function RunComposer({
             single={isDirect}
           />
         )}
+
+        {!isDirect && modelsExpanded && !providersLoading && !providersError && validSelected.length > 0 && (
+          // Council Accepted Effective Participant Model Choice V1 -- controle
+          // OPCIONAL/avançado: o caminho normal não muda (padrão configurado).
+          // Não é catálogo: nenhuma lista de modelos "disponíveis" é mostrada,
+          // porque o Dialeon não tem essa informação.
+          <div className="composer__panel composer__model-overrides">
+            <button
+              type="button"
+              className="composer__control"
+              onClick={() => setModelOverridesExpanded((expanded) => !expanded)}
+              aria-expanded={modelOverridesExpanded}
+              aria-controls={MODEL_OVERRIDES_PANEL_ID}
+              disabled={submitting}
+            >
+              Modelo de cada participante (avançado)
+            </button>
+            {modelOverridesExpanded && (
+              <div id={MODEL_OVERRIDES_PANEL_ID}>
+                <p id="model-overrides-hint" className="composer__hint">
+                  Em branco, cada participante usa o modelo padrão configurado nesta instalação. Um
+                  identificador escolhido vai ao fornecedor exatamente como digitado, só para esse
+                  participante (as etapas internas continuam com o padrão): o Dialeon não confere se
+                  o modelo existe nem se está disponível.
+                </p>
+                {validSelected.map((id) => (
+                  <label key={id} className="composer__model-override">
+                    <span>{formatProviderName(id)}</span>
+                    <input
+                      type="text"
+                      value={modelOverrides[id] ?? ''}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        setModelOverrides((current) => ({ ...current, [id]: value }))
+                      }}
+                      placeholder={configuredDefaultOf(id) ?? 'modelo padrão configurado'}
+                      aria-label={`Modelo para ${formatProviderName(id)}`}
+                      aria-describedby="model-overrides-hint"
+                      disabled={submitting}
+                      spellCheck={false}
+                      autoComplete="off"
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {!isDirect && knownDegradation && (
@@ -701,11 +803,9 @@ export function RunComposer({
           <h2 id="readiness-heading">Falta configuração local para parte do Conselho</h2>
           <ul className="composer__readiness-list">
             {missingGroups.map((group) => (
-              <li key={group.provider}>
+              <li key={`${group.provider}:${group.configuredModel}`}>
                 {formatReadinessRoles(group.roles)}: {formatProviderName(group.provider)}{' '}
-                <span className="composer__readiness-model">
-                  (modelo configurado: {group.configuredModel})
-                </span>
+                <span className="composer__readiness-model">({formatReadinessGroupModel(group)})</span>
               </li>
             ))}
           </ul>

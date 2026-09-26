@@ -35,6 +35,7 @@ from pydantic import (
     Field,
     StrictBool,
     Tag,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -60,6 +61,10 @@ from app.models.provider_models import (
     TokenUsage,
 )
 from app.models.request_provenance import RequestProvenance
+from app.orchestrator.participant_models import (
+    ParticipantModelOrigin,
+    validate_participant_model_overrides,
+)
 from app.orchestrator.config import _normalize_and_validate_source_text, validate_question
 from app.reconciliation.models import ChannelRelationship, SourceChannelState
 
@@ -134,6 +139,14 @@ class CreateRunRequest(BaseModel):
     acknowledged_degradation_fingerprint: str | None = Field(
         default=None, pattern=DEGRADATION_FINGERPRINT_PATTERN
     )
+    # Council Accepted Effective Participant Model Choice V1 -- opcional, só
+    # do Conselho: provider participante -> identificador de modelo
+    # específico do provider, pedido explicitamente nesta run. Participante
+    # sem entrada usa o modelo padrão configurado. Só forma é validada
+    # (ver app/orchestrator/participant_models.py): nunca "o modelo existe no
+    # fornecedor". Vale só pro participante (resposta inicial e crítica);
+    # os papéis internos seguem com o padrão deles.
+    participant_model_overrides: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _direct_run_shape(self) -> "CreateRunRequest":
@@ -155,12 +168,29 @@ class CreateRunRequest(BaseModel):
                     "acknowledged_degradation_fingerprint só se aplicam ao Conselho (a "
                     "resposta direta já recusa um provider sem a configuração local necessária)"
                 )
+            if self.participant_model_overrides is not None:
+                raise ValueError(
+                    "participant_model_overrides só se aplica aos participantes do Conselho "
+                    "(a resposta direta usa o modelo padrão configurado do provider)"
+                )
         else:
             # mesmas regras de combinação da boundary de domínio -- nunca
             # reimplementadas aqui (strict x reconhecimento, reconhecimento
             # sempre com a identidade da degradação e vice-versa)
             self.council_admission()
         return self
+
+    @field_validator("participant_model_overrides")
+    @classmethod
+    def _participant_model_overrides_valid(
+        cls, value: dict[str, str] | None, info: ValidationInfo
+    ) -> dict[str, str] | None:
+        # a MESMA validação de entrada do aceite (seleção + forma), com o erro
+        # apontando pro campo; na resposta direta, o model_validator recusa o
+        # campo inteiro
+        if value is None or info.data.get("kind") == "direct" or "enabled_providers" not in info.data:
+            return value
+        return validate_participant_model_overrides(value, info.data["enabled_providers"])
 
     def council_admission(self) -> CouncilAdmissionRequest:
         """O pedido de admissão do Conselho, com os defaults de sempre."""
@@ -199,6 +229,19 @@ class CouncilReadinessRequest(BaseModel):
 
     enabled_providers: list[str] = Field(min_length=1)
     source_supplied: StrictBool = False
+    # Council Accepted Effective Participant Model Choice V1 -- a MESMA
+    # entrada de `CreateRunRequest.participant_model_overrides`, pra que a
+    # prévia resolva o mesmo mapa efetivo que o aceite congelaria.
+    participant_model_overrides: dict[str, str] | None = None
+
+    @field_validator("participant_model_overrides")
+    @classmethod
+    def _overrides_name_selected_participants(
+        cls, value: dict[str, str] | None, info: ValidationInfo
+    ) -> dict[str, str] | None:
+        if value is None or "enabled_providers" not in info.data:
+            return value
+        return validate_participant_model_overrides(value, info.data["enabled_providers"])
 
     @field_validator("enabled_providers")
     @classmethod
@@ -743,6 +786,14 @@ PositiveExecutionLimitPublic = Annotated[float, Field(allow_inf_nan=False)] | Li
 ]
 
 
+class ParticipantModelChoicePublic(BaseModel):
+    model_config = _CONFIG
+
+    provider: str
+    requested_model: str
+    origin: ParticipantModelOrigin
+
+
 class RunConfigPublic(BaseModel):
     """Subconjunto público de RunConfig -- nomes de provider e budgets,
     nunca segredo (Decision Delta secao 12). Etapa 11 patch final:
@@ -784,6 +835,13 @@ class RunConfigPublic(BaseModel):
     # RunConfig.round_dispatch_timeout_seconds.
     round_dispatch_timeout_seconds: PositiveExecutionLimitPublic
     quorum: QuorumPublic
+    # Council Accepted Effective Participant Model Choice V1 -- o mapa
+    # congelado no aceite: por participante, o modelo efetivamente solicitado
+    # e a origem (`configured_default`/`run_override`). O que o provider
+    # REPORTOU fica em cada resposta (`requested_model`/`model`/
+    # `model_identity_source`). `null` = não registrado (run anterior a este
+    # campo) -- nunca reconstruído do padrão atual nem das tentativas.
+    participant_models: list[ParticipantModelChoicePublic] | None = None
 
 
 class AccountingSummary(BaseModel):
@@ -877,6 +935,12 @@ class CouncilDependencyReadinessPublic(BaseModel):
     configured_default_model: str
     local_prerequisite: LocalPrerequisiteState
     applicability: DependencyApplicability
+    # Só participantes de avaliações v2: o modelo que a run vai SOLICITAR
+    # (`run_override` = escolhido nesta run; `configured_default` = o padrão
+    # configurado acima) -- pedido local, nunca modelo verificado/disponível.
+    # `null` pros papéis internos e em avaliações v1 (não registrado).
+    planned_model: str | None = None
+    planned_model_origin: ParticipantModelOrigin | None = None
 
 
 class CouncilReadinessPublic(BaseModel):
@@ -892,7 +956,7 @@ class CouncilReadinessPublic(BaseModel):
 
     model_config = _CONFIG
 
-    contract_version: Literal["council_local_readiness_v1"]
+    contract_version: Literal["council_local_readiness_v1", "council_local_readiness_v2"]
     summary: CouncilReadinessSummary
     strict_admission: Literal["admissible", "blocked"]
     # Identidade canônica da degradação local CONHECIDA desta avaliação

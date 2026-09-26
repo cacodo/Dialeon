@@ -7,6 +7,7 @@
 
 import {
   formatProviderName,
+  formatReadinessGroupModel,
   formatReadinessRoles,
   groupReadinessByProvider,
 } from '../api/formatting'
@@ -53,9 +54,9 @@ export function CouncilAdmissionView({ admission }: CouncilAdmissionViewProps) {
           <p>Sem configuração local:</p>
           <ul>
             {missing.map((group) => (
-              <li key={group.provider}>
-                {formatReadinessRoles(group.roles)}: {formatProviderName(group.provider)} (modelo
-                configurado: {group.configuredModel})
+              <li key={`${group.provider}:${group.configuredModel}`}>
+                {formatReadinessRoles(group.roles)}: {formatProviderName(group.provider)} (
+                {formatReadinessGroupModel(group)})
               </li>
             ))}
           </ul>
@@ -66,9 +67,9 @@ export function CouncilAdmissionView({ admission }: CouncilAdmissionViewProps) {
           <p>Configuração local não verificável (não quer dizer que faltasse):</p>
           <ul>
             {unknown.map((group) => (
-              <li key={group.provider}>
-                {formatReadinessRoles(group.roles)}: {formatProviderName(group.provider)} (modelo
-                configurado: {group.configuredModel})
+              <li key={`${group.provider}:${group.configuredModel}`}>
+                {formatReadinessRoles(group.roles)}: {formatProviderName(group.provider)} (
+                {formatReadinessGroupModel(group)})
               </li>
             ))}
           </ul>

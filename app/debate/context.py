@@ -21,6 +21,7 @@ entre LLMs, que não é):
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from app.models.domain import Claim
 from app.models.provider_models import CompletionRequest, Message
@@ -31,6 +32,9 @@ from app.models.provider_models import CompletionRequest, Message
 # divergir). Reusado só pela chamada real de `run_round` em
 # app/debate/debate_engine.py -- nunca reconstruído aqui.
 CRITIQUE_CONTRACT_VERSION = "critique_v1"
+# Council Accepted Effective Participant Model Choice V1 -- mesma crítica,
+# com o modelo congelado no aceite de cada participante EXPLÍCITO no request.
+CRITIQUE_EXPLICIT_MODEL_CONTRACT_VERSION = "critique_v2"
 
 _UNTRUSTED_CONTENT_WARNING = (
     "As claims abaixo foram produzidas por outros modelos de IA "
@@ -46,10 +50,16 @@ def build_critique_requests(
     current_claims: list[Claim],
     participants: list[str],
     max_output_tokens_per_call: int,
+    requested_models: Mapping[str, str] | None = None,
 ) -> dict[str, CompletionRequest]:
     """Um CompletionRequest por provider em `participants` — todos recebem o
     MESMO conjunto completo de `current_claims` (inclusive minoritárias,
-    sem filtragem por ratio), com um marcador de quais são as próprias."""
+    sem filtragem por ratio), com um marcador de quais são as próprias.
+
+    `requested_models` (Council Accepted Effective Participant Model Choice
+    V1): o modelo congelado no aceite de cada participante -- o MESMO da
+    resposta inicial -- vai explícito no request. `None` = mapa não
+    capturado: request sem modelo, como antes."""
     serialized_claims = [
         {
             "id": claim.id,
@@ -89,6 +99,7 @@ def build_critique_requests(
         requests[provider] = CompletionRequest(
             messages=[Message(role="user", content=body)],
             system_prompt=system_prompt,
+            model=requested_models[provider] if requested_models is not None else None,
             max_tokens=max_output_tokens_per_call,
         )
 

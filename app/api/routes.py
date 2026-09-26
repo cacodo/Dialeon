@@ -157,7 +157,11 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
         source_text=body.source_text,
     )
 
-    result = await components.service.run(run_config, admission=body.council_admission())
+    result = await components.service.run(
+        run_config,
+        admission=body.council_admission(),
+        participant_model_overrides=body.participant_model_overrides,
+    )
     # Provider Default-Model Snapshot Provenance V1 (F1 repair,
     # review de independência) -- NUNCA recomputar o snapshot a partir
     # do registry de provider AO VIVO aqui: o fato de provenance
@@ -199,7 +203,11 @@ async def preview_council_readiness(
         **RunConfig.internal_role_providers_from_settings(components.settings),
         source_supplied=body.source_supplied,
     )
-    return council_readiness_public(components.service.preview_readiness(dependencies))
+    return council_readiness_public(
+        components.service.preview_readiness(
+            dependencies, participant_model_overrides=body.participant_model_overrides
+        )
+    )
 
 
 @router.get("/runs", response_model=RunListResponse, responses={422: INVALID_REQUEST_RESPONSE})

@@ -95,6 +95,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "consenso nem verificação.",
     )
     run_parser.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        metavar="PROVIDER=MODELO",
+        dest="models",
+        help="Modelo específico para um participante do Conselho nesta pergunta (repetível, "
+        "ex.: --model openai=gpt-x). Participante sem --model usa o modelo padrão configurado. "
+        "O identificador é passado ao fornecedor como está: o Dialeon não confere se ele existe.",
+    )
+    run_parser.add_argument(
         "--strict-readiness",
         action="store_true",
         help="Admissão estrita do Conselho: recusa a pergunta, antes de criar a execução e de "
@@ -124,6 +134,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="TEXTO",
         help="A mesma fonte de `dialeon run --source`: só a presença dela importa aqui "
         "(ela torna a análise de fonte aplicável).",
+    )
+    readiness_parser.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        metavar="PROVIDER=MODELO",
+        dest="models",
+        help="Modelo específico para um participante do Conselho nesta pergunta (repetível, "
+        "ex.: --model openai=gpt-x). Participante sem --model usa o modelo padrão configurado. "
+        "O identificador é passado ao fornecedor como está: o Dialeon não confere se ele existe.",
     )
     readiness_parser.add_argument("--json", action="store_true", dest="as_json")
 
@@ -166,6 +186,7 @@ async def _dispatch(args: argparse.Namespace, components) -> int:
             source_text=args.source,
             as_json=args.as_json,
             strict_readiness=args.strict_readiness,
+            model_overrides=args.models,
         )
     if args.command == "run":
         return await commands.cmd_run(
@@ -175,6 +196,7 @@ async def _dispatch(args: argparse.Namespace, components) -> int:
             source_text=args.source,
             as_json=args.as_json,
             strict_readiness=args.strict_readiness,
+            model_overrides=args.models,
         )
     if args.command == "readiness":
         return await commands.cmd_readiness(
@@ -182,6 +204,7 @@ async def _dispatch(args: argparse.Namespace, components) -> int:
             providers=_parse_providers(args.providers),
             source_text=args.source,
             as_json=args.as_json,
+            model_overrides=args.models,
         )
     if args.command == "list":
         return await commands.cmd_list(

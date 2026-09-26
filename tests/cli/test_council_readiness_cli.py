@@ -92,8 +92,8 @@ async def test_readiness_human_output_separates_participants_from_internal_stage
     )
     assert "não testa credenciais, serviços nem modelos" in out
     participants, internal = out.split("etapas internas")
-    assert "  - participante: openai (modelo configurado: openai-configured) -- configuração local presente" in participants
-    assert "  - participante: gemini (modelo configurado: gemini-configured) -- configuração local não verificável (não quer dizer que falte)" in participants
+    assert "  - participante: openai (modelo pedido: openai-configured, o padrão configurado) -- configuração local presente" in participants
+    assert "  - participante: gemini (modelo pedido: gemini-configured, o padrão configurado) -- configuração local não verificável (não quer dizer que falte)" in participants
     assert "(podem ser alcançadas, conforme o andamento da pergunta)" in internal
     assert "  - extração de afirmações: anthropic (modelo configurado: anthropic-configured) -- falta a configuração local" in internal
     assert "  - análise de fonte: anthropic (modelo configurado: anthropic-configured) -- não se aplica a esta pergunta (sem fonte)" in internal
@@ -268,7 +268,7 @@ async def test_get_and_audit_show_the_acceptance_facts(capsys):
         "prontidão_local_no_aceite: nenhuma ausência conhecida; alguma configuração local não pôde "
         "ser verificada (admissão estrita)"
     ) in audit_human
-    assert "  - participante: gemini (modelo configurado: gemini-configured) -- configuração local não verificável" in audit_human
+    assert "  - participante: gemini (modelo pedido: gemini-configured, o padrão configurado) -- configuração local não verificável" in audit_human
 
 
 @pytest.mark.asyncio

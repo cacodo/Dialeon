@@ -393,6 +393,10 @@ def test_no_public_or_configuration_knob_exposes_the_reasoning_policy():
         "readiness_admission",
         "acknowledge_known_degradation",
         "acknowledged_degradation_fingerprint",
+        # Council Accepted Effective Participant Model Choice V1 -- escolha de
+        # MODELO de participante (identificador), não knob de transporte nem
+        # de raciocínio.
+        "participant_model_overrides",
     }
 
     for rel in ("app/api", "app/cli", "app/presentation", "frontend/src/api/types.ts"):

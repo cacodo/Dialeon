@@ -142,7 +142,40 @@ def _readiness_dependency_line(dep: Any) -> str:
     else:
         status = _READINESS_STATE_LABELS.get(dep.local_prerequisite, dep.local_prerequisite)
     label = _READINESS_ROLE_LABELS.get(dep.role, dep.role)
-    return f"  - {label}: {provider} (modelo configurado: {model}) -- {status}"
+    planned = getattr(dep, "planned_model", None)
+    if planned is not None and dep.planned_model_origin == "run_override":
+        # Council Accepted Effective Participant Model Choice V1 -- o modelo
+        # que será PEDIDO (escolhido nesta pergunta) e o padrão configurado;
+        # nada disso diz que o modelo existe no fornecedor.
+        models = (
+            f"modelo pedido: {terminal_safe_text(planned)}, escolhido nesta pergunta; "
+            f"padrão configurado: {model}"
+        )
+    elif planned is not None:
+        models = f"modelo pedido: {terminal_safe_text(planned)}, o padrão configurado"
+    else:
+        models = f"modelo configurado: {model}"
+    return f"  - {label}: {provider} ({models}) -- {status}"
+
+
+_PARTICIPANT_MODEL_ORIGIN_LABELS: dict[str, str] = {
+    "configured_default": "padrão configurado",
+    "run_override": "escolhido nesta pergunta",
+}
+
+
+def _human_participant_models_line(config: Any) -> str:
+    """Council Accepted Effective Participant Model Choice V1 -- o mapa
+    congelado no aceite (o que foi PEDIDO a cada participante). `None` = run
+    anterior a este registro: nunca reconstruído do padrão atual."""
+    choices = getattr(config, "participant_models", None)
+    if choices is None:
+        return "modelos_pedidos_aos_participantes: não registrado (execução anterior a este registro)"
+    return "modelos_pedidos_aos_participantes: " + ", ".join(
+        f"{terminal_safe_text(c.provider)}={terminal_safe_text(c.requested_model)} "
+        f"({_PARTICIPANT_MODEL_ORIGIN_LABELS.get(c.origin, c.origin)})"
+        for c in choices
+    )
 
 
 def human_council_readiness(readiness: CouncilReadinessPublic) -> str:
@@ -346,6 +379,7 @@ def human_run_result(run: CompletedRunResponse) -> str:
     )
     lines.append(f"confiança_do_juiz: {_fmt(final_answer.judge_confidence)}")
     lines.append(_human_provider_execution_policy_line(run.provider_execution_policy))
+    lines.append(_human_participant_models_line(run.config))
     lines.extend(_human_council_admission_lines(run.council_admission))
     if (shows_realization or shows_natural) and final_answer.primary_answer is not None:
         lines.append("")
@@ -374,6 +408,7 @@ def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
             "detalhes:",
             f"run_id: {run.id}",
             _human_provider_execution_policy_line(run.provider_execution_policy),
+            _human_participant_models_line(run.config),
             *_human_council_admission_lines(run.council_admission),
             "",
             *_audit_pointer_lines(run.id, json_detail="status e erro de cada resposta"),
@@ -598,6 +633,7 @@ def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
                 "estar ativa, ou o processo pode ter sido interrompido antes "
                 "de terminar; os dois casos são indistinguíveis a partir deste registro.",
                 _human_provider_execution_policy_line(run.provider_execution_policy),
+                _human_participant_models_line(run.config),
                 *_human_council_admission_lines(run.council_admission),
             ]
         )
@@ -610,6 +646,7 @@ def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
             f"classificação: {terminal_safe_text(run.failure_reason)}",
             terminal_safe_text(run.message),
             _human_provider_execution_policy_line(run.provider_execution_policy),
+            _human_participant_models_line(run.config),
             *_human_council_admission_lines(run.council_admission),
         ]
     )
@@ -802,6 +839,7 @@ def human_run_audit(audit: Any) -> str:
         lines.extend(_human_source_analysis_lines(audit.source_analysis))
         lines.extend(_human_reconciliation_lines(audit.reconciliation))
         lines.append(_human_provider_execution_policy_line(audit.provider_execution_policy))
+        lines.append(_human_participant_models_line(audit.config))
         lines.extend(_human_council_admission_lines(audit.council_admission))
         return "\n".join(lines)
 
@@ -812,6 +850,7 @@ def human_run_audit(audit: Any) -> str:
             f"respostas bem-sucedidas: {audit.successful_count}/{audit.total_providers} "
             f"(mínimo pra retornar: {audit.min_to_return})",
             _human_provider_execution_policy_line(audit.provider_execution_policy),
+            _human_participant_models_line(audit.config),
             *_human_council_admission_lines(audit.council_admission),
         ]
     )

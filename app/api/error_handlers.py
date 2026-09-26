@@ -22,6 +22,7 @@ from app.application.errors import (
     CouncilDegradationChangedError,
     CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
+    InvalidParticipantModelOverrideError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     LocalPrerequisitesMissingError,
@@ -139,6 +140,33 @@ def register_exception_handlers(app: FastAPI) -> None:
                             mode="json"
                         ),
                         "acknowledged_degradation_fingerprint": exc.acknowledged_fingerprint,
+                    },
+                )
+            ),
+        )
+
+    @app.exception_handler(InvalidParticipantModelOverrideError)
+    async def _handle_invalid_participant_model_override(
+        request: Request, exc: InvalidParticipantModelOverrideError
+    ) -> JSONResponse:
+        # Council Accepted Effective Participant Model Choice V1 -- mesma
+        # classe de problema e mesmo formato da validação de request
+        # (`invalid_request`, com o campo em `loc`), detectada na boundary
+        # autoritativa do service antes de qualquer registro/chamada.
+        return _error_json(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="invalid_request",
+                    message="Request inválido.",
+                    details={
+                        "errors": [
+                            {
+                                "loc": ["participant_model_overrides"],
+                                "msg": exc.reason,
+                                "type": "invalid_participant_model_override",
+                            }
+                        ]
                     },
                 )
             ),

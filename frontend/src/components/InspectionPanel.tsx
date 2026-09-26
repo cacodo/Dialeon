@@ -47,6 +47,7 @@ import type {
   ClaimPublic,
   ClaimReconciliationOutcomePublic,
   CouncilAdmission,
+  ParticipantModelChoice,
   ModelResponsePublic,
   ProviderExecutionPolicy,
   RoundAccountingPublic,
@@ -79,6 +80,7 @@ import { JudgmentView } from './JudgmentView'
 import { ParticipantsResponses } from './ParticipantsResponses'
 import { ProviderExecutionPolicyView } from './ProviderExecutionPolicyView'
 import { CouncilAdmissionView } from './CouncilAdmissionView'
+import { ParticipantModelsView } from './ParticipantModelsView'
 import { ReconciliationView } from './ReconciliationView'
 import { SourceAnalysisView } from './SourceAnalysisView'
 
@@ -117,6 +119,7 @@ function TechnicalAudit({
   accounting,
   policy,
   admission,
+  participantModels,
   claims,
   assessmentsByClaimId,
   reconciliationOutcomes,
@@ -130,6 +133,7 @@ function TechnicalAudit({
   accounting: AccountingSummary | RoundAccountingPublic
   policy: ProviderExecutionPolicy | null
   admission: CouncilAdmission | null | undefined
+  participantModels: ParticipantModelChoice[] | null | undefined
   claims: ClaimPublic[] | null
   assessmentsByClaimId: Map<string, ClaimAssessmentPublic[]>
   reconciliationOutcomes: ClaimReconciliationOutcomePublic[] | null
@@ -165,6 +169,9 @@ function TechnicalAudit({
 
           <h4>Política de execução do provider</h4>
           <ProviderExecutionPolicyView policy={policy} />
+
+          <h4>Modelos pedidos aos participantes</h4>
+          <ParticipantModelsView choices={participantModels} />
 
           <h4>Prontidão local no aceite</h4>
           <CouncilAdmissionView admission={admission} />
@@ -574,6 +581,7 @@ function InspectionContent({ audit: anyAudit }: { audit: RunAuditResponse }) {
         accounting={audit.status === 'completed' ? audit.accounting : audit.round_result.accounting}
         policy={audit.provider_execution_policy}
         admission={audit.council_admission}
+        participantModels={audit.config.participant_models}
         claims={audit.status === 'completed' ? audit.claims : null}
         assessmentsByClaimId={assessmentsByClaimId}
         participantResponses={participantResponses}

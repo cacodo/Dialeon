@@ -39,6 +39,18 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from app.host_authority import DEFAULT_ALLOWED_HOSTS
 
 
+def validate_model_identifier_edges(value: str, field_name: str) -> str:
+    """Regra mínima de forma de um identificador de modelo (configurado no
+    deployment ou escolhido numa run): não vazio, não só espaço em branco,
+    sem espaço em branco líder/final. Nunca reescreve -- aceita ou rejeita.
+    Só forma: nunca diz que o modelo existe no fornecedor."""
+    if value.strip() == "":
+        raise ValueError(f"{field_name} não pode ser vazio ou conter só espaço em branco")
+    if value != value.strip():
+        raise ValueError(f"{field_name} não pode ter espaço em branco líder/final: {value!r}")
+    return value
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -285,12 +297,4 @@ class Settings(BaseSettings):
         Um valor válido é preservado byte/string-equivalente ao input
         configurado -- esta função nunca reescreve, só aceita ou
         rejeita."""
-        if value.strip() == "":
-            raise ValueError(
-                f"{info.field_name} não pode ser vazio ou conter só espaço em branco"
-            )
-        if value != value.strip():
-            raise ValueError(
-                f"{info.field_name} não pode ter espaço em branco líder/final: {value!r}"
-            )
-        return value
+        return validate_model_identifier_edges(value, info.field_name)

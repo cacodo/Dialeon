@@ -48,7 +48,11 @@ from app.debate.claim_extraction_coverage import (
     summarize_claim_extraction_coverage,
 )
 from app.debate.claims import get_current_claims
-from app.debate.context import CRITIQUE_CONTRACT_VERSION, build_critique_requests
+from app.debate.context import (
+    CRITIQUE_CONTRACT_VERSION,
+    CRITIQUE_EXPLICIT_MODEL_CONTRACT_VERSION,
+    build_critique_requests,
+)
 from app.debate.numeric_verification import DeterministicVerificationAttempt
 from app.debate.processing_record import ClaimProcessingAttempt
 from app.debate.result import CritiqueResult, DebateResult
@@ -193,13 +197,23 @@ class DebateEngine:
             current_claims=current_round1_claims,
             participants=critique_participants,
             max_output_tokens_per_call=run_config.max_output_tokens_per_call,
+            # o MESMO modelo congelado no aceite da resposta inicial
+            requested_models=(
+                {c.provider: c.requested_model for c in run_config.participant_models}
+                if run_config.participant_models is not None
+                else None
+            ),
         )
 
         round2_round_result = await self._orchestrator.run_round(
             critique_requests,
             round_number=_CRITIQUE_ROUND_NUMBER,
             round_dispatch_timeout_seconds=run_config.round_dispatch_timeout_seconds,
-            contract_version=CRITIQUE_CONTRACT_VERSION,
+            contract_version=(
+                CRITIQUE_EXPLICIT_MODEL_CONTRACT_VERSION
+                if run_config.participant_models is not None
+                else CRITIQUE_CONTRACT_VERSION
+            ),
         )
         critique_result = CritiqueResult(round_result=round2_round_result)
 

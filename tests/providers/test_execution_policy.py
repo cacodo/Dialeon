@@ -466,6 +466,10 @@ def test_create_run_request_contract_is_unchanged_and_exposes_no_transport_knobs
         "readiness_admission",
         "acknowledge_known_degradation",
         "acknowledged_degradation_fingerprint",
+        # Council Accepted Effective Participant Model Choice V1 -- escolha de
+        # MODELO de participante (identificador), não knob de transporte nem
+        # de raciocínio.
+        "participant_model_overrides",
     }
 
     # cliente NÃO consegue enviar knob de transporte (extra="forbid")

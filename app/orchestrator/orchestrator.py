@@ -63,9 +63,16 @@ _PHASE_1_ROUND_NUMBER = 1
 # builder próprio em outro módulo que justificasse morar em outro lugar
 # (ver seção 6/10 do contrato desta slice).
 INITIAL_RESPONSE_CONTRACT_VERSION = "initial_response_v1"
+# Council Accepted Effective Participant Model Choice V1 -- mesma mensagem,
+# mas com o modelo congelado no aceite EXPLÍCITO no request (entra no
+# digest). v1 continua significando "sem modelo no request: o adapter usou o
+# próprio padrão na hora da chamada" -- nunca reinterpretado.
+INITIAL_RESPONSE_EXPLICIT_MODEL_CONTRACT_VERSION = "initial_response_v2"
 
 
-def _build_initial_request(question: str, max_output_tokens_per_call: int) -> CompletionRequest:
+def _build_initial_request(
+    question: str, max_output_tokens_per_call: int, model: str | None = None
+) -> CompletionRequest:
     """Único ponto de construção do `CompletionRequest` da resposta
     inicial (Fase 1) -- extraído de dentro de `Orchestrator.run()` (F2,
     review de independência) só pra que o teste de golden digest
@@ -76,6 +83,7 @@ def _build_initial_request(question: str, max_output_tokens_per_call: int) -> Co
     `INITIAL_RESPONSE_CONTRACT_VERSION`."""
     return CompletionRequest(
         messages=[Message(role="user", content=question)],
+        model=model,
         max_tokens=max_output_tokens_per_call,
     )
 
@@ -110,16 +118,28 @@ class Orchestrator:
         validate_quorum_feasibility(run_config)
         validate_execution_limits_for_new_execution(run_config)
 
-        request = _build_initial_request(
-            run_config.question, run_config.max_output_tokens_per_call
-        )
-        requests = {name: request for name in run_config.enabled_providers}
+        # Council Accepted Effective Participant Model Choice V1 -- com o
+        # mapa congelado no aceite, cada participante recebe o SEU modelo
+        # explícito; sem ele (RunConfig montado fora do aceite / histórico),
+        # o request de sempre, sem modelo.
+        requests = {
+            name: _build_initial_request(
+                run_config.question,
+                run_config.max_output_tokens_per_call,
+                run_config.requested_model_for(name),
+            )
+            for name in run_config.enabled_providers
+        }
 
         round_result = await self.run_round(
             requests,
             round_number=_PHASE_1_ROUND_NUMBER,
             round_dispatch_timeout_seconds=run_config.round_dispatch_timeout_seconds,
-            contract_version=INITIAL_RESPONSE_CONTRACT_VERSION,
+            contract_version=(
+                INITIAL_RESPONSE_EXPLICIT_MODEL_CONTRACT_VERSION
+                if run_config.participant_models is not None
+                else INITIAL_RESPONSE_CONTRACT_VERSION
+            ),
         )
 
         return _apply_quorum_and_budget(round_result, run_config)

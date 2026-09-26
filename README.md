@@ -239,6 +239,39 @@ guarda a avaliação feita no aceite, o modo de admissão e o reconhecimento em
 `council_admission` (detalhe e auditoria); runs anteriores têm `null` (não
 registrado), nunca reconstruído da configuração atual.
 
+### Modelo de cada participante (avançado)
+
+Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
+v1.4.0 não tem), uma pergunta do Conselho pode pedir um modelo específico para
+um participante. Sem escolha, cada participante usa o modelo padrão
+configurado nesta instalação (`OPENAI_DEFAULT_MODEL` etc.), como sempre.
+
+- A escolha é um identificador do fornecedor, enviado exatamente como
+  digitado. O Dialeon só confere a forma (não vazio, sem espaços, até 256
+  caracteres) e que o provider é um participante selecionado: não tem
+  catálogo de modelos e não confere se o modelo existe, está disponível ou
+  aceita a chamada. Um modelo recusado pelo fornecedor aparece como falha
+  registrada daquela resposta, sem troca por outro modelo.
+- Vale só para o participante: resposta inicial e crítica. Extração de
+  afirmações, análise da fonte, juiz, editor e revisão continuam com o modelo
+  padrão do provider deles, mesmo quando é o mesmo provider.
+- No aceite, o Dialeon congela o modelo pedido a **cada** participante e a
+  origem dele (`configured_default` ou `run_override`) em
+  `config.participant_models`; mudar o padrão depois não altera runs já
+  aceitas. O modelo que o fornecedor reportou continua em cada resposta, ao
+  lado do pedido. Runs anteriores mostram `participant_models: null` (não
+  registrado).
+- O mesmo identificador em dois providers são dois pedidos diferentes. Um
+  modelo sem preço conhecido tem custo desconhecido (nunca zero) e, como
+  antes, não entra na conta do `DEFAULT_MAX_COST_USD`.
+
+Na interface: “Modelos” → “Modelo de cada participante (avançado)”; em branco
+é o padrão. A avaliação de configuração local mostra o modelo que será pedido
+e “Perguntar de novo” só traz escolhas explícitas. Pela CLI: `dialeon run
+"..." --model openai=gpt-x` (repetível; também em `dialeon readiness`). Pela
+API: `participant_model_overrides` (`{"openai": "gpt-x"}`) em `POST /runs` e
+em `POST /runs/readiness`; a resposta direta recusa esse campo.
+
 ## O que já está implementado
 
 - Execução concorrente de uma pergunta contra múltiplos providers/modelos
@@ -398,6 +431,17 @@ ganharam `council_admission`; o código `council_prerequisites_missing` só
 aparece com `"readiness_admission": "strict"`, e `council_readiness_changed`
 só com um reconhecimento de degradação.
 
+Na versão em desenvolvimento desta árvore (ver
+[Modelo de cada participante](#modelo-de-cada-participante-avançado)):
+`participant_model_overrides` é um campo opcional de `POST /runs` e de
+`POST /runs/readiness` (só do Conselho); `config` ganhou `participant_models`
+(`null` em runs anteriores); a avaliação de configuração local passou a
+`council_local_readiness_v2`, com `planned_model`/`planned_model_origin` nos
+participantes (avaliações `v1` gravadas antes continuam legíveis e com a
+mesma identidade de degradação). Os requests dos participantes passaram a
+levar o modelo explícito (`initial_response_v2`/`critique_v2` na
+proveniência); os registros `v1` mantêm o significado original.
+
 **Não fazem parte da API estável:** o texto exato de mensagens da CLI e de
 erros; o schema SQLite bruto e as classes ORM; os módulos internos `app.*`,
 adapters de provider e detalhes internos do domínio; componentes
@@ -484,6 +528,7 @@ dialeon run "..." --providers openai,anthropic --source "texto de referência op
 dialeon run "..." --direct --providers openai   # resposta direta de um único provider
 dialeon readiness --providers openai,gemini     # configuração local de cada etapa do Conselho, sem executar
 dialeon run "..." --strict-readiness            # recusa se faltar configuração local em alguma etapa
+dialeon run "..." --model openai=gpt-x          # modelo específico para um participante (repetível)
 dialeon list                             # lista execuções recentes
 dialeon get <run_id>                     # resposta e detalhes de uma execução
 dialeon audit <run_id>                   # resumo legível da auditoria

@@ -109,16 +109,33 @@ export type CouncilDependencyRole =
 // fora do caminho pedido (análise da fonte sem fonte).
 export type DependencyApplicability = 'selected' | 'potential' | 'not_applicable'
 
+// Council Accepted Effective Participant Model Choice V1 -- de onde veio o
+// modelo pedido a um participante: o padrão configurado nesta instalação, ou
+// escolhido explicitamente para a pergunta. Nunca "modelo verificado".
+export type ParticipantModelOrigin = 'configured_default' | 'run_override'
+
+// O mapa congelado no aceite (config.participant_models): o que foi PEDIDO a
+// cada participante. O que o provider reportou fica em cada resposta.
+export interface ParticipantModelChoice {
+  provider: string
+  requested_model: string
+  origin: ParticipantModelOrigin
+}
+
 export interface CouncilDependencyReadiness {
   role: CouncilDependencyRole
   provider: string
   configured_default_model: string
   local_prerequisite: LocalPrerequisiteState
   applicability: DependencyApplicability
+  // Só participantes de avaliações v2: o modelo que a pergunta vai PEDIR e a
+  // origem dele (pedido local, nunca modelo verificado/disponível).
+  planned_model?: string | null
+  planned_model_origin?: ParticipantModelOrigin | null
 }
 
 export interface CouncilReadiness {
-  contract_version: 'council_local_readiness_v1'
+  contract_version: 'council_local_readiness_v1' | 'council_local_readiness_v2'
   // Só dependências aplicáveis: 'some_missing' = ausência local CONHECIDA;
   // 'some_unknown' = nada ausente, algo não verificável.
   summary: 'all_met' | 'some_unknown' | 'some_missing'
@@ -133,6 +150,7 @@ export interface CouncilReadiness {
 export interface CouncilReadinessRequest {
   enabled_providers: string[]
   source_supplied: boolean
+  participant_model_overrides?: Record<string, string>
 }
 
 export interface CouncilAdmission {
@@ -523,6 +541,10 @@ export interface RunConfigPublic {
   max_output_tokens_judge: number
   round_dispatch_timeout_seconds: PositiveExecutionLimitPublic
   quorum: QuorumPublic
+  // Council Accepted Effective Participant Model Choice V1 -- ausente em
+  // servidores anteriores; null = não registrado (run anterior), nunca
+  // reconstruído do padrão atual.
+  participant_models?: ParticipantModelChoice[] | null
 }
 
 export interface AccountingSummary {
@@ -848,6 +870,10 @@ export interface CreateRunRequest {
   readiness_admission?: 'standard' | 'strict'
   acknowledge_known_degradation?: boolean
   acknowledged_degradation_fingerprint?: string
+  // Council Accepted Effective Participant Model Choice V1 -- só pro
+  // Conselho: provider participante -> modelo escolhido para esta pergunta.
+  // Participante sem entrada usa o modelo padrão configurado.
+  participant_model_overrides?: Record<string, string>
 }
 
 // Etapa 16 -- audit-only. Só tipagem pra consistência; nenhum componente

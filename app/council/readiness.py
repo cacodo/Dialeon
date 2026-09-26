@@ -47,10 +47,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.provider_models import LocalPrerequisiteState
 from app.orchestrator.config import RunConfig
+from app.orchestrator.participant_models import ParticipantModelChoice, ParticipantModelOrigin
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
-COUNCIL_READINESS_CONTRACT_VERSION = "council_local_readiness_v1"
+# v2 (Council Accepted Effective Participant Model Choice V1): cada
+# participante carrega o modelo PLANEJADO (efetivamente solicitado) e a origem
+# dele. v1 (v1.4.0) não tinha esses fatos -- continua legível, nunca
+# completado com o padrão atual.
+COUNCIL_READINESS_CONTRACT_VERSION = "council_local_readiness_v2"
 # v2: um reconhecimento de degradação carrega a identidade da degradação
 # reconhecida (`acknowledged_degradation_fingerprint`). v1 (gravado só em
 # desenvolvimento, antes desse campo) continua legível: nele essa identidade
@@ -64,6 +69,11 @@ COUNCIL_ADMISSION_CONTRACT_VERSION = "council_admission_v2"
 # só uma forma estável e comparável de dizer "esta degradação", derivada
 # sempre pelo servidor a partir da própria avaliação.
 _DEGRADATION_FINGERPRINT_CONTRACT = "council_known_degradation_v1"
+# v2: mesma regra, e um participante ausente entra também com o modelo
+# PLANEJADO -- outra escolha de modelo é outra degradação reconhecida. Cada
+# avaliação usa o algoritmo da própria versão: identidades gravadas pela
+# v1.4.0 (avaliações v1) continuam significando o que significavam.
+_DEGRADATION_FINGERPRINT_CONTRACT_V2 = "council_known_degradation_v2"
 DEGRADATION_FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
 # Papel de cada dependência, na ordem em que o pipeline do Conselho pode
@@ -106,6 +116,19 @@ class CouncilExecutionDependencies(BaseModel):
     editor_provider: str = Field(min_length=1)
     source_analyzer_provider: str = Field(min_length=1)
     source_supplied: bool
+    # Mapa efetivo dos participantes (Council Accepted Effective Participant
+    # Model Choice V1), resolvido pela MESMA regra na prévia e no aceite. Só
+    # os participantes -- os papéis internos seguem com o modelo padrão do
+    # provider deles. `None` = não resolvido (avaliação v1).
+    participant_models: tuple[ParticipantModelChoice, ...] | None = None
+
+    @model_validator(mode="after")
+    def _participant_models_cover_the_participants(self) -> "CouncilExecutionDependencies":
+        if self.participant_models is not None and tuple(
+            c.provider for c in self.participant_models
+        ) != tuple(self.enabled_providers):
+            raise ValueError("participant_models precisa cobrir exatamente os participantes")
+        return self
 
     @classmethod
     def from_run_config(cls, run_config: RunConfig) -> "CouncilExecutionDependencies":
@@ -117,6 +140,7 @@ class CouncilExecutionDependencies(BaseModel):
             editor_provider=run_config.editor_provider,
             source_analyzer_provider=run_config.source_analyzer_provider,
             source_supplied=run_config.source_text is not None,
+            participant_models=run_config.participant_models,
         )
 
     @property
@@ -140,11 +164,20 @@ class CouncilDependencyReadiness(BaseModel):
     configured_default_model: str
     local_prerequisite: LocalPrerequisiteState
     applicability: DependencyApplicability
+    # Só participantes, só avaliação v2: o modelo que a run vai SOLICITAR
+    # (escolha explícita ou o padrão configurado) e a origem dele. Fato de
+    # pedido local -- nunca "o modelo existe/está disponível no fornecedor".
+    planned_model: str | None = None
+    planned_model_origin: ParticipantModelOrigin | None = None
 
     @model_validator(mode="after")
     def _participants_are_selected(self) -> "CouncilDependencyReadiness":
         if (self.role == "participant") != (self.applicability == "selected"):
             raise ValueError("só participantes são 'selected', e todo participante é 'selected'")
+        if (self.planned_model is None) != (self.planned_model_origin is None):
+            raise ValueError("planned_model e planned_model_origin vêm sempre juntos")
+        if self.role != "participant" and self.planned_model is not None:
+            raise ValueError("só participantes têm modelo planejado")
         return self
 
 
@@ -155,8 +188,20 @@ class CouncilReadiness(BaseModel):
 
     model_config = _CONFIG
 
-    contract_version: Literal["council_local_readiness_v1"] = COUNCIL_READINESS_CONTRACT_VERSION
+    contract_version: Literal["council_local_readiness_v1", "council_local_readiness_v2"] = (
+        COUNCIL_READINESS_CONTRACT_VERSION
+    )
     dependencies: tuple[CouncilDependencyReadiness, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _planned_models_follow_the_contract(self) -> "CouncilReadiness":
+        participants = [d for d in self.dependencies if d.role == "participant"]
+        if self.contract_version == "council_local_readiness_v1":
+            if any(d.planned_model is not None for d in participants):
+                raise ValueError("council_local_readiness_v1 não registra modelo planejado")
+        elif any(d.planned_model is None for d in participants):
+            raise ValueError("council_local_readiness_v2 exige o modelo planejado de cada participante")
+        return self
 
     @property
     def applicable_dependencies(self) -> tuple[CouncilDependencyReadiness, ...]:
@@ -187,11 +232,21 @@ class CouncilReadiness(BaseModel):
         caminho pedido tem ausência conhecida. Só os fatos materiais das
         dependências `missing` entram -- mudanças em `met`/`unknown` não a
         alteram; a ordem das dependências também não."""
-        missing = sorted({(d.role, d.provider, d.configured_default_model) for d in self.known_missing})
+        if self.contract_version == "council_local_readiness_v1":
+            contract = _DEGRADATION_FINGERPRINT_CONTRACT
+            missing = sorted({(d.role, d.provider, d.configured_default_model) for d in self.known_missing})
+        else:
+            contract = _DEGRADATION_FINGERPRINT_CONTRACT_V2
+            missing = sorted(
+                {
+                    (d.role, d.provider, d.configured_default_model, d.planned_model or "")
+                    for d in self.known_missing
+                }
+            )
         if not missing:
             return None
         canonical = json.dumps(
-            {"contract": _DEGRADATION_FINGERPRINT_CONTRACT, "missing": missing},
+            {"contract": contract, "missing": missing},
             separators=(",", ":"),
             ensure_ascii=False,
         )
@@ -218,18 +273,32 @@ def evaluate_council_readiness(
     if missing_facts:
         raise ValueError(f"sem fatos locais pros providers: {missing_facts}")
 
+    planned = (
+        {c.provider: c for c in dependencies.participant_models}
+        if dependencies.participant_models is not None
+        else None
+    )
+
     def dep(
         role: CouncilDependencyRole, provider: str, applicability: DependencyApplicability
     ) -> CouncilDependencyReadiness:
+        # Só o participante carrega o modelo planejado; um papel interno do
+        # MESMO provider continua com o padrão configurado (sem planejado).
+        choice = planned[provider] if planned is not None and role == "participant" else None
         return CouncilDependencyReadiness(
             role=role,
             provider=provider,
             configured_default_model=configured_default_models[provider],
             local_prerequisite=local_prerequisites[provider],
             applicability=applicability,
+            planned_model=choice.requested_model if choice is not None else None,
+            planned_model_origin=choice.origin if choice is not None else None,
         )
 
     return CouncilReadiness(
+        contract_version=(
+            "council_local_readiness_v2" if planned is not None else "council_local_readiness_v1"
+        ),
         dependencies=(
             *(dep("participant", p, "selected") for p in dependencies.enabled_providers),
             dep("claim_extraction", dependencies.claim_processor_provider, "potential"),

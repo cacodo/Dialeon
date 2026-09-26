@@ -288,6 +288,11 @@ export function formatInvalidRequest(details: Record<string, unknown> | null): s
       `A fonte não é válida: não pode passar de ${formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)} caracteres.`,
     )
   }
+  if (fields.has('participant_model_overrides')) {
+    messages.push(
+      'Um modelo escolhido não é válido: use o identificador do fornecedor, sem espaços, e só para modelos selecionados.',
+    )
+  }
   if (fields.has('enabled_providers')) {
     messages.push('Escolha ao menos um participante, sem repetições.')
   }
@@ -501,12 +506,16 @@ export function formatReadinessRole(role: CouncilDependencyRole): string {
 
 export interface ReadinessProviderGroup {
   provider: string
+  // O modelo que as etapas do grupo usam: o configurado, ou -- só para um
+  // participante com escolha explícita nesta pergunta -- o escolhido.
   configuredModel: string
+  modelChosenForThisQuestion: boolean
   roles: CouncilDependencyRole[]
 }
 
-// Agrupa dependências por provider (um provider pode servir vários papéis),
-// na ordem em que aparecem. Só dependências do caminho pedido (nunca
+// Agrupa dependências por provider E modelo (um provider pode servir vários
+// papéis; um participante com modelo escolhido fica num grupo próprio), na
+// ordem em que aparecem. Só dependências do caminho pedido (nunca
 // `not_applicable`) com o estado pedido.
 export function groupReadinessByProvider(
   readiness: CouncilReadiness,
@@ -517,14 +526,27 @@ export function groupReadinessByProvider(
   for (const dep of readiness.dependencies) {
     if (dep.applicability === 'not_applicable' || dep.local_prerequisite !== state) continue
     if (!includeParticipants && dep.role === 'participant') continue
-    const group = groups.find((g) => g.provider === dep.provider)
+    const chosen = dep.planned_model_origin === 'run_override' && typeof dep.planned_model === 'string'
+    const model = chosen ? (dep.planned_model as string) : dep.configured_default_model
+    const group = groups.find(
+      (g) => g.provider === dep.provider && g.configuredModel === model && g.modelChosenForThisQuestion === chosen,
+    )
     if (group === undefined) {
-      groups.push({ provider: dep.provider, configuredModel: dep.configured_default_model, roles: [dep.role] })
+      groups.push({ provider: dep.provider, configuredModel: model, modelChosenForThisQuestion: chosen, roles: [dep.role] })
     } else if (!group.roles.includes(dep.role)) {
       group.roles.push(dep.role)
     }
   }
   return groups
+}
+
+// Rótulo do modelo de um grupo de prontidão: o configurado nesta instalação,
+// ou o escolhido para a pergunta. Nenhum dos dois diz que o modelo existe
+// no fornecedor.
+export function formatReadinessGroupModel(group: ReadinessProviderGroup): string {
+  return group.modelChosenForThisQuestion
+    ? `modelo escolhido nesta pergunta: ${group.configuredModel}`
+    : `modelo configurado: ${group.configuredModel}`
 }
 
 export function formatReadinessRoles(roles: readonly CouncilDependencyRole[]): string {

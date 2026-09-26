@@ -101,6 +101,7 @@ export function Home() {
     sourceText: string | null,
     kind?: 'direct',
     admission?: CouncilAdmissionChoice,
+    participantModelOverrides?: Record<string, string>,
   ) {
     setSubmission({ phase: 'submitting' })
     try {
@@ -110,7 +111,17 @@ export function Home() {
         // reconhecimento deliberado da degradação local conhecida).
         kind === 'direct'
           ? { question, enabled_providers: enabledProviders, source_text: null, kind: 'direct' }
-          : { question, enabled_providers: enabledProviders, source_text: sourceText, ...admission },
+          : {
+              question,
+              enabled_providers: enabledProviders,
+              source_text: sourceText,
+              ...admission,
+              // Council Accepted Effective Participant Model Choice V1 -- só
+              // quando há escolha explícita (sem ela, o envio de sempre).
+              ...(participantModelOverrides !== undefined
+                ? { participant_model_overrides: participantModelOverrides }
+                : {}),
+            },
       )
       if (isDirectRun(result)) {
         // Run direta criada (resposta ou falha do provider registrada): a

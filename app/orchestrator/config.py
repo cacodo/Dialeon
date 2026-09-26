@@ -17,6 +17,7 @@ import math
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import Settings
+from app.orchestrator.participant_models import ParticipantModelChoice
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
 
@@ -273,6 +274,18 @@ class RunConfig(BaseModel):
     # aqui (RunConfig é diretamente construível, não pode depender de
     # CreateRunRequest ter rodado antes pra garantir o limite).
     source_text: str | None = None
+    # Council Accepted Effective Participant Model Choice V1 -- o mapa
+    # COMPLETO e CONGELADO no aceite: pra cada participante selecionado (na
+    # ordem de `enabled_providers`), o modelo efetivamente solicitado e se
+    # veio do padrão configurado ou de uma escolha explícita da run (ver
+    # app/orchestrator/participant_models.py). Preenchido só por
+    # `CouncilExecutionService` no aceite (`with_participant_models`); a
+    # execução usa exatamente estes valores na resposta inicial e na crítica.
+    # `None` = não capturado: run anterior a este campo (nunca reconstruído
+    # do padrão atual, de tentativas nem da identidade reportada) ou
+    # `RunConfig` montado fora do aceite (a execução então segue o caminho
+    # anterior: sem modelo explícito no request).
+    participant_models: tuple[ParticipantModelChoice, ...] | None = None
 
     @field_validator("source_text")
     @classmethod
@@ -284,6 +297,33 @@ class RunConfig(BaseModel):
         if len(set(self.enabled_providers)) != len(self.enabled_providers):
             raise ValueError("enabled_providers não pode conter duplicatas")
         return self
+
+    @model_validator(mode="after")
+    def _participant_models_cover_exactly_the_participants(self) -> "RunConfig":
+        if self.participant_models is not None and tuple(
+            c.provider for c in self.participant_models
+        ) != tuple(self.enabled_providers):
+            raise ValueError(
+                "participant_models precisa ter exatamente um modelo por participante, na ordem "
+                "de enabled_providers"
+            )
+        return self
+
+    def requested_model_for(self, provider: str) -> str | None:
+        """Modelo congelado no aceite pra este participante, ou `None` quando
+        o mapa não foi capturado (ver `participant_models`)."""
+        if self.participant_models is None:
+            return None
+        return next(c.requested_model for c in self.participant_models if c.provider == provider)
+
+    def with_participant_models(
+        self, participant_models: tuple[ParticipantModelChoice, ...]
+    ) -> "RunConfig":
+        """Cópia VALIDADA com o mapa efetivo congelado (nunca `model_copy`
+        sem validação)."""
+        return RunConfig.model_validate(
+            {**self.model_dump(), "participant_models": participant_models}
+        )
 
     @property
     def all_provider_authorities(self) -> frozenset[str]:

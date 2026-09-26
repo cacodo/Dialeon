@@ -30,6 +30,7 @@ from pydantic import ValidationError
 from app.application.errors import (
     CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
+    InvalidParticipantModelOverrideError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     LocalPrerequisitesMissingError,
@@ -87,6 +88,38 @@ def _pydantic_errors(exc: ValidationError) -> list[dict]:
     return [{"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]} for e in exc.errors()]
 
 
+def _parse_model_overrides(raw: list[str] | None) -> dict[str, str] | None:
+    """Só a SINTAXE da CLI (`--model PROVIDER=MODELO`, repetível) -> mapa.
+    Seleção e forma do identificador são validadas pela mesma regra da API
+    (`CreateRunRequest`/`CouncilReadinessRequest` e o service) -- nunca aqui.
+    O modelo segue verbatim (nada é trimado)."""
+    if raw is None:
+        return None
+    overrides: dict[str, str] = {}
+    for item in raw:
+        provider, separator, model = item.partition("=")
+        if not separator or provider == "":
+            raise ValueError(f"--model precisa ter a forma PROVIDER=MODELO: {item!r}")
+        if provider in overrides:
+            raise ValueError(f"--model repetido para o provider {provider!r}")
+        overrides[provider] = model
+    return overrides
+
+
+def _emit_invalid(as_json: bool, loc: str, reason: str, error_type: str) -> int:
+    message = "Request inválido."
+    if as_json:
+        output.emit_json_error(
+            "invalid_request",
+            message,
+            details={"errors": [{"loc": [loc], "msg": reason, "type": error_type}]},
+        )
+    else:
+        output.print_error(message)
+        output.print_error(f"  - {reason}")
+    return EXIT_INVALID_INPUT
+
+
 async def cmd_run(
     components: AppComponents,
     *,
@@ -95,6 +128,7 @@ async def cmd_run(
     source_text: str | None,
     as_json: bool,
     strict_readiness: bool = False,
+    model_overrides: list[str] | None = None,
 ) -> int:
     """Etapa 14, seção 4: superfície de input idêntica à API --
     `question` + `enabled_providers` (`--providers`) + `source_text`
@@ -107,6 +141,11 @@ async def cmd_run(
     enabled_providers = providers if providers is not None else sorted(components.providers)
 
     try:
+        participant_model_overrides = _parse_model_overrides(model_overrides)
+    except ValueError as exc:
+        return _emit_invalid(as_json, "participant_model_overrides", str(exc), "model_option_syntax")
+
+    try:
         body = CreateRunRequest(
             question=question,
             enabled_providers=enabled_providers,
@@ -114,6 +153,8 @@ async def cmd_run(
             # Council Local Execution Readiness & Admission V1 -- opt-in;
             # sem a flag, o request é exatamente o de antes.
             readiness_admission="strict" if strict_readiness else None,
+            # Council Accepted Effective Participant Model Choice V1 -- idem.
+            participant_model_overrides=participant_model_overrides,
         )
     except ValidationError as exc:
         message = "Request inválido."
@@ -135,7 +176,15 @@ async def cmd_run(
     )
 
     try:
-        result = await components.service.run(run_config, admission=body.council_admission())
+        result = await components.service.run(
+            run_config,
+            admission=body.council_admission(),
+            participant_model_overrides=body.participant_model_overrides,
+        )
+    except InvalidParticipantModelOverrideError as exc:
+        return _emit_invalid(
+            as_json, "participant_model_overrides", exc.reason, "invalid_participant_model_override"
+        )
     except CouncilPrerequisitesMissingError as exc:
         # Admissão estrita recusada antes de qualquer registro/chamada --
         # mesmo código da API, mesma classe de problema de entrada (exit 2).
@@ -262,6 +311,7 @@ async def cmd_run_direct(
     source_text: str | None,
     as_json: bool,
     strict_readiness: bool = False,
+    model_overrides: list[str] | None = None,
 ) -> int:
     """Direct Answer Execution V1 (`dialeon run --direct`): uma pergunta,
     EXATAMENTE um provider (`--providers` obrigatório, com um id), sem fonte.
@@ -276,6 +326,16 @@ async def cmd_run_direct(
     `strict_readiness` (Council Local Execution Readiness & Admission V1):
     `--strict-readiness` é só do Conselho -- a resposta direta já recusa um
     provider sem a configuração local necessária. Recusado como `--source`."""
+    if model_overrides is not None:
+        # Council Accepted Effective Participant Model Choice V1 -- `--model`
+        # é dos participantes do Conselho; a resposta direta não muda.
+        return _emit_invalid(
+            as_json,
+            "participant_model_overrides",
+            "--model não é aceito com --direct: a resposta direta usa o modelo padrão "
+            "configurado do provider.",
+            "direct_participant_model_not_supported",
+        )
     if strict_readiness:
         message = "Request inválido."
         reason = (
@@ -392,6 +452,7 @@ async def cmd_readiness(
     providers: list[str] | None,
     source_text: str | None,
     as_json: bool,
+    model_overrides: list[str] | None = None,
 ) -> int:
     """Council Local Execution Readiness & Admission V1 (`dialeon
     readiness`): prévia SEM efeito da prontidão local de uma run do Conselho
@@ -403,10 +464,16 @@ async def cmd_readiness(
     resultado."""
     enabled_providers = providers if providers is not None else sorted(components.providers)
     try:
+        participant_model_overrides = _parse_model_overrides(model_overrides)
+    except ValueError as exc:
+        return _emit_invalid(as_json, "participant_model_overrides", str(exc), "model_option_syntax")
+    try:
         # Mesma normalização de fonte da criação: vazio/só espaço = sem fonte.
         normalized_source = _normalize_and_validate_source_text(source_text)
         body = CouncilReadinessRequest(
-            enabled_providers=enabled_providers, source_supplied=normalized_source is not None
+            enabled_providers=enabled_providers,
+            source_supplied=normalized_source is not None,
+            participant_model_overrides=participant_model_overrides,
         )
     except ValidationError as exc:
         message = "Request inválido."
@@ -438,7 +505,13 @@ async def cmd_readiness(
         source_supplied=body.source_supplied,
     )
     try:
-        readiness = components.service.preview_readiness(dependencies)
+        readiness = components.service.preview_readiness(
+            dependencies, participant_model_overrides=body.participant_model_overrides
+        )
+    except InvalidParticipantModelOverrideError as exc:
+        return _emit_invalid(
+            as_json, "participant_model_overrides", exc.reason, "invalid_participant_model_override"
+        )
     except UnknownProviderError as exc:
         message = "Um ou mais providers solicitados não existem."
         if as_json:

@@ -19,6 +19,7 @@ from app.presentation.schemas import (
     CouncilAdmissionPublic,
     CouncilDependencyReadinessPublic,
     CouncilReadinessPublic,
+    ParticipantModelChoicePublic,
     AccountingSummary,
     AnswerBlockPublic,
     AnswerClaimItemPublic,
@@ -461,6 +462,16 @@ def run_config_public(rc: RunConfig) -> RunConfigPublic:
         quorum=QuorumPublic(
             min_for_debate=rc.quorum.min_for_debate, min_to_return=rc.quorum.min_to_return
         ),
+        participant_models=(
+            [
+                ParticipantModelChoicePublic(
+                    provider=c.provider, requested_model=c.requested_model, origin=c.origin
+                )
+                for c in rc.participant_models
+            ]
+            if rc.participant_models is not None
+            else None
+        ),
     )
 
 
@@ -489,6 +500,8 @@ def council_readiness_public(readiness: CouncilReadiness) -> CouncilReadinessPub
                 configured_default_model=d.configured_default_model,
                 local_prerequisite=d.local_prerequisite,
                 applicability=d.applicability,
+                planned_model=d.planned_model,
+                planned_model_origin=d.planned_model_origin,
             )
             for d in readiness.dependencies
         ],

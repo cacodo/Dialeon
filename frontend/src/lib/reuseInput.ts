@@ -12,6 +12,12 @@ export interface ReuseInput {
   // Direct Answer Execution V1 -- presente só pra reuso de uma run direta
   // (o reuso do Conselho continua exatamente como era).
   kind?: 'direct'
+  // Council Accepted Effective Participant Model Choice V1 -- só as escolhas
+  // EXPLÍCITAS da run anterior (origem `run_override` no mapa aceito), nunca
+  // o padrão que ela usou nem o modelo reportado nas tentativas: um
+  // participante que usou o padrão usa o padrão ATUAL na pergunta nova. Só
+  // vale para quem continuar selecionado agora.
+  participantModelOverrides?: Record<string, string>
 }
 
 export const REUSE_STATE_KEY = 'reuseInput'
@@ -20,12 +26,17 @@ export function buildReuseState(config: {
   question: string
   source_text: string | null
   enabled_providers: string[]
+  participant_models?: { provider: string; requested_model: string; origin: string }[] | null
 }): { [REUSE_STATE_KEY]: ReuseInput } {
+  const explicit = (config.participant_models ?? []).filter((c) => c.origin === 'run_override')
   return {
     [REUSE_STATE_KEY]: {
       question: config.question,
       sourceText: config.source_text ?? null,
       enabledProviders: [...config.enabled_providers],
+      ...(explicit.length > 0
+        ? { participantModelOverrides: Object.fromEntries(explicit.map((c) => [c.provider, c.requested_model])) }
+        : {}),
     },
   }
 }
@@ -55,7 +66,10 @@ export function parseReuseInput(state: unknown): ReuseInput | null {
   if (typeof state !== 'object' || state === null || !(REUSE_STATE_KEY in state)) return null
   const raw = (state as Record<string, unknown>)[REUSE_STATE_KEY]
   if (typeof raw !== 'object' || raw === null) return null
-  const { question, sourceText, enabledProviders, kind } = raw as Record<string, unknown>
+  const { question, sourceText, enabledProviders, kind, participantModelOverrides } = raw as Record<
+    string,
+    unknown
+  >
   if (typeof question !== 'string') return null
   if (sourceText !== null && typeof sourceText !== 'string') return null
   if (!Array.isArray(enabledProviders) || !enabledProviders.every((p) => typeof p === 'string')) {
@@ -66,5 +80,17 @@ export function parseReuseInput(state: unknown): ReuseInput | null {
     if (enabledProviders.length !== 1 || sourceText !== null) return null
     return { question, sourceText: null, enabledProviders, kind: 'direct' }
   }
-  return { question, sourceText: sourceText as string | null, enabledProviders }
+  const overrides =
+    typeof participantModelOverrides === 'object' &&
+    participantModelOverrides !== null &&
+    !Array.isArray(participantModelOverrides) &&
+    Object.values(participantModelOverrides).every((v) => typeof v === 'string')
+      ? (participantModelOverrides as Record<string, string>)
+      : null
+  return {
+    question,
+    sourceText: sourceText as string | null,
+    enabledProviders,
+    ...(overrides !== null && Object.keys(overrides).length > 0 ? { participantModelOverrides: overrides } : {}),
+  }
 }
