@@ -372,4 +372,122 @@ describe('RunComposer -- prontidão local do Conselho', () => {
       })
     })
   })
+
+  describe('a avaliação mostrada vale só pela visita contínua à entrada (K → K2 → K)', () => {
+    const LISTED = { openai: 'met' as State, gemini: 'met' as State, anthropic: 'met' as State }
+    // os três estão "met": todos pré-selecionados; K2 = sem o Claude (o último,
+    // então remarcá-lo volta EXATAMENTE a K)
+    const K = { enabled_providers: ['openai', 'gemini', 'anthropic'], source_supplied: false }
+    const K2 = { enabled_providers: ['openai', 'gemini'], source_supplied: false }
+
+    // Cada prévia fica pendente até o teste resolvê-la -- prova a ORDEM.
+    function deferredPreviews() {
+      const calls: { request: CouncilReadinessRequest; resolve: (r: CouncilReadiness) => void }[] = []
+      const previewReadiness = vi.fn(
+        (request: CouncilReadinessRequest) =>
+          new Promise<CouncilReadiness>((resolve) => calls.push({ request, resolve })),
+      )
+      return { calls, previewReadiness }
+    }
+
+    function renderWith(previewReadiness: (r: CouncilReadinessRequest) => Promise<CouncilReadiness>) {
+      const props = {
+        providers: Object.keys(LISTED),
+        localPrerequisites: LISTED,
+        providersLoading: false,
+        providersError: null,
+        submitting: false,
+        onSubmit: vi.fn(),
+        previewReadiness,
+      }
+      const view = render(<RunComposer {...props} rejectedReadiness={null} />)
+      return {
+        reject: (readiness: CouncilReadiness) =>
+          view.rerender(<RunComposer {...props} rejectedReadiness={readiness} />),
+      }
+    }
+
+    const toggleClaude = async () => {
+      if (screen.queryByLabelText('Claude') === null) {
+        await userEvent.click(screen.getByRole('button', { name: /^Modelos:/ }))
+      }
+      await userEvent.click(screen.getByLabelText('Claude'))
+    }
+    const notice = () => screen.queryByRole('region', { name: /Falta configuração local/ })
+
+    it('sem sair de K, a prévia antiga que chega depois da recusa não a substitui (corrida original)', async () => {
+      const { calls, previewReadiness } = deferredPreviews()
+      const { reject } = renderWith(previewReadiness)
+      await ask()
+      await waitFor(() => expect(calls).toHaveLength(1))
+
+      reject(readinessFor(K, { anthropic: 'missing' }))
+      expect(await screen.findByRole('region', { name: /Falta configuração local/ })).toBeInTheDocument()
+      await act(async () => calls[0].resolve(readinessFor(K, {})))
+
+      expect(notice()).toBeInTheDocument()
+      expect(calls).toHaveLength(1) // nenhuma prévia nova: a entrada não mudou
+    })
+
+    it('K recusada (ausente) → K2 → K: a prévia nova de K (tudo presente) vale; a recusa antiga não volta', async () => {
+      const { calls, previewReadiness } = deferredPreviews()
+      const { reject } = renderWith(previewReadiness)
+      await ask()
+      await waitFor(() => expect(calls).toHaveLength(1))
+      await act(async () => calls[0].resolve(readinessFor(K, {})))
+      reject(readinessFor(K, { anthropic: 'missing' }))
+      expect(await screen.findByRole('region', { name: /Falta configuração local/ })).toBeInTheDocument()
+
+      await toggleClaude() // K2
+      await waitFor(() => expect(calls.at(-1)?.request).toEqual(K2))
+      expect(notice()).not.toBeInTheDocument() // a recusa de K não vale em K2
+      await act(async () => calls.at(-1)!.resolve(readinessFor(K2, {})))
+
+      await toggleClaude() // de volta a K: visita nova
+      await waitFor(() => expect(calls.at(-1)?.request).toEqual(K))
+      expect(notice()).not.toBeInTheDocument() // nada ressuscita enquanto a prévia nova não chega
+      await act(async () => calls.at(-1)!.resolve(readinessFor(K, {})))
+
+      expect(notice()).not.toBeInTheDocument()
+      expect(submitButton()).toBeEnabled()
+    })
+
+    it('K recusada (tudo presente) → K2 → K: uma ausência NOVA na prévia de K aparece', async () => {
+      const { calls, previewReadiness } = deferredPreviews()
+      const { reject } = renderWith(previewReadiness)
+      await ask()
+      await waitFor(() => expect(calls).toHaveLength(1))
+      // 409 com a degradação sumida: a avaliação autoritativa de K é "tudo presente"
+      reject(readinessFor(K, {}))
+      await act(async () => calls[0].resolve(readinessFor(K, { anthropic: 'missing' }))) // antiga: ignorada
+      expect(notice()).not.toBeInTheDocument()
+
+      await toggleClaude()
+      await waitFor(() => expect(calls.at(-1)?.request).toEqual(K2))
+      await toggleClaude()
+      await waitFor(() => expect(calls.at(-1)?.request).toEqual(K))
+      await act(async () => calls.at(-1)!.resolve(readinessFor(K, { anthropic: 'missing' })))
+
+      expect(notice()).toBeInTheDocument()
+      expect(submitButton()).toBeDisabled()
+    })
+
+    it('ao sair de K, nem a recusa de K nem uma prévia antiga de K que chegue depois aparecem em K2', async () => {
+      const { calls, previewReadiness } = deferredPreviews()
+      const { reject } = renderWith(previewReadiness)
+      await ask()
+      await waitFor(() => expect(calls).toHaveLength(1)) // P1 de K pendente
+      reject(readinessFor(K, { anthropic: 'missing' }))
+      expect(await screen.findByRole('region', { name: /Falta configuração local/ })).toBeInTheDocument()
+
+      await toggleClaude() // K2, prévia pendente
+      await waitFor(() => expect(calls.at(-1)?.request).toEqual(K2))
+      await act(async () => calls[0].resolve(readinessFor(K, { anthropic: 'missing' }))) // P1 antiga chega agora
+
+      expect(notice()).not.toBeInTheDocument()
+      await act(async () => calls.at(-1)!.resolve(readinessFor(K2, {})))
+      expect(notice()).not.toBeInTheDocument()
+      expect(submitButton()).toBeEnabled()
+    })
+  })
 })

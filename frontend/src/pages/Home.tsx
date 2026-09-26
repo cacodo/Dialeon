@@ -27,7 +27,14 @@ type SubmissionState =
   // Council Local Execution Readiness & Admission V1 -- admissão estrita
   // recusada, ou reconhecimento de uma degradação que mudou, ANTES de
   // qualquer registro ou chamada: nada foi enviado.
-  | { phase: 'readiness_blocked'; code: 'council_prerequisites_missing' | 'council_readiness_changed' }
+  | {
+      phase: 'readiness_blocked'
+      code: 'council_prerequisites_missing' | 'council_readiness_changed'
+      // A avaliação do servidor ainda tem ausência local CONHECIDA (e o aviso
+      // aparece acima)? Sem ela, nada há a reconhecer: é só perguntar de novo.
+      // `null`: a avaliação não veio num formato reconhecível -- nada é afirmado.
+      knownMissing: boolean | null
+    }
 
 // A avaliação que acompanha uma recusa (`details.readiness`) só é usada se
 // tiver a forma esperada -- nunca inventada a partir de outra coisa.
@@ -121,8 +128,13 @@ export function Home() {
         error instanceof ApiError &&
         (error.code === 'council_prerequisites_missing' || error.code === 'council_readiness_changed')
       ) {
-        setRejectedReadiness(readinessFromDetails(error.details))
-        setSubmission({ phase: 'readiness_blocked', code: error.code })
+        const fresh = readinessFromDetails(error.details)
+        setRejectedReadiness(fresh)
+        setSubmission({
+          phase: 'readiness_blocked',
+          code: error.code,
+          knownMissing: fresh === null ? null : fresh.summary === 'some_missing',
+        })
       } else if (error instanceof ApiError && error.code === 'invalid_request') {
         setSubmission({ phase: 'invalid', message: formatInvalidRequest(error.details) })
       } else if (
@@ -171,8 +183,12 @@ export function Home() {
 
         {submission.phase === 'readiness_blocked' && (
           <p role="alert" className="notice notice--validation">
-            {formatErrorCode(submission.code)} Veja o aviso acima para decidir se quer perguntar
-            mesmo assim.
+            {formatErrorCode(submission.code)}{' '}
+            {submission.knownMissing === true
+              ? 'Veja o aviso acima para decidir se quer perguntar mesmo assim.'
+              : submission.knownMissing === false
+                ? 'Agora não há configuração local ausente conhecida nas etapas do Conselho: você pode perguntar de novo.'
+                : 'Você pode perguntar de novo; o servidor avalia a configuração local outra vez.'}
           </p>
         )}
 

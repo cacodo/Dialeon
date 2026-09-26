@@ -29,7 +29,10 @@ vi.mock('../../api/client', async () => {
 const FINGERPRINT_ANTHROPIC = `sha256:${'a'.repeat(64)}`
 const FINGERPRINT_OPENAI = `sha256:${'b'.repeat(64)}`
 
-function readiness(internalState: 'met' | 'missing', participantState: 'met' | 'missing' = 'met'): CouncilReadiness {
+function readiness(
+  internalState: 'met' | 'missing' | 'unknown',
+  participantState: 'met' | 'missing' = 'met',
+): CouncilReadiness {
   const internal = (role: CouncilReadiness['dependencies'][number]['role'], applicability: 'potential' | 'not_applicable') => ({
     role,
     provider: 'anthropic',
@@ -39,7 +42,12 @@ function readiness(internalState: 'met' | 'missing', participantState: 'met' | '
   })
   return {
     contract_version: 'council_local_readiness_v1',
-    summary: internalState === 'missing' || participantState === 'missing' ? 'some_missing' : 'all_met',
+    summary:
+      internalState === 'missing' || participantState === 'missing'
+        ? 'some_missing'
+        : internalState === 'unknown'
+          ? 'some_unknown'
+          : 'all_met',
     strict_admission: internalState === 'missing' || participantState === 'missing' ? 'blocked' : 'admissible',
     // identidade derivada pelo "servidor" (aqui, fixa por situação)
     known_degradation_fingerprint:
@@ -160,7 +168,8 @@ describe('Home -- prontidão local do Conselho', () => {
     await submit()
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'A configuração local das etapas do Conselho mudou desde o aviso. Nada foi enviado aos modelos.',
+      'A configuração local das etapas do Conselho mudou desde o aviso. Nada foi enviado aos modelos. ' +
+        'Veja o aviso acima para decidir se quer perguntar mesmo assim.',
     )
     const notice = screen.getByRole('region', { name: 'Falta configuração local para parte do Conselho' })
     expect(notice).toHaveTextContent('Participante: GPT')
@@ -177,5 +186,60 @@ describe('Home -- prontidão local do Conselho', () => {
       acknowledge_known_degradation: true,
       acknowledged_degradation_fingerprint: FINGERPRINT_OPENAI,
     })
+  })
+
+  it.each([
+    ['tudo presente', readiness('met')],
+    ['só não verificável', readiness('unknown')],
+  ])('409 com a degradação sumida (%s): sem aviso e sem pedir reconhecimento', async (_, fresh) => {
+    vi.mocked(apiClient.previewCouncilReadiness).mockResolvedValue(readiness('missing'))
+    vi.mocked(apiClient.createRun)
+      .mockRejectedValueOnce(
+        new ApiError(409, 'council_readiness_changed', 'mudou', {
+          readiness: fresh,
+          acknowledged_degradation_fingerprint: FINGERPRINT_ANTHROPIC,
+        }),
+      )
+      .mockImplementation(() => new Promise(() => {}))
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await ask()
+    await userEvent.click(await screen.findByRole('checkbox', { name: /Perguntar mesmo assim/ }))
+    await submit()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Agora não há configuração local ausente conhecida nas etapas do Conselho: você pode perguntar de novo.',
+    )
+    expect(alert).not.toHaveTextContent(/aviso acima|mesmo assim/)
+    expect(screen.queryByRole('region', { name: /Falta configuração local/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /Perguntar mesmo assim/ })).not.toBeInTheDocument()
+
+    // perguntar de novo segue estrito, sem reconhecimento
+    await submit()
+    expect(apiClient.createRun).toHaveBeenLastCalledWith({
+      question: 'Qual a capital?',
+      enabled_providers: ['openai'],
+      source_text: null,
+      readiness_admission: 'strict',
+    })
+  })
+
+  it('409 sem avaliação reconhecível: nada é afirmado sobre a configuração', async () => {
+    vi.mocked(apiClient.previewCouncilReadiness).mockResolvedValue(readiness('missing'))
+    vi.mocked(apiClient.createRun).mockRejectedValueOnce(
+      new ApiError(409, 'council_readiness_changed', 'mudou', { readiness: { unexpected: true } }),
+    )
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await ask()
+    await userEvent.click(await screen.findByRole('checkbox', { name: /Perguntar mesmo assim/ }))
+    await submit()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Você pode perguntar de novo; o servidor avalia a configuração local outra vez.')
+    expect(alert).not.toHaveTextContent(/não há configuração local ausente|aviso acima/)
   })
 })

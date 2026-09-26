@@ -378,12 +378,23 @@ export function RunComposer({
   // Uma recusa do servidor (admissão estrita, ou reconhecimento de outra
   // degradação) traz a avaliação AUTORITATIVA feita no aceite, pra entrada
   // atual. Ela tem precedência sobre QUALQUER prévia (consultiva) da mesma
-  // seleção até a próxima decisão do servidor -- então uma prévia pedida
-  // antes, que chegue depois, nunca passa por cima dela.
+  // seleção enquanto essa entrada durar -- então uma prévia pedida antes, que
+  // chegue depois, nunca passa por cima dela.
   const [authoritative, setAuthoritative] = useState<{
     key: string
     readiness: CouncilReadiness
   } | null>(null)
+  // Toda avaliação mostrada (autoritativa ou prévia) vale só pela VISITA
+  // contínua à entrada em que foi obtida: sair dessa entrada a descarta, e
+  // voltar a ela depois é uma visita nova, com prévia nova -- a mesma chave
+  // não ressuscita uma avaliação antiga. Prévias pendentes da visita anterior
+  // já são descartadas pelo `cancelled` do efeito.
+  const [visitedKey, setVisitedKey] = useState<string | null>(readinessKey)
+  if (readinessKey !== visitedKey) {
+    setVisitedKey(readinessKey)
+    setAuthoritative(null)
+    setReadinessState(null)
+  }
   const [seenRejection, setSeenRejection] = useState<CouncilReadiness | null>(null)
   if (rejectedReadiness !== seenRejection) {
     setSeenRejection(rejectedReadiness)
