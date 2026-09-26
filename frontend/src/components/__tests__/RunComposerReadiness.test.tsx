@@ -54,6 +54,10 @@ function readinessFor(
     configured_default_model: MODELS[provider],
     local_prerequisite: states[provider] ?? 'met',
     applicability,
+    // forma atual (v2): participante com o modelo planejado (aqui, o padrão)
+    ...(role === 'participant'
+      ? { planned_model: MODELS[provider], planned_model_origin: 'configured_default' as const }
+      : {}),
   })
   const dependencies = [
     ...request.enabled_providers.map((p) => dep('participant', p, 'selected')),
@@ -74,7 +78,7 @@ function readinessFor(
     .map((d) => `${d.role}:${d.provider}:${d.configured_default_model}`)
     .sort()
   return {
-    contract_version: 'council_local_readiness_v1',
+    contract_version: 'council_local_readiness_v2',
     summary,
     strict_admission: summary === 'some_missing' ? 'blocked' : 'admissible',
     known_degradation_fingerprint: missing.length > 0 ? fakeFingerprint(missing) : null,

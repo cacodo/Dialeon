@@ -38,16 +38,29 @@ type SubmissionState =
 
 // A avaliação que acompanha uma recusa (`details.readiness`) só é usada se
 // tiver a forma esperada -- nunca inventada a partir de outra coisa.
+//
+// Só `council_local_readiness_v2`: é a avaliação que o servidor ATUAL produz
+// no aceite (o mapa de modelos dos participantes é resolvido antes da
+// prontidão), e a interface é servida pelo mesmo pacote do servidor. `v1` só
+// existe em registros históricos de aceite (auditoria), nunca numa recusa
+// nova -- se aparecer aqui, é tratada como não reconhecida (texto neutro).
+// A identidade da degradação precisa ter a forma do contrato: é dela que sai
+// o próximo reconhecimento deliberado.
+const DEGRADATION_FINGERPRINT = /^sha256:[0-9a-f]{64}$/
+
 function readinessFromDetails(details: Record<string, unknown> | null): CouncilReadiness | null {
   const candidate = details?.readiness as Partial<CouncilReadiness> | undefined
   return candidate !== undefined &&
     candidate !== null &&
-    candidate.contract_version === 'council_local_readiness_v1' &&
+    candidate.contract_version === 'council_local_readiness_v2' &&
     Array.isArray(candidate.dependencies) &&
     // só os valores do contrato (CouncilReadinessSummary no backend)
     (candidate.summary === 'all_met' ||
       candidate.summary === 'some_unknown' ||
-      candidate.summary === 'some_missing')
+      candidate.summary === 'some_missing') &&
+    (candidate.known_degradation_fingerprint === null ||
+      (typeof candidate.known_degradation_fingerprint === 'string' &&
+        DEGRADATION_FINGERPRINT.test(candidate.known_degradation_fingerprint)))
     ? (candidate as CouncilReadiness)
     : null
 }

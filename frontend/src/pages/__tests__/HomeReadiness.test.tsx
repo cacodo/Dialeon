@@ -40,8 +40,9 @@ function readiness(
     local_prerequisite: internalState,
     applicability,
   })
+  // Forma ATUAL do servidor (v2): os participantes carregam o modelo planejado.
   return {
-    contract_version: 'council_local_readiness_v1',
+    contract_version: 'council_local_readiness_v2',
     summary:
       internalState === 'missing' || participantState === 'missing'
         ? 'some_missing'
@@ -53,7 +54,15 @@ function readiness(
     known_degradation_fingerprint:
       internalState === 'missing' ? FINGERPRINT_ANTHROPIC : participantState === 'missing' ? FINGERPRINT_OPENAI : null,
     dependencies: [
-      { role: 'participant', provider: 'openai', configured_default_model: 'gpt-configured', local_prerequisite: participantState, applicability: 'selected' },
+      {
+        role: 'participant',
+        provider: 'openai',
+        configured_default_model: 'gpt-configured',
+        local_prerequisite: participantState,
+        applicability: 'selected',
+        planned_model: 'gpt-configured',
+        planned_model_origin: 'configured_default',
+      },
       internal('claim_extraction', 'potential'),
       internal('source_analysis', 'not_applicable'),
       internal('judge', 'potential'),
@@ -281,5 +290,27 @@ describe('Home -- prontidão local do Conselho', () => {
       readiness_admission: 'strict',
       participant_model_overrides: { openai: 'gpt-explicit' },
     })
+  })
+
+  it.each([
+    // v1 só existe em registros históricos de aceite; uma recusa nova sempre traz v2
+    ['avaliação v1 numa recusa', { ...readiness('met', 'missing'), contract_version: 'council_local_readiness_v1' }],
+    ['identidade de degradação malformada', { ...readiness('met', 'missing'), known_degradation_fingerprint: 'sha256:xyz' }],
+  ])('recusa com %s: não adotada, texto neutro, nada afirmado', async (_, details) => {
+    vi.mocked(apiClient.previewCouncilReadiness).mockResolvedValue(readiness('met'))
+    vi.mocked(apiClient.createRun).mockRejectedValueOnce(
+      new ApiError(422, 'council_prerequisites_missing', 'recusada', { readiness: details }),
+    )
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await ask()
+    await submit()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Você pode perguntar de novo; o servidor avalia a configuração local outra vez.')
+    expect(alert).not.toHaveTextContent(/aviso acima|não há configuração local ausente/)
+    // a avaliação não reconhecida nunca vira aviso/reconhecimento
+    expect(screen.queryByRole('region', { name: /Falta configuração local/ })).not.toBeInTheDocument()
   })
 })

@@ -28,7 +28,7 @@ describe('apiClient', () => {
 
   it('previewCouncilReadiness faz POST /runs/readiness só com a seleção e a presença de fonte', async () => {
     const body = {
-      contract_version: 'council_local_readiness_v1',
+      contract_version: 'council_local_readiness_v2',
       summary: 'all_met',
       strict_admission: 'admissible',
       dependencies: [],
