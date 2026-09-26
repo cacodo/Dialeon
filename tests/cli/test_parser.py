@@ -45,6 +45,18 @@ def test_run_help_has_no_stale_stage_terminology_or_audit_only_claim():
     assert "Source Analysis" in run_help
 
 
+def test_top_level_run_summary_names_council_default_and_direct_mode():
+    """v1.3.0: `run` executa pelo Conselho por padrão OU uma resposta direta
+    (`--direct`) -- o resumo de topo nunca pode voltar a dizer que toda run é
+    do Conselho, nem sugerir que a direta é o padrão."""
+    top_help = " ".join(_build_parser().format_help().split())
+    assert (
+        "Executa uma pergunta: pelo Conselho (padrão) ou, com --direct, resposta direta "
+        "de um provider." in top_help
+    )
+    assert "através do Council" not in top_help
+
+
 def test_audit_help_describes_summary_and_retains_json_option():
     parser = _build_parser()
     assert "Mostra um resumo da auditoria de uma execução." in parser.format_help()

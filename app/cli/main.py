@@ -64,7 +64,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run", help="Executa uma pergunta através do Council.")
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Executa uma pergunta: pelo Conselho (padrão) ou, com --direct, resposta direta "
+        "de um provider.",
+    )
     run_parser.add_argument("question", help="A pergunta a ser executada.")
     run_parser.add_argument(
         "--providers",

@@ -102,9 +102,10 @@ fonte.
 
 ## Compatibilidade
 
-- Tudo é aditivo e opt-in: campos opcionais novos (`kind` na criação e na
-  listagem), a forma nova das runs diretas, um código de erro e um código de
-  saída novos. Clientes devem ignorar chaves desconhecidas.
+- Tudo é aditivo e opt-in: o campo opcional `kind` na criação (omitido =
+  Conselho), o campo `kind` sempre presente em cada item da listagem, a forma
+  nova das runs diretas, um código de erro e um código de saída novos.
+  Clientes devem ignorar chaves desconhecidas.
 - Clientes que tratam a listagem ou os detalhes de forma exaustiva precisam
   reconhecer runs com `"kind": "direct"`, que não têm `final_answer`.
 - Clientes gerados a partir do OpenAPI podem ver a estrutura das uniões de
