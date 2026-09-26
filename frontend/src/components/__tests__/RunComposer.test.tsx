@@ -257,15 +257,14 @@ describe('RunComposer -- pré-requisitos locais dos modelos', () => {
     expect(onSubmit).toHaveBeenCalledWith('pergunta', ['openai', 'gemini'], null)
   })
 
-  it('o envio nunca leva um modelo sem configuração local -- nem vindo de um reuso', async () => {
+  it('o reuso restaura só modelos "met": nunca um "missing", nem um "unknown" sem escolha explícita agora', async () => {
     const { onSubmit } = renderStates(STATES, {
-      initialInput: { question: 'q', sourceText: null, enabledProviders: ['anthropic', 'gemini'] },
+      initialInput: { question: 'q', sourceText: null, enabledProviders: ['anthropic', 'gemini', 'openai'] },
     })
 
-    // reuso: a escolha explícita anterior de "gemini" (unknown) volta; "anthropic" (missing) não
-    expect(screen.getByRole('button', { name: 'Modelos: Gemini' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
-    expect(onSubmit).toHaveBeenCalledWith('q', ['gemini'], null)
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null)
   })
 
   it('reuso só com modelos sem configuração local cai pra pré-seleção padrão ("met")', () => {
@@ -305,13 +304,38 @@ describe('RunComposer -- pré-requisitos locais dos modelos', () => {
       expect(onRetryProviders).toHaveBeenCalledTimes(1)
     })
 
-    it('com modelos "unknown", diz que eles podem ser escolhidos mesmo assim', () => {
-      renderStates({ openai: 'missing', gemini: 'unknown' })
+    it('só "missing": o aviso pode afirmar que a configuração local falta', () => {
+      renderStates(NONE_MET)
 
       const notice = screen.getByRole('region', { name: 'Falta a configuração local dos modelos' })
-      expect(notice).toHaveTextContent(/oferece suporte a GPT,/)
+      expect(notice).toHaveTextContent(/não tem a configuração local necessária/)
+      expect(notice).toHaveTextContent(/Recarregar só consulta o servidor de novo/)
+    })
+
+    it('só "unknown": aviso neutro -- nunca afirma que a configuração falta', () => {
+      renderStates({ openai: 'unknown', gemini: 'unknown' })
+
+      expect(screen.queryByRole('region', { name: 'Falta a configuração local dos modelos' })).toBeNull()
+      const notice = screen.getByRole('region', { name: 'Nenhum modelo com configuração local confirmada' })
+      expect(notice).toHaveTextContent(/oferece suporte a GPT e Gemini/)
+      expect(notice).toHaveTextContent(/não confirmou a configuração local de nenhum deles/)
+      expect(notice).toHaveTextContent(/GPT e Gemini: não dá para verificar daqui se a configuração local está presente/)
       expect(notice).toHaveTextContent(/podem ser escolhidos mesmo assim/)
+      expect(notice).not.toHaveTextContent(/falta|ausente|não tem a configuração/i)
+      expect(notice).toHaveTextContent(/reinicie o servidor e recarregue a lista/)
+      expect(notice).toHaveTextContent(/não garante que o serviço de cada modelo aceite as credenciais/)
       expect(screen.getByRole('button', { name: 'Modelos: nenhum' })).toBeInTheDocument()
+    })
+
+    it('"missing" + "unknown": neutro no geral, "falta" só para os "missing"', () => {
+      renderStates({ openai: 'missing', anthropic: 'missing', gemini: 'unknown' })
+
+      const notice = screen.getByRole('region', { name: 'Nenhum modelo com configuração local confirmada' })
+      expect(notice).toHaveTextContent(/oferece suporte a GPT, Claude e Gemini/)
+      expect(notice).toHaveTextContent(/GPT e Claude: falta a configuração local necessária/)
+      expect(notice).toHaveTextContent(/Gemini: não dá para verificar daqui/)
+      expect(notice).toHaveTextContent(/Ele pode ser escolhido mesmo assim/)
+      expect(notice).not.toHaveTextContent(/Gemini: falta/)
     })
 
     it('depois de reiniciar e recarregar, os modelos "met" são pré-selecionados e o aviso some', () => {
@@ -355,5 +379,135 @@ describe('RunComposer -- pré-requisitos locais dos modelos', () => {
 
     reload({ openai: 'missing', anthropic: 'missing', gemini: 'unknown' })
     expect(document.body.textContent).not.toMatch(banned)
+  })
+})
+
+// Transições de estado ao recarregar a lista: "met" pode ser escolhido
+// automaticamente; "unknown" só entra por uma escolha explícita feita no
+// estado "unknown" atual; "missing" nunca.
+describe('RunComposer -- transições de pré-requisito ao recarregar', () => {
+  type State = 'met' | 'missing' | 'unknown'
+  const IDS = ['openai', 'anthropic'] as const
+
+  function setup(initial: Record<string, State>) {
+    const onSubmit = vi.fn()
+    const props = { providersLoading: false, providersError: null, submitting: false, onSubmit }
+    const view = render(<RunComposer {...props} providers={[...IDS]} localPrerequisites={initial} />)
+    return {
+      onSubmit,
+      reload: (next: Record<string, State>) =>
+        view.rerender(<RunComposer {...props} providers={[...IDS]} localPrerequisites={next} />),
+    }
+  }
+
+  const summary = (name: string) => screen.getByRole('button', { name })
+  async function openPanel(name: string) {
+    await userEvent.click(summary(name))
+  }
+  async function submit() {
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'q')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+  }
+
+  it('"met" no início é selecionado automaticamente', () => {
+    setup({ openai: 'met', anthropic: 'met' })
+    expect(summary('Modelos: GPT, Claude')).toBeInTheDocument()
+  })
+
+  it('"met" → "unknown": sai da seleção e não vai no envio sem nova escolha', async () => {
+    const { onSubmit, reload } = setup({ openai: 'met', anthropic: 'met' })
+
+    reload({ openai: 'met', anthropic: 'unknown' })
+    expect(summary('Modelos: GPT')).toBeInTheDocument()
+    await openPanel('Modelos: GPT')
+    expect(screen.getByLabelText('Claude')).toBeEnabled()
+    expect(screen.getByLabelText('Claude')).not.toBeChecked()
+
+    await submit()
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null)
+  })
+
+  it('"met" → "unknown" e então escolha explícita: entra na seleção e no envio', async () => {
+    const { onSubmit, reload } = setup({ openai: 'met', anthropic: 'met' })
+    reload({ openai: 'met', anthropic: 'unknown' })
+
+    await openPanel('Modelos: GPT')
+    await userEvent.click(screen.getByLabelText('Claude'))
+    expect(summary('Modelos: GPT, Claude')).toBeInTheDocument()
+
+    await submit()
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai', 'anthropic'], null)
+  })
+
+  it('"unknown" no início não é selecionado automaticamente', () => {
+    setup({ openai: 'met', anthropic: 'unknown' })
+    expect(summary('Modelos: GPT')).toBeInTheDocument()
+  })
+
+  it('"unknown" escolhido explicitamente continua escolhido ao recarregar como "unknown"', async () => {
+    const { onSubmit, reload } = setup({ openai: 'met', anthropic: 'unknown' })
+    await openPanel('Modelos: GPT')
+    await userEvent.click(screen.getByLabelText('Claude'))
+
+    reload({ openai: 'met', anthropic: 'unknown' })
+    reload({ openai: 'met', anthropic: 'unknown' })
+
+    expect(summary('Modelos: GPT, Claude')).toBeInTheDocument()
+    await submit()
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai', 'anthropic'], null)
+  })
+
+  it('"unknown" escolhido → "missing": sai da seleção e fica desabilitado', async () => {
+    const { onSubmit, reload } = setup({ openai: 'met', anthropic: 'unknown' })
+    await openPanel('Modelos: GPT')
+    await userEvent.click(screen.getByLabelText('Claude'))
+
+    reload({ openai: 'met', anthropic: 'missing' })
+
+    expect(summary('Modelos: GPT')).toBeInTheDocument()
+    expect(screen.getByLabelText('Claude')).toBeDisabled()
+    expect(screen.getByLabelText('Claude')).not.toBeChecked()
+    await submit()
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null)
+  })
+
+  it('"missing" → "unknown": fica escolhível, mas não é selecionado automaticamente', async () => {
+    const { reload } = setup({ openai: 'met', anthropic: 'missing' })
+
+    reload({ openai: 'met', anthropic: 'unknown' })
+
+    expect(summary('Modelos: GPT')).toBeInTheDocument()
+    await openPanel('Modelos: GPT')
+    expect(screen.getByLabelText('Claude')).toBeEnabled()
+    expect(screen.getByLabelText('Claude')).not.toBeChecked()
+  })
+
+  it('"unknown" escolhido → "met": continua escolhido; se voltar a "unknown", sai (exige nova escolha)', async () => {
+    const { reload } = setup({ openai: 'met', anthropic: 'unknown' })
+    await openPanel('Modelos: GPT')
+    await userEvent.click(screen.getByLabelText('Claude'))
+
+    reload({ openai: 'met', anthropic: 'met' })
+    expect(summary('Modelos: GPT, Claude')).toBeInTheDocument()
+
+    reload({ openai: 'met', anthropic: 'unknown' })
+    expect(summary('Modelos: GPT')).toBeInTheDocument()
+  })
+
+  it('"unknown" não escolhido → "met" depois da pré-seleção: não entra sozinho (lista nova só remove)', () => {
+    const { reload } = setup({ openai: 'met', anthropic: 'unknown' })
+
+    reload({ openai: 'met', anthropic: 'met' })
+
+    expect(summary('Modelos: GPT')).toBeInTheDocument()
+  })
+
+  it('sem nenhum "met" e sem escolha: "unknown" → "met" dispara a pré-seleção', () => {
+    const { reload } = setup({ openai: 'unknown', anthropic: 'missing' })
+    expect(summary('Modelos: nenhum')).toBeInTheDocument()
+
+    reload({ openai: 'met', anthropic: 'missing' })
+
+    expect(summary('Modelos: GPT')).toBeInTheDocument()
   })
 })

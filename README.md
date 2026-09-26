@@ -108,14 +108,20 @@ o estado da **configuração local** que o servidor encontrou ao iniciar:
   que o modelo configurado exista: nada disso é testado antes de uma pergunta
   de verdade.
 - **ausente** (`missing`, “Falta configuração local nesta instalação”): o
-  modelo continua na lista, mas não pode ser escolhido. Uma chave vazia ou só
-  com espaços conta como ausente.
+  Dialeon sabe que falta algo local obrigatório. O modelo continua na lista,
+  mas não pode ser escolhido. Uma chave vazia ou só com espaços conta como
+  ausente.
 - **não verificável** (`unknown`, “Não foi possível verificar a configuração
-  local”): o Dialeon não consegue decidir localmente. O modelo não é
-  pré-selecionado, mas você pode escolhê-lo.
+  local”): o Dialeon não consegue determinar localmente se a configuração
+  está presente -- isso não quer dizer que ela falte. O modelo nunca é
+  marcado automaticamente; só entra na pergunta se você o marcar enquanto
+  ele está nesse estado (um modelo marcado automaticamente que passe a esse
+  estado depois de reiniciar a API é desmarcado).
 
-Só modelos com configuração local presente vêm pré-selecionados. Se nenhum
-estiver, a tela explica o que falta.
+Só modelos com configuração local presente são marcados automaticamente. Se
+nenhum estiver, a tela explica a situação: diz que a configuração falta só
+quando todos os modelos estão como ausentes; se algum não puder ser
+verificado, diz apenas que nenhum tem a configuração local confirmada.
 
 A mesma informação está em `GET /providers`, no campo `local_prerequisites`
 (ao lado da lista `providers`, que não mudou). Ela nunca inclui chaves,

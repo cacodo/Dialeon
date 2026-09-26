@@ -52,36 +52,68 @@ function prerequisiteOf(states: PrerequisiteStates, id: string): LocalPrerequisi
   return state === 'met' || state === 'missing' ? state : 'unknown'
 }
 
+// Estado sob o qual cada modelo está na seleção: "met" (pré-seleção
+// automática, ou escolha feita com a configuração local presente) ou
+// "unknown" (escolha EXPLÍCITA do usuário enquanto o modelo estava
+// "unknown"). É o que permite exigir que um modelo "unknown" só seja
+// enviado por uma escolha feita nesse estado atual.
+type SelectionBasis = 'met' | 'unknown'
+
 interface Selection {
   ids: string[]
+  basis: Readonly<Record<string, SelectionBasis>>
   // A pré-seleção já aconteceu (ou o usuário já escolheu): daqui em diante
   // uma nova lista só pode REMOVER escolhas, nunca acrescentar.
   settled: boolean
 }
 
+// Um modelo continua na seleção só se ainda existe na lista e: está "met",
+// ou está "unknown" e foi escolhido explicitamente enquanto "unknown". Um
+// "missing" nunca fica. Assim, um modelo pré-selecionado como "met" que
+// passa a "unknown" sai da seleção (o usuário nunca o escolheu nesse
+// estado), enquanto uma escolha explícita de um "unknown" sobrevive a
+// recarregamentos em que ele continua "unknown".
+function holdsInSelection(
+  id: string,
+  basis: SelectionBasis | undefined,
+  providers: readonly string[],
+  states: PrerequisiteStates,
+): boolean {
+  if (!providers.includes(id)) return false
+  const state = prerequisiteOf(states, id)
+  return state === 'met' || (state === 'unknown' && basis === 'unknown')
+}
+
 // Seleção diante de uma lista de modelos recém-recebida. A pré-seleção
-// acontece UMA vez, na primeira lista que tenha algo a pré-selecionar: os
-// modelos do reuso que ainda existem e não estão sem configuração local ou,
-// sem reuso, só os com configuração local presente ("met" -- nunca "unknown"
-// nem "missing" automaticamente). Numa primeira execução sem nenhum "met",
-// ela espera: depois de configurar, reiniciar a API e recarregar a lista, os
-// "met" são pré-selecionados. Depois disso (ou de uma escolha do usuário),
-// uma lista nova mantém só as escolhas que ainda existem e não estão sem
-// configuração local; as que saíram deixam a seleção de vez.
+// acontece UMA vez, na primeira lista que tenha algo a pré-selecionar, e só
+// com modelos "met" (os do reuso que estão "met" ou, sem eles, todos os
+// "met") -- nunca "unknown" nem "missing" automaticamente. Numa primeira
+// execução sem nenhum "met", ela espera: depois de configurar, reiniciar a
+// API e recarregar a lista, os "met" são pré-selecionados. Depois disso (ou
+// de uma escolha do usuário), uma lista nova só REMOVE: fica o que ainda
+// `holdsInSelection`, e o que saiu deixa a seleção de vez. Um "unknown"
+// escolhido que passa a "met" fica, agora com base "met".
 function reconcileSelection(
   current: Selection,
   providers: readonly string[],
   states: PrerequisiteStates,
   reuse: readonly string[],
 ): Selection {
-  const choosable = (id: string) => providers.includes(id) && prerequisiteOf(states, id) !== 'missing'
+  const isMet = (id: string) => providers.includes(id) && prerequisiteOf(states, id) === 'met'
   if (current.settled) {
-    const kept = current.ids.filter(choosable)
-    return kept.length === current.ids.length ? current : { ids: kept, settled: true }
+    const kept = current.ids.filter((id) => holdsInSelection(id, current.basis[id], providers, states))
+    const basis = Object.fromEntries(
+      kept.map((id): [string, SelectionBasis] => [id, isMet(id) ? 'met' : 'unknown']),
+    )
+    const unchanged =
+      kept.length === current.ids.length && kept.every((id) => basis[id] === current.basis[id])
+    return unchanged ? current : { ids: kept, basis, settled: true }
   }
-  const reused = reuse.filter(choosable)
-  const initial = reused.length > 0 ? reused : providers.filter((id) => prerequisiteOf(states, id) === 'met')
-  return initial.length > 0 ? { ids: initial, settled: true } : current
+  const reused = reuse.filter(isMet)
+  const initial = reused.length > 0 ? reused : providers.filter(isMet)
+  return initial.length > 0
+    ? { ids: initial, basis: Object.fromEntries(initial.map((id) => [id, 'met' as const])), settled: true }
+    : current
 }
 
 export function RunComposer({
@@ -95,7 +127,7 @@ export function RunComposer({
   onRetryProviders,
 }: RunComposerProps) {
   const [question, setQuestion] = useState(initialInput?.question ?? '')
-  const [selection, setSelection] = useState<Selection>({ ids: [], settled: false })
+  const [selection, setSelection] = useState<Selection>({ ids: [], basis: {}, settled: false })
   // Lista de modelos com que a seleção foi reconciliada por último. Uma lista
   // nova (resposta de GET /providers) reconcilia durante o render -- sem
   // efeito, sem render intermediário com uma seleção desatualizada.
@@ -118,8 +150,21 @@ export function RunComposer({
   const [sourceText, setSourceText] = useState(initialInput?.sourceText ?? '')
   const [modelsExpanded, setModelsExpanded] = useState(false)
 
+  // Escolha do usuário no painel: cada modelo marcado fica com a base do
+  // estado em que está AGORA -- marcar um "unknown" é a escolha explícita
+  // que o torna enviável.
   function chooseModels(next: string[]) {
-    setSelection({ ids: next, settled: true })
+    const chosen = next.filter((id) => prerequisiteOf(localPrerequisites, id) !== 'missing')
+    setSelection({
+      ids: chosen,
+      basis: Object.fromEntries(
+        chosen.map((id): [string, SelectionBasis] => [
+          id,
+          prerequisiteOf(localPrerequisites, id) === 'met' ? 'met' : 'unknown',
+        ]),
+      ),
+      settled: true,
+    })
   }
 
   const modelOptions: ModelOption[] = providers.map((id) => ({
@@ -133,18 +178,20 @@ export function RunComposer({
   // nenhuma sem configuração local. Sem lista exposta (carregando ou com
   // erro), não há escolha válida.
   const exposedProviders = providersLoading || providersError ? [] : providers
-  const validSelected = selected.filter(
-    (id) => exposedProviders.includes(id) && prerequisiteOf(localPrerequisites, id) !== 'missing',
+  const validSelected = selected.filter((id) =>
+    holdsInSelection(id, selection.basis[id], exposedProviders, localPrerequisites),
   )
   // Primeira execução: a lista chegou, mas nenhum modelo tem a configuração
-  // local presente.
-  const withoutLocalConfiguration =
+  // local CONFIRMADA ("met"). Isso não quer dizer que ela falte: só os
+  // "missing" são ausência conhecida; os "unknown" não puderam ser
+  // verificados.
+  const withoutConfirmedConfiguration =
     exposedProviders.length > 0 &&
     !exposedProviders.some((id) => prerequisiteOf(localPrerequisites, id) === 'met')
   const missingProviders = exposedProviders.filter(
     (id) => prerequisiteOf(localPrerequisites, id) === 'missing',
   )
-  const hasUnknownProviders = exposedProviders.some(
+  const unknownProviders = exposedProviders.filter(
     (id) => prerequisiteOf(localPrerequisites, id) === 'unknown',
   )
 
@@ -197,31 +244,49 @@ export function RunComposer({
         mostra onde eles concordam, onde divergem e o que continua incerto.
       </p>
 
-      {withoutLocalConfiguration && (
+      {withoutConfirmedConfiguration && (
         // Explicação calma de primeira execução -- nunca "offline",
         // "indisponível" ou "quebrado": só o fato local que o servidor
-        // conhece. Nomes de variável/configuração ficam na documentação.
+        // conhece. "Falta configuração" só quando TODOS são ausência
+        // conhecida ("missing"); com algum "unknown", o texto é neutro.
+        // Nomes de variável/configuração ficam na documentação.
         <section
           aria-labelledby="first-run-heading"
           className="notice notice--neutral composer__first-run"
         >
-          <h2 id="first-run-heading">Falta a configuração local dos modelos</h2>
-          {missingProviders.length > 0 && (
-            <p>
-              O Dialeon oferece suporte a {formatModelList(missingProviders)}, mas esta instalação
-              ainda não tem a configuração local necessária para usá-los.
-            </p>
-          )}
-          {hasUnknownProviders && (
-            <p>
-              Para os modelos marcados com “Não foi possível verificar a configuração local”, não
-              dá para saber daqui se ela está presente; eles podem ser escolhidos mesmo assim.
-            </p>
+          {unknownProviders.length === 0 ? (
+            <>
+              <h2 id="first-run-heading">Falta a configuração local dos modelos</h2>
+              <p>
+                O Dialeon oferece suporte a {formatModelList(missingProviders)}, mas esta instalação
+                ainda não tem a configuração local necessária para usá-los.
+              </p>
+            </>
+          ) : (
+            <>
+              <h2 id="first-run-heading">Nenhum modelo com configuração local confirmada</h2>
+              <p>
+                O Dialeon oferece suporte a {formatModelList(exposedProviders)}, mas o servidor não
+                confirmou a configuração local de nenhum deles.
+              </p>
+              {missingProviders.length > 0 && (
+                <p>
+                  {formatModelList(missingProviders)}: falta a configuração local necessária nesta
+                  instalação.
+                </p>
+              )}
+              <p>
+                {formatModelList(unknownProviders)}: não dá para verificar daqui se a configuração
+                local está presente. {unknownProviders.length === 1 ? 'Ele pode' : 'Eles podem'} ser
+                {unknownProviders.length === 1 ? ' escolhido' : ' escolhidos'} mesmo assim.
+              </p>
+            </>
           )}
           <p>
             A configuração é lida quando o servidor do Dialeon inicia: depois de ajustá-la (veja o
-            README), reinicie o servidor e recarregue a lista. Configuração presente não garante que
-            o serviço de cada modelo aceite as credenciais.
+            README), reinicie o servidor e recarregue a lista. Recarregar só consulta o servidor de
+            novo. Configuração presente não garante que o serviço de cada modelo aceite as
+            credenciais.
           </p>
           {onRetryProviders && (
             <button type="button" onClick={onRetryProviders}>
