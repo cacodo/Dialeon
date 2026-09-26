@@ -45,6 +45,13 @@ def test_run_help_has_no_stale_stage_terminology_or_audit_only_claim():
     assert "Source Analysis" in run_help
 
 
+def test_audit_help_describes_summary_and_retains_json_option():
+    parser = _build_parser()
+    assert "Mostra um resumo da auditoria de uma execução." in parser.format_help()
+    audit_subparser = parser._subparsers._group_actions[0].choices["audit"]
+    assert "--json" in audit_subparser.format_help()
+
+
 def test_run_without_question_exits_2():
     with pytest.raises(SystemExit) as exc_info:
         _build_parser().parse_args(["run"])

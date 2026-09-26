@@ -364,7 +364,8 @@ dialeon run "sua pergunta aqui"         # executa e imprime a resposta (detalhes
 dialeon run "..." --providers openai,anthropic --source "texto de referência opcional"
 dialeon list                             # lista execuções recentes
 dialeon get <run_id>                     # resposta e detalhes de uma execução
-dialeon audit <run_id>                   # auditoria completa (claims, vereditos, reconciliação, custo)
+dialeon audit <run_id>                   # resumo legível da auditoria
+dialeon audit <run_id> --json            # dados estruturados da auditoria
 ```
 
 Qualquer um dos comandos acima que dispare uma execução real (`dialeon

@@ -97,7 +97,7 @@ def _build_parser() -> argparse.ArgumentParser:
     get_parser.add_argument("--json", action="store_true", dest="as_json")
 
     audit_parser = subparsers.add_parser(
-        "audit", help="Mostra a auditoria completa de uma execução."
+        "audit", help="Mostra um resumo da auditoria de uma execução."
     )
     audit_parser.add_argument("run_id")
     audit_parser.add_argument("--json", action="store_true", dest="as_json")
