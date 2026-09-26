@@ -257,7 +257,9 @@ describe('RunDetail -- run direta', () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(failed)
     renderApp('/runs/direct-2')
 
-    const outcome = await screen.findByRole('region', { name: 'Sem resposta' })
+    // timeout com tentativa anterior incerta: nada prova que nenhuma resposta
+    // foi produzida -- só que nenhuma foi registrada (M4).
+    const outcome = await screen.findByRole('region', { name: 'Sem resposta registrada' })
     expect(outcome).toHaveTextContent('A chamada ao provider excedeu o tempo limite.')
     expect(outcome).toHaveTextContent(/nenhum outro modelo foi usado no lugar de GPT/)
     expect(outcome).toHaveTextContent(/uma tentativa anterior pode ter chegado ao provider/i)
@@ -267,6 +269,68 @@ describe('RunDetail -- run direta', () => {
       'Custo estimado: Estimativa indisponível',
     )
   })
+
+  // M4 (revisão do Direct) -- "nenhuma resposta foi produzida" só quando o
+  // registro prova isso.
+  it('o provider respondeu sem resposta utilizável: "nenhuma resposta foi produzida"', async () => {
+    const refused: DirectFailedRunResponse = {
+      ...failed,
+      failure_reason: 'malformed_response',
+      message: 'A resposta do provider veio num formato inesperado.',
+      response: {
+        ...failed.response!,
+        attempts: 1,
+        had_uncertain_prior_attempts: false,
+        error: { type: 'malformed_response', message: 'sem texto', retryable: false },
+      },
+    }
+    vi.mocked(apiClient.getRun).mockResolvedValue(refused)
+    renderApp('/runs/direct-2')
+
+    const outcome = await screen.findByRole('region', { name: 'Sem resposta' })
+    expect(outcome).toHaveTextContent('Nenhuma resposta foi produzida, e nenhum outro modelo foi usado no lugar de GPT.')
+    expect(outcome).not.toHaveTextContent(/registrada|confirmar|pode ter/i)
+  })
+
+  it('timeout sem tentativa anterior incerta: ainda só "nenhuma resposta foi registrada"', async () => {
+    const timedOut: DirectFailedRunResponse = {
+      ...failed,
+      response: { ...failed.response!, attempts: 1, had_uncertain_prior_attempts: false },
+    }
+    vi.mocked(apiClient.getRun).mockResolvedValue(timedOut)
+    renderApp('/runs/direct-2')
+
+    const outcome = await screen.findByRole('region', { name: 'Sem resposta registrada' })
+    expect(outcome).toHaveTextContent('Nenhuma resposta foi registrada, e nenhum outro modelo foi usado no lugar de GPT.')
+    expect(outcome).toHaveTextContent('Não é possível confirmar se o modelo chegou a produzir uma resposta.')
+    expect(outcome).not.toHaveTextContent(/foi produzida/)
+  })
+
+  it.each([
+    ['terminal_persistence', 'O modelo pode ter produzido uma resposta, mas o resultado não pôde ser gravado.'],
+    ['execution', 'Não é possível confirmar se o modelo chegou a produzir uma resposta.'],
+  ] as const)(
+    'falha no estágio %s: nunca afirma que nenhuma resposta foi produzida',
+    async (stage, note) => {
+      const accepted: DirectFailedRunResponse = {
+        ...failed,
+        failure_stage: stage,
+        failure_reason: 'RuntimeError',
+        message: 'Falha.',
+        response: null,
+        accounting: null,
+      }
+      vi.mocked(apiClient.getRun).mockResolvedValue(accepted)
+      renderApp('/runs/direct-2')
+
+      const outcome = await screen.findByRole('region', { name: 'Sem resposta registrada' })
+      expect(outcome).toHaveTextContent('Nenhuma resposta foi registrada')
+      expect(outcome).toHaveTextContent(note)
+      expect(screen.queryByText(/foi produzida/)).toBeNull()
+      expect(screen.queryByRole('region', { name: 'Como esta resposta foi produzida' })).toBeNull()
+      expect(screen.getByRole('region', { name: 'O que aconteceu nesta pergunta' })).toBeInTheDocument()
+    },
+  )
 
   it('sem desfecho registrado: honesto, com atualização manual', async () => {
     vi.mocked(apiClient.getRun).mockResolvedValueOnce(running).mockResolvedValueOnce(completed)

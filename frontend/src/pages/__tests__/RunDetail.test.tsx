@@ -336,7 +336,7 @@ describe('RunDetail', () => {
 
     await screen.findByRole('heading', { name: 'Não houve respostas suficientes' })
     expect(screen.getByText(/estimativa parcial/i)).toBeInTheDocument()
-    expect(screen.getByText(/~US\$ 0,002 · estimativa parcial/)).toBeInTheDocument()
+    expect(screen.getByText(/~US\$ 0,002 de subtotal conhecido · estimativa parcial/)).toBeInTheDocument()
     expect(screen.queryByText(/estimativa conhecida/)).not.toBeInTheDocument()
   })
 

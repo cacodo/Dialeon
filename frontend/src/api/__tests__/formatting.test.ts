@@ -38,6 +38,39 @@ describe('formatEstimatedCost', () => {
     const result = formatEstimatedCost(0.5, true)
     expect(result).toContain('parcial')
   })
+
+  // L2 (revisão do Direct) -- com contabilidade incompleta, o valor exibido é
+  // o SUBTOTAL conhecido, nunca um total conhecido (nem quando é zero).
+  it.each([
+    ['conhecido > 0, completo', 0.0042, false, '~US$ 0,0042'],
+    ['conhecido = 0, completo', 0, false, 'US$ 0,00 (estimativa conhecida)'],
+    [
+      'conhecido > 0, parcial',
+      0.0042,
+      true,
+      '~US$ 0,0042 de subtotal conhecido · estimativa parcial (dados incompletos)',
+    ],
+    [
+      'conhecido = 0, parcial',
+      0,
+      true,
+      'US$ 0,00 de subtotal conhecido · estimativa parcial (dados incompletos)',
+    ],
+    [
+      'conhecido abaixo da menor casa, parcial',
+      0.00001,
+      true,
+      '< US$ 0,0001 de subtotal conhecido · estimativa parcial (dados incompletos)',
+    ],
+    ['totalmente desconhecido', null, false, 'Estimativa indisponível'],
+    ['totalmente desconhecido, marcado incompleto', null, true, 'Estimativa indisponível'],
+  ])('%s', (_label, cost, hasUnknown, expected) => {
+    expect(formatEstimatedCost(cost, hasUnknown)).toBe(expected)
+  })
+
+  it('um subtotal zero com dados incompletos nunca é dito estimativa conhecida', () => {
+    expect(formatEstimatedCost(0, true)).not.toContain('estimativa conhecida')
+  })
 })
 
 describe('formatTokenCount', () => {

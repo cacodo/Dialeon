@@ -214,4 +214,29 @@ describe('RunComposer -- modo de resposta', () => {
       expect(summary('Modelos: GPT, Claude')).toBeInTheDocument()
     })
   })
+
+  // M3 (revisão do Direct) -- a introdução sempre visível do composer
+  // descreve o modo escolhido: comparação/concordância/divergência só no
+  // Conselho.
+  it('a introdução descreve o Conselho no Conselho e nunca promete comparação na resposta direta', async () => {
+    setup({ openai: 'met', anthropic: 'met' })
+    const councilClaims = /concordam|divergem|compara|consenso|juiz|verifica/i
+    const visibleCouncilClaims = () =>
+      screen
+        .queryAllByText(councilClaims)
+        .filter((el) => el.closest('[hidden]') === null && !/não é consenso nem verificação/i.test(el.textContent ?? ''))
+
+    expect(
+      screen.getByText(/os modelos escolhidos respondem de forma independente.*onde eles concordam, onde divergem/i),
+    ).toBeVisible()
+
+    await chooseDirect()
+
+    expect(screen.getByText('O modelo escolhido responde sozinho, e o Dialeon mostra essa resposta.')).toBeVisible()
+    expect(screen.queryByText(/respondem de forma independente/i)).toBeNull()
+    expect(visibleCouncilClaims()).toEqual([])
+
+    await chooseCouncil()
+    expect(screen.getByText(/onde eles concordam, onde divergem/i)).toBeVisible()
+  })
 })

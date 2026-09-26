@@ -19,7 +19,8 @@ o mesmo padrão já usado internamente por
 `CompletedRunRecord`/`QuorumFailureRecord` (app/storage/records.py),
 espelhado aqui como contrato público (HTTP e CLI). Direct Answer Execution
 V1: a discriminação é pelo par (`kind`, `status`) -- as respostas diretas
-têm `kind="direct"`; as do Conselho não têm `kind` (forma inalterada).
+têm `kind="direct"`; as do Conselho não têm `kind` (forma inalterada). Ver
+`CouncilRunResponse`/`DirectRunResponse` pra forma publicada no OpenAPI.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_validator, model_validator
+from typing_extensions import TypeAliasType
 
 from app.audit_fragment import AuditFragmentOmittedReason
 from app.editor.answer_blocks import AnswerSectionHeading, AnswerVerdictLabel
@@ -45,6 +47,24 @@ from app.orchestrator.config import _normalize_and_validate_source_text, validat
 from app.reconciliation.models import ChannelRelationship, SourceChannelState
 
 _CONFIG = ConfigDict(frozen=True, extra="forbid")
+
+
+def _publish_discriminators_as_required(schema: dict[str, Any]) -> None:
+    """Membros de `RunResponse`/`RunAuditResponse`: o schema PUBLICADO marca
+    como obrigatórias as propriedades que os discriminadores do OpenAPI usam
+    -- `status` e, nas respostas diretas, `kind`. Elas têm default no modelo,
+    mas SEMPRE saem no JSON. Só essas duas: os demais campos com default
+    continuam opcionais no documento, como antes. Validação em runtime
+    inalterada (mesmos defaults, mesmo `extra="forbid"`)."""
+    discriminators = [name for name in ("kind", "status") if name in schema.get("properties", {})]
+    schema["required"] = discriminators + [
+        name for name in schema.get("required", []) if name not in discriminators
+    ]
+
+
+_RUN_UNION_MEMBER_CONFIG = ConfigDict(
+    frozen=True, extra="forbid", json_schema_extra=_publish_discriminators_as_required
+)
 
 
 class CreateRunRequest(BaseModel):
@@ -775,7 +795,7 @@ class RunListResponse(BaseModel):
 
 
 class CompletedRunResponse(BaseModel):
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     status: Literal["completed"] = "completed"
     id: str
@@ -800,7 +820,7 @@ class CompletedRunResponse(BaseModel):
 
 
 class QuorumFailureRunResponse(BaseModel):
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     status: Literal["insufficient_quorum"] = "insufficient_quorum"
     id: str
@@ -830,7 +850,7 @@ class RunningRunResponse(BaseModel):
     (fora de escopo), então não há nada intermediário real pra expor
     além de identidade + configuração aceita."""
 
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     status: Literal["running"] = "running"
     id: str
@@ -856,7 +876,7 @@ class FailedRunResponse(BaseModel):
     da exceção) + mensagem genérica fixa -- NUNCA traceback, segredo, ou
     texto cru do provider/LLM (item 6 do contrato T02.4)."""
 
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     status: Literal["failed"] = "failed"
     id: str
@@ -906,7 +926,7 @@ class DirectRunningRunResponse(BaseModel):
     """Run direta aceita sem desfecho registrado (em andamento, ou o processo
     parou antes de terminar -- indistinguíveis por design)."""
 
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     kind: Literal["direct"] = "direct"
     status: Literal["running"] = "running"
@@ -922,7 +942,7 @@ class DirectCompletedRunResponse(BaseModel):
     verificação. `response` é o registro completo da chamada (modelo
     solicitado x reportado, uso, custo estimado, proveniência)."""
 
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     kind: Literal["direct"] = "direct"
     status: Literal["completed"] = "completed"
@@ -951,7 +971,7 @@ class DirectFailedRunResponse(BaseModel):
     provider/traceback (o erro reportado pelo provider fica em
     `response.error`, como na auditoria do Conselho)."""
 
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     kind: Literal["direct"] = "direct"
     status: Literal["failed"] = "failed"
@@ -967,26 +987,58 @@ class DirectFailedRunResponse(BaseModel):
     provider_execution_policy: ProviderExecutionPolicy | None
 
 
-def _run_response_tag(value: Any) -> str:
-    """Discrimina por (tipo, status): respostas do Conselho não têm `kind`."""
+def _run_kind_tag(value: Any) -> str:
+    """Primeiro nível da discriminação: respostas do Conselho NÃO têm `kind`
+    (ausência = Conselho); as diretas sempre têm `kind="direct"`. Um `kind`
+    presente com outro valor não casa nenhum ramo (nunca vira Conselho)."""
     if isinstance(value, dict):
-        kind, run_status = value.get("kind", "council"), value.get("status")
-    else:
-        kind, run_status = getattr(value, "kind", "council"), getattr(value, "status", None)
-    return f"{kind}:{run_status}"
+        return value.get("kind", "council")
+    return getattr(value, "kind", "council")
 
+
+# M2 (revisão adversarial) -- a união é publicada em DOIS níveis nomeados,
+# porque `status` sozinho não distingue mais os ramos ("completed"/"failed"/
+# "running" existem nos dois tipos) e o Conselho não tem `kind` (nem ganha
+# um só pra facilitar o schema -- a forma do Conselho é contrato 1.x):
+#
+#   oneOf: [CouncilRunResponse, DirectRunResponse]        (por `kind`)
+#     CouncilRunResponse: oneOf + discriminator `status`  (idêntico à v1.2.0)
+#                         + `not: {required: [kind]}`     (ausência = Conselho)
+#     DirectRunResponse:  oneOf + discriminator `status`; cada ramo exige
+#                         `kind` (const "direct") e `status`
+#
+# O primeiro nível não tem `discriminator` do OpenAPI (a propriedade não
+# existe no Conselho); os dois ramos são mutuamente exclusivos por
+# construção: `kind` é obrigatório num e proibido no outro.
+CouncilRunResponse = TypeAliasType(
+    "CouncilRunResponse",
+    Annotated[
+        Union[CompletedRunResponse, QuorumFailureRunResponse, RunningRunResponse, FailedRunResponse],
+        Field(
+            discriminator="status",
+            description="Run do Conselho: nunca tem `kind`; discriminada por `status`.",
+            json_schema_extra={"not": {"required": ["kind"]}},
+        ),
+    ],
+)
+
+DirectRunResponse = TypeAliasType(
+    "DirectRunResponse",
+    Annotated[
+        Union[DirectCompletedRunResponse, DirectFailedRunResponse, DirectRunningRunResponse],
+        Field(
+            discriminator="status",
+            description='Run direta: sempre tem `kind` = "direct"; discriminada por `status`.',
+        ),
+    ],
+)
 
 RunResponse = Annotated[
     Union[
-        Annotated[CompletedRunResponse, Tag("council:completed")],
-        Annotated[QuorumFailureRunResponse, Tag("council:insufficient_quorum")],
-        Annotated[RunningRunResponse, Tag("council:running")],
-        Annotated[FailedRunResponse, Tag("council:failed")],
-        Annotated[DirectCompletedRunResponse, Tag("direct:completed")],
-        Annotated[DirectFailedRunResponse, Tag("direct:failed")],
-        Annotated[DirectRunningRunResponse, Tag("direct:running")],
+        Annotated[CouncilRunResponse, Tag("council")],
+        Annotated[DirectRunResponse, Tag("direct")],
     ],
-    Discriminator(_run_response_tag),
+    Discriminator(_run_kind_tag),
 ]
 
 
@@ -1105,7 +1157,7 @@ class SourceJudgeReconciliationResultPublic(BaseModel):
 
 
 class CompletedRunAudit(BaseModel):
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     status: Literal["completed"] = "completed"
     id: str
@@ -1146,7 +1198,7 @@ class CompletedRunAudit(BaseModel):
 
 
 class QuorumFailureAudit(BaseModel):
-    model_config = _CONFIG
+    model_config = _RUN_UNION_MEMBER_CONFIG
 
     status: Literal["insufficient_quorum"] = "insufficient_quorum"
     id: str
@@ -1179,17 +1231,24 @@ class QuorumFailureAudit(BaseModel):
 # Direct Answer Execution V1: a auditoria de uma run direta é o próprio
 # detalhe -- ele já contém todos os fatos da única chamada (não há afirmação,
 # veredito nem tentativa de outra etapa pra mostrar).
+CouncilRunAuditResponse = TypeAliasType(
+    "CouncilRunAuditResponse",
+    Annotated[
+        Union[CompletedRunAudit, QuorumFailureAudit, RunningRunResponse, FailedRunResponse],
+        Field(
+            discriminator="status",
+            description="Auditoria de uma run do Conselho: nunca tem `kind`; discriminada por `status`.",
+            json_schema_extra={"not": {"required": ["kind"]}},
+        ),
+    ],
+)
+
 RunAuditResponse = Annotated[
     Union[
-        Annotated[CompletedRunAudit, Tag("council:completed")],
-        Annotated[QuorumFailureAudit, Tag("council:insufficient_quorum")],
-        Annotated[RunningRunResponse, Tag("council:running")],
-        Annotated[FailedRunResponse, Tag("council:failed")],
-        Annotated[DirectCompletedRunResponse, Tag("direct:completed")],
-        Annotated[DirectFailedRunResponse, Tag("direct:failed")],
-        Annotated[DirectRunningRunResponse, Tag("direct:running")],
+        Annotated[CouncilRunAuditResponse, Tag("council")],
+        Annotated[DirectRunResponse, Tag("direct")],
     ],
-    Discriminator(_run_response_tag),
+    Discriminator(_run_kind_tag),
 ]
 
 

@@ -11,7 +11,7 @@ from app.cli import commands, output
 from app.cli.main import _build_parser
 from app.config import Settings
 from app.models.provider_models import ProviderExecutionPolicy
-from app.providers.errors import ProviderTimeoutError
+from app.providers.errors import ProviderAPIError, ProviderAuthError, ProviderTimeoutError
 from app.text_safety import terminal_safe_text
 from tests.api.helpers import build_test_components
 from tests.direct.fakes import ScriptedApiProvider, ok
@@ -132,7 +132,8 @@ async def test_provider_failure_exits_5_with_status_first(capsys):
     lines = capsys.readouterr().out.split("\n")
 
     assert lines[0] == "status: falhou"
-    assert lines[1] == "nenhuma resposta foi produzida: A chamada ao provider excedeu o tempo limite."
+    # Timeout: o provider pode ter produzido algo que nunca chegou (M4).
+    assert lines[1] == "nenhuma resposta foi registrada: A chamada ao provider excedeu o tempo limite."
     assert "tentativa_anterior_incerta: não" in lines
     assert anthropic.requests == []
 
@@ -221,3 +222,150 @@ async def test_unknown_single_call_cost_is_never_shown_as_zero(capsys):
     await _run(components)
 
     assert "custo estimado: desconhecido (contabilidade completa: não)" in capsys.readouterr().out.split("\n")
+
+
+@pytest.mark.asyncio
+async def test_malformed_persisted_run_kind_fails_closed_in_get_audit_and_list():
+    """A CLI nunca mostra como Conselho uma linha com `run_kind` desconhecido:
+    a falha de reconstrução sobe até o catch-all de `_run_async` (exit 1,
+    mensagem genérica), igual a qualquer outro estado persistido malformado."""
+    from pydantic import ValidationError
+    from sqlalchemy import text
+
+    from tests.storage.fixtures import now, run_config
+
+    components = await _components(openai=ScriptedApiProvider("openai", []))
+    await components.repository.save_accepted(
+        "conselho", run_config=run_config(enabled_providers=["openai"]), started_at=now(), provider_execution_policy=POLICY
+    )
+    async with components.engine.begin() as conn:
+        await conn.execute(text("UPDATE accepted_runs SET run_kind = 'dircet' WHERE id = 'conselho'"))
+
+    for call in (
+        commands.cmd_get(components, run_id="conselho", as_json=False),
+        commands.cmd_audit(components, run_id="conselho", as_json=False),
+        commands.cmd_list(components, limit=50, offset=0, as_json=False),
+    ):
+        with pytest.raises(ValidationError):
+            await call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["", "   ", "anything"])
+async def test_direct_rejects_the_presence_of_source_even_when_blank(source, capsys):
+    """L1 -- a CLI recusa a OPÇÃO `--source` em modo direto, não só um valor
+    que sobreviva à normalização do schema compartilhado (que trata vazio/
+    espaços como "sem fonte")."""
+    from app.cli.main import _dispatch
+
+    openai = ScriptedApiProvider("openai", [ok()])
+    components = await _components(openai=openai)
+    args = _build_parser().parse_args(
+        ["run", "q", "--direct", "--providers", "openai", "--source", source, "--json"]
+    )
+
+    code = await _dispatch(args, components)
+
+    assert code == commands.EXIT_INVALID_INPUT
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "invalid_request"
+    assert error["details"]["errors"][0]["loc"] == ["source_text"]
+    assert openai.requests == []
+    assert await components.repository.list_runs() == []
+
+
+@pytest.mark.asyncio
+async def test_direct_source_rejection_is_explained_in_human_output(capsys):
+    components = await _components(openai=ScriptedApiProvider("openai", [ok()]))
+
+    assert await _run(components, source_text="   ") == commands.EXIT_INVALID_INPUT
+    err = capsys.readouterr().err
+    assert "--source não é aceito com --direct" in err
+
+
+@pytest.mark.asyncio
+async def test_council_still_treats_a_blank_source_as_absent(capsys):
+    """Conselho inalterado: `--source "   "` continua sendo "sem fonte"."""
+    from app.cli.main import _dispatch
+
+    components = await _components(
+        openai=ScriptedApiProvider("openai", []), anthropic=ScriptedApiProvider("anthropic", [])
+    )
+    args = _build_parser().parse_args(
+        ["run", "q", "--providers", "openai,anthropic", "--source", "   ", "--json"]
+    )
+
+    assert await _dispatch(args, components) == commands.EXIT_OK
+    body = json.loads(capsys.readouterr().out)
+    assert "kind" not in body and body["status"] == "completed"
+    [summary] = await components.repository.list_runs()
+    assert summary.kind == "council"
+
+
+# ---------------------------------------------------------------------------
+# M4 -- "nenhuma resposta foi produzida" só quando o registro prova isso
+# ---------------------------------------------------------------------------
+
+_UNCONFIRMED = "não é possível confirmar se o provider chegou a produzir uma resposta."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "script, max_retries, first_line, caveat",
+    [
+        # o provider respondeu, sem texto utilizável -> fato estabelecido
+        ([ok("   ")], 0, "nenhuma resposta foi produzida: A resposta do provider veio num formato inesperado.", None),
+        ([ProviderAuthError("401")], 0, "nenhuma resposta foi produzida: O provider recusou a autenticação.", None),
+        # desfecho remoto incerto -> só "registrada"
+        ([ProviderTimeoutError("t")], 0, "nenhuma resposta foi registrada: A chamada ao provider excedeu o tempo limite.", _UNCONFIRMED),
+        ([RuntimeError("sdk")], 0, "nenhuma resposta foi registrada: A chamada ao provider falhou.", _UNCONFIRMED),
+        # recusa final, mas uma tentativa ANTERIOR pode ter chegado ao provider
+        (
+            [ProviderTimeoutError("t"), ProviderAPIError("400", retryable=False)],
+            1,
+            "nenhuma resposta foi registrada: O provider devolveu um erro.",
+            _UNCONFIRMED,
+        ),
+    ],
+)
+async def test_provider_failure_wording_follows_the_recorded_evidence(script, max_retries, first_line, caveat, capsys):
+    components = await _components(openai=ScriptedApiProvider("openai", script, max_retries=max_retries))
+
+    assert await _run(components) == commands.EXIT_PROVIDER_FAILED
+    lines = capsys.readouterr().out.split("\n")
+
+    assert lines[0] == "status: falhou"
+    assert lines[1] == first_line
+    if caveat is None:
+        assert not any("confirmar" in line or "pode ter produzido" in line for line in lines)
+    else:
+        assert lines[2] == caveat
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage, caveat",
+    [
+        ("terminal_persistence", "o provider pode ter produzido uma resposta, mas o resultado não pôde ser gravado."),
+        ("execution", _UNCONFIRMED),
+    ],
+)
+async def test_accepted_direct_failures_never_claim_that_no_answer_was_produced(stage, caveat, capsys):
+    """Falha ao gravar o desfecho (depois de o provider possivelmente ter
+    respondido) ou exceção durante a execução: o registro não prova que
+    nenhuma resposta foi produzida -- só que nenhuma foi registrada."""
+    from app.direct.models import DirectRunConfig
+    from tests.storage.fixtures import now
+
+    components = await _components(openai=ScriptedApiProvider("openai", []))
+    config = DirectRunConfig(question="q", provider="openai", requested_model="m", max_output_tokens=10)
+    await components.repository.save_direct_accepted("direta", config=config, started_at=now(), provider_execution_policy=POLICY)
+    await components.repository.save_unexpected_failure(
+        "direta", failed_at=now(), failure_classification="RuntimeError", failure_message="Falha.", failure_stage=stage
+    )
+
+    await commands.cmd_get(components, run_id="direta", as_json=False)
+    lines = capsys.readouterr().out.split("\n")
+
+    assert lines[:3] == ["status: falhou", "nenhuma resposta foi registrada: Falha.", caveat]
+    assert not any("produzida" in line for line in lines)

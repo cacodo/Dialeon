@@ -51,17 +51,19 @@ function DirectNextActions({ config }: { config: DirectRunConfigPublic }) {
 }
 
 function CallDetails({
+  title,
   config,
   response,
   policy,
 }: {
+  title: string
   config: DirectRunConfigPublic
   response: ModelResponsePublic | null
   policy: DirectRunResponse['provider_execution_policy']
 }) {
   return (
     <section aria-labelledby="direct-details-heading" className="direct-details">
-      <h2 id="direct-details-heading">Como esta resposta foi produzida</h2>
+      <h2 id="direct-details-heading">{title}</h2>
       <p className="direct-details__intro">
         Uma única chamada a um modelo, sem as etapas do conselho: nenhuma comparação entre modelos,
         avaliação do juiz ou análise de fonte.
@@ -173,28 +175,61 @@ function CompletedDirectAnswer({ run }: { run: DirectCompletedRunResponse }) {
       </ul>
 
       <DirectNextActions config={run.config} />
-      <CallDetails config={run.config} response={run.response} policy={run.provider_execution_policy} />
+      <CallDetails
+        title="Como esta resposta foi produzida"
+        config={run.config}
+        response={run.response}
+        policy={run.provider_execution_policy}
+      />
     </>
   )
+}
+
+// M4 (revisão do Direct) -- "nenhuma resposta foi produzida" só quando o
+// registro PROVA isso: o próprio provider respondeu com recusa, erro ou
+// formato inesperado, e nenhuma tentativa anterior pode ter chegado a ele.
+// Timeout, erro não classificado, tentativa anterior incerta, falha de
+// execução ou de gravação do desfecho: o modelo pode ter produzido uma
+// resposta que não chegou ou não foi gravada -- só se afirma que nenhuma foi
+// registrada. Mesma regra da CLI (app/cli/output.py).
+const NO_ANSWER_ERROR_TYPES = new Set(['auth', 'rate_limit', 'api_error', 'malformed_response'])
+
+function noAnswerIsEstablished(run: DirectFailedRunResponse): boolean {
+  const response = run.response
+  return (
+    run.failure_stage === 'provider' &&
+    response !== null &&
+    response.error !== null &&
+    NO_ANSWER_ERROR_TYPES.has(response.error.type) &&
+    !response.had_uncertain_prior_attempts
+  )
+}
+
+function unconfirmedAnswerNote(run: DirectFailedRunResponse): string {
+  return run.failure_stage === 'terminal_persistence'
+    ? 'O modelo pode ter produzido uma resposta, mas o resultado não pôde ser gravado.'
+    : 'Não é possível confirmar se o modelo chegou a produzir uma resposta.'
 }
 
 function failedMessage(run: DirectFailedRunResponse): string {
   if (run.failure_stage === 'execution' || run.failure_stage === 'terminal_persistence') {
     return formatFailureStage(run.failure_stage)
   }
-  return run.message ?? 'A chamada ao modelo não produziu uma resposta.'
+  return run.message ?? 'A chamada ao modelo terminou sem resposta registrada.'
 }
 
 function FailedDirectRun({ run }: { run: DirectFailedRunResponse }) {
+  const established = noAnswerIsEstablished(run)
   return (
     <>
       <section aria-labelledby="direct-failed-heading" className="notice notice--error run-outcome">
-        <h2 id="direct-failed-heading">Sem resposta</h2>
+        <h2 id="direct-failed-heading">{established ? 'Sem resposta' : 'Sem resposta registrada'}</h2>
         <p>{failedMessage(run)}</p>
         <p>
-          Nenhuma resposta foi produzida, e nenhum outro modelo foi usado no lugar de{' '}
-          {formatProviderName(run.config.provider)}.
+          {established ? 'Nenhuma resposta foi produzida' : 'Nenhuma resposta foi registrada'}, e
+          nenhum outro modelo foi usado no lugar de {formatProviderName(run.config.provider)}.
         </p>
+        {!established && <p>{unconfirmedAnswerNote(run)}</p>}
         {run.response?.had_uncertain_prior_attempts && (
           <p>Uma tentativa anterior pode ter chegado ao provider; o custo dela é desconhecido.</p>
         )}
@@ -209,7 +244,14 @@ function FailedDirectRun({ run }: { run: DirectFailedRunResponse }) {
         </ul>
       </section>
       <DirectNextActions config={run.config} />
-      <CallDetails config={run.config} response={run.response} policy={run.provider_execution_policy} />
+      {/* Sem resposta, o título nunca fala de "esta resposta" (mesmo título
+          das falhas do Conselho). */}
+      <CallDetails
+        title="O que aconteceu nesta pergunta"
+        config={run.config}
+        response={run.response}
+        policy={run.provider_execution_policy}
+      />
     </>
   )
 }

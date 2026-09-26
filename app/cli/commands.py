@@ -63,8 +63,10 @@ EXIT_INTERNAL_ERROR = 1
 EXIT_INVALID_INPUT = 2
 EXIT_INSUFFICIENT_QUORUM = 3
 EXIT_NOT_FOUND = 4
-# Direct Answer Execution V1: a run direta foi criada e registrada, mas o
-# provider não produziu resposta (erro, timeout, resposta vazia/malformada).
+# Direct Answer Execution V1: a run direta foi criada e registrada, mas a
+# chamada ao provider terminou sem resposta registrada (erro, timeout,
+# resposta vazia/malformada) -- num timeout, o provider pode ter produzido
+# uma resposta que nunca chegou.
 EXIT_PROVIDER_FAILED = 5
 
 
@@ -230,12 +232,35 @@ async def cmd_run_direct(
     """Direct Answer Execution V1 (`dialeon run --direct`): uma pergunta,
     EXATAMENTE um provider (`--providers` obrigatório, com um id), sem fonte.
     Nunca o pipeline do Conselho, nunca troca de provider, nunca repete a run.
-    Mesma validação de forma da API (`CreateRunRequest` com `kind="direct"`)."""
+    Mesma validação de forma da API (`CreateRunRequest` com `kind="direct"`).
+
+    `source_text` é o valor CRU de `--source` (`None` = opção ausente). A
+    CLI recusa a PRESENÇA da opção -- inclusive `--source ""` ou só espaços,
+    que o schema compartilhado normalizaria pra "sem fonte" -- antes de
+    qualquer normalização."""
+    if source_text is not None:
+        message = "Request inválido."
+        reason = "--source não é aceito com --direct: a resposta direta não usa fonte."
+        if as_json:
+            output.emit_json_error(
+                "invalid_request",
+                message,
+                details={
+                    "errors": [
+                        {"loc": ["source_text"], "msg": reason, "type": "direct_source_not_supported"}
+                    ]
+                },
+            )
+        else:
+            output.print_error(message)
+            output.print_error(f"  - {reason}")
+        return EXIT_INVALID_INPUT
+
     try:
         body = CreateRunRequest(
             question=question,
             enabled_providers=providers if providers is not None else [],
-            source_text=source_text,
+            source_text=None,
             kind="direct",
         )
     except ValidationError as exc:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.application.errors import (
@@ -499,6 +500,105 @@ async def test_legacy_database_without_run_kind_is_upgraded_and_reads_as_council
     assert kinds == [None]
     assert {s.kind for s in summaries} == {"council"}
     assert {s.status for s in summaries} == {"running", "completed"}
+
+
+# ---------------------------------------------------------------------------
+# `accepted_runs.run_kind` persistido: NULL = Conselho, "direct" = direta,
+# qualquer outro valor não nulo = estado malformado (fail closed)
+# ---------------------------------------------------------------------------
+
+_DIRECT_CONFIG = DirectRunConfig(
+    question="q", provider="openai", requested_model="gpt-conf", max_output_tokens=10
+)
+
+
+async def _repository_with_one_council_and_one_direct_accepted_run():
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    repository = CouncilRepository(make_session_factory(engine))
+    await repository.save_accepted(
+        "conselho", run_config=run_config(enabled_providers=["openai"]), started_at=now(), provider_execution_policy=POLICY
+    )
+    await repository.save_direct_accepted(
+        "direta", config=_DIRECT_CONFIG, started_at=now(), provider_execution_policy=POLICY
+    )
+    return engine, repository
+
+
+async def _stored_run_kind(engine, run_id):
+    async with engine.connect() as conn:
+        return (
+            await conn.execute(text("SELECT run_kind FROM accepted_runs WHERE id = :id"), {"id": run_id})
+        ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_persisted_run_kind_null_is_council_and_direct_is_direct():
+    engine, repository = await _repository_with_one_council_and_one_direct_accepted_run()
+    try:
+        # Uma run do Conselho nova continua gravada exatamente como antes (NULL).
+        assert await _stored_run_kind(engine, "conselho") is None
+        assert await _stored_run_kind(engine, "direta") == "direct"
+        council = await repository.get_run("conselho")
+        direct = await repository.get_run("direta")
+        kinds = {s.id: s.kind for s in await repository.list_runs()}
+    finally:
+        await engine.dispose()
+
+    assert isinstance(council, AcceptedRunRecord)
+    assert isinstance(direct, DirectAcceptedRunRecord)
+    assert kinds == {"conselho": "council", "direta": "direct"}
+
+
+_MALFORMED_RUN_KINDS = ["dircet", "foo", "council-v2", "council", "Direct", ""]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_kind", _MALFORMED_RUN_KINDS)
+@pytest.mark.parametrize("run_id", ["conselho", "direta"])
+async def test_malformed_persisted_run_kind_fails_closed_on_detail_and_list(stored_kind, run_id):
+    """Um valor não nulo desconhecido NUNCA é reconstruído como Conselho por
+    exclusão -- nem numa linha com `run_config_json` de Conselho válido
+    ("conselho"), onde a reconstrução antiga teria "funcionado" em
+    silêncio. Detalhe (e auditoria, que lê pelo mesmo `get_run`) e listagem
+    falham; a linha gravada não é normalizada nem regravada."""
+    engine, repository = await _repository_with_one_council_and_one_direct_accepted_run()
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE accepted_runs SET run_kind = :kind WHERE id = :id"),
+                {"kind": stored_kind, "id": run_id},
+            )
+
+        with pytest.raises(ValidationError):
+            await repository.get_run(run_id)
+        with pytest.raises(ValidationError):
+            await repository.list_runs()
+        assert await _stored_run_kind(engine, run_id) == stored_kind
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_malformed_persisted_run_kind_also_fails_closed_for_a_failed_accepted_run():
+    engine, repository = await _repository_with_one_council_and_one_direct_accepted_run()
+    try:
+        await repository.save_unexpected_failure(
+            "conselho",
+            failed_at=now(),
+            failure_classification="RuntimeError",
+            failure_message="Erro interno inesperado durante a execução.",
+            failure_stage="execution",
+        )
+        async with engine.begin() as conn:
+            await conn.execute(text("UPDATE accepted_runs SET run_kind = 'dircet' WHERE id = 'conselho'"))
+
+        with pytest.raises(ValidationError):
+            await repository.get_run("conselho")
+        with pytest.raises(ValidationError):
+            await repository.list_runs()
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

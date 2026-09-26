@@ -90,21 +90,32 @@ const ESTIMATED_COST_FORMAT = new Intl.NumberFormat('pt-BR', {
 })
 const SMALLEST_DISPLAYED_COST = 0.0001
 
+function formatCostAmount(cost: number): string {
+  if (cost === 0) {
+    return 'US$ 0,00'
+  }
+  return cost < SMALLEST_DISPLAYED_COST
+    ? `< US$ ${ESTIMATED_COST_FORMAT.format(SMALLEST_DISPLAYED_COST)}`
+    : `~US$ ${ESTIMATED_COST_FORMAT.format(cost)}`
+}
+
 /** UNKNOWN NÃO PODE SER FORMATADO COMO ZERO -- distinção explícita entre
  * os 3 estados reais (>0 conhecido, ===0 conhecido, null desconhecido). Um
  * valor positivo abaixo da menor casa exibida também nunca vira "0,00":
- * aparece como "< US$ 0,0001" (o valor exato fica na Auditoria técnica). */
+ * aparece como "< US$ 0,0001" (o valor exato fica na Auditoria técnica).
+ *
+ * Com contabilidade incompleta (`hasUnknown`), o valor é só o SUBTOTAL
+ * CONHECIDO -- inclusive quando é zero: um subtotal zero não estabelece um
+ * total zero se outra parte tem custo desconhecido. "Estimativa conhecida"
+ * fica reservado ao zero com contabilidade completa. */
 export function formatEstimatedCost(cost: number | null, hasUnknown: boolean): string {
   if (cost === null) {
     return 'Estimativa indisponível'
   }
-  const formatted =
-    cost === 0
-      ? 'US$ 0,00 (estimativa conhecida)'
-      : cost < SMALLEST_DISPLAYED_COST
-        ? `< US$ ${ESTIMATED_COST_FORMAT.format(SMALLEST_DISPLAYED_COST)}`
-        : `~US$ ${ESTIMATED_COST_FORMAT.format(cost)}`
-  return hasUnknown ? `${formatted} · estimativa parcial (dados incompletos)` : formatted
+  if (hasUnknown) {
+    return `${formatCostAmount(cost)} de subtotal conhecido · estimativa parcial (dados incompletos)`
+  }
+  return cost === 0 ? 'US$ 0,00 (estimativa conhecida)' : formatCostAmount(cost)
 }
 
 export function formatTokenCount(tokens: number | null): string {

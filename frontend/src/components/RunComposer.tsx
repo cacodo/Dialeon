@@ -347,9 +347,12 @@ export function RunComposer({
   return (
     <form className="composer" onSubmit={handleSubmit} aria-busy={submitting}>
       <h1 className="composer__heading">O que você quer saber?</h1>
+      {/* Depende do modo: comparação/concordância/divergência só existem no
+          Conselho -- nunca são prometidas para a resposta direta. */}
       <p className="composer__lede">
-        Os modelos escolhidos respondem de forma independente; o Dialeon organiza a resposta e
-        mostra onde eles concordam, onde divergem e o que continua incerto.
+        {isDirect
+          ? 'O modelo escolhido responde sozinho, e o Dialeon mostra essa resposta.'
+          : 'Os modelos escolhidos respondem de forma independente; o Dialeon organiza a resposta e mostra onde eles concordam, onde divergem e o que continua incerto.'}
       </p>
 
       {withoutConfirmedConfiguration && (

@@ -185,22 +185,111 @@ def test_successful_response_schemas_are_still_documented(openapi):
         (paths["/runs"]["post"], "201"),
         (paths["/runs/{run_id}"]["get"], "200"),
     ):
-        one_of = operation["responses"][union]["content"]["application/json"]["schema"]["oneOf"]
-        assert {o["$ref"] for o in one_of} == {
-            REF + n
-            for n in (
-                "CompletedRunResponse",
-                "QuorumFailureRunResponse",
-                "RunningRunResponse",
-                "FailedRunResponse",
-                # Direct Answer Execution V1 -- sempre com `kind="direct"`
-                "DirectCompletedRunResponse",
-                "DirectFailedRunResponse",
-                "DirectRunningRunResponse",
-            )
-        }
-    audit_one_of = paths["/runs/{run_id}/audit"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["oneOf"]
-    assert {REF + "CompletedRunAudit", REF + "QuorumFailureAudit"} <= {o["$ref"] for o in audit_one_of}
+        assert operation["responses"][union]["content"]["application/json"]["schema"]["oneOf"] == [
+            {"$ref": REF + "CouncilRunResponse"},
+            {"$ref": REF + "DirectRunResponse"},
+        ]
+    audit = paths["/runs/{run_id}/audit"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert audit["oneOf"] == [{"$ref": REF + "CouncilRunAuditResponse"}, {"$ref": REF + "DirectRunResponse"}]
+
+
+# ---------------------------------------------------------------------------
+# 5b. Uniões de run: discriminação publicada (M2 da revisão do Direct)
+#
+#   oneOf: [Council*, DirectRunResponse]  -- sem discriminator no 1º nível:
+#                                            `kind` não existe no Conselho
+#   Council*:          discriminator `status` (idêntico à v1.2.0) e
+#                      `not: {required: [kind]}` (ausência de `kind` = Conselho)
+#   DirectRunResponse: discriminator `status`; todo ramo EXIGE `kind`="direct"
+# ---------------------------------------------------------------------------
+
+COUNCIL_RUN_MAPPING = {
+    "completed": "CompletedRunResponse",
+    "insufficient_quorum": "QuorumFailureRunResponse",
+    "running": "RunningRunResponse",
+    "failed": "FailedRunResponse",
+}
+COUNCIL_AUDIT_MAPPING = {
+    "completed": "CompletedRunAudit",
+    "insufficient_quorum": "QuorumFailureAudit",
+    "running": "RunningRunResponse",
+    "failed": "FailedRunResponse",
+}
+DIRECT_MAPPING = {
+    "completed": "DirectCompletedRunResponse",
+    "failed": "DirectFailedRunResponse",
+    "running": "DirectRunningRunResponse",
+}
+
+
+def _top_level_run_unions(openapi) -> list[dict]:
+    paths = openapi["paths"]
+    return [
+        paths["/runs"]["post"]["responses"]["201"]["content"]["application/json"]["schema"],
+        paths["/runs/{run_id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"],
+        paths["/runs/{run_id}/audit"]["get"]["responses"]["200"]["content"]["application/json"]["schema"],
+    ]
+
+
+def test_top_level_run_unions_split_by_kind_without_a_status_only_discriminator(openapi):
+    for union in _top_level_run_unions(openapi):
+        # `status` sozinho não distingue mais os ramos; `kind` não existe no
+        # Conselho -- então nenhum discriminator do OpenAPI neste nível.
+        assert "discriminator" not in union
+        assert len(union["oneOf"]) == 2
+
+
+@pytest.mark.parametrize(
+    "name, mapping, forbids_kind",
+    [
+        ("CouncilRunResponse", COUNCIL_RUN_MAPPING, True),
+        ("CouncilRunAuditResponse", COUNCIL_AUDIT_MAPPING, True),
+        ("DirectRunResponse", DIRECT_MAPPING, False),
+    ],
+)
+def test_each_kind_branch_is_a_status_discriminated_union(openapi, name, mapping, forbids_kind):
+    schema = _schemas(openapi)[name]
+
+    assert schema["discriminator"] == {
+        "propertyName": "status",
+        "mapping": {status: REF + member for status, member in mapping.items()},
+    }
+    assert sorted(o["$ref"] for o in schema["oneOf"]) == sorted(REF + m for m in mapping.values())
+    if forbids_kind:
+        assert schema["not"] == {"required": ["kind"]}
+    else:
+        assert "not" not in schema
+
+
+@pytest.mark.parametrize(
+    "mapping", [COUNCIL_RUN_MAPPING, COUNCIL_AUDIT_MAPPING, DIRECT_MAPPING]
+)
+def test_every_discriminated_member_requires_status_with_the_mapped_constant(openapi, mapping):
+    schemas = _schemas(openapi)
+    for status, member in mapping.items():
+        assert "status" in schemas[member]["required"], member
+        assert schemas[member]["properties"]["status"]["const"] == status, member
+
+
+def test_direct_members_require_kind_and_council_members_do_not_declare_it(openapi):
+    schemas = _schemas(openapi)
+    for member in DIRECT_MAPPING.values():
+        assert "kind" in schemas[member]["required"], member
+        assert schemas[member]["properties"]["kind"]["const"] == "direct", member
+    for member in {*COUNCIL_RUN_MAPPING.values(), *COUNCIL_AUDIT_MAPPING.values()}:
+        assert "kind" not in schemas[member]["properties"], member
+
+
+def test_the_council_branch_is_exactly_the_v1_2_0_status_union(openapi):
+    """O ramo do Conselho continua sendo a união publicada na v1.2.0 (mesmos
+    membros, mesmo discriminator); o Direct é aditivo, ao lado."""
+    schemas = _schemas(openapi)
+    assert [o["$ref"] for o in schemas["CouncilRunResponse"]["oneOf"]] == [
+        REF + n for n in ("CompletedRunResponse", "QuorumFailureRunResponse", "RunningRunResponse", "FailedRunResponse")
+    ]
+    assert [o["$ref"] for o in schemas["CouncilRunAuditResponse"]["oneOf"]] == [
+        REF + n for n in ("CompletedRunAudit", "QuorumFailureAudit", "RunningRunResponse", "FailedRunResponse")
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -167,12 +167,13 @@ v1.2.0 só tem o Conselho), cada pergunta pode ser feita de dois jeitos:
   direta sem resposta, sem troca de modelo e sem cair no Conselho. Os
   detalhes da chamada (modelo solicitado e reportado, tokens, custo
   estimado, tentativas, proveniência do pedido) ficam em “Como esta resposta
-  foi produzida” e na auditoria.
+  foi produzida” (ou “O que aconteceu nesta pergunta”, quando nenhuma resposta
+  foi registrada) e na auditoria.
 
 Na interface, escolha em “Como responder”. Pela CLI:
 `dialeon run "pergunta" --direct --providers openai` (exatamente um
-provider; sai com código 5 se o provider não produzir resposta). Pela API:
-`POST /runs` com `"kind": "direct"` e exatamente um item em
+provider; sai com código 5 se a chamada terminar sem resposta registrada).
+Pela API: `POST /runs` com `"kind": "direct"` e exatamente um item em
 `enabled_providers`; sem `kind`, a run é do Conselho, como sempre.
 
 ## O que já está implementado

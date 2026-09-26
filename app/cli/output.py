@@ -327,6 +327,39 @@ def _direct_cost_line(response) -> str:
     return f"custo estimado: {cost} (contabilidade completa: {'sim' if complete else 'não'})"
 
 
+# M4 (revisão adversarial) -- "nenhuma resposta foi produzida" só quando o
+# registro PROVA isso: o próprio provider respondeu com recusa/erro/formato
+# inesperado, e nenhuma tentativa anterior pode ter chegado a ele. Timeout,
+# erro não classificado, tentativa anterior incerta, falha de execução ou de
+# gravação do desfecho: o provider pode ter produzido uma resposta que não
+# chegou ou não foi gravada -- aí o texto diz só que nenhuma foi registrada.
+_DIRECT_NO_ANSWER_ERROR_TYPES = frozenset({"auth", "rate_limit", "api_error", "malformed_response"})
+
+
+def _direct_no_answer_is_established(run: DirectFailedRunResponse) -> bool:
+    response = run.response
+    return (
+        run.failure_stage == "provider"
+        and response is not None
+        and response.error is not None
+        and response.error.type.value in _DIRECT_NO_ANSWER_ERROR_TYPES
+        and not response.had_uncertain_prior_attempts
+    )
+
+
+def _direct_no_answer_lines(run: DirectFailedRunResponse) -> list[str]:
+    message = terminal_safe_text(_fmt(run.message))
+    if _direct_no_answer_is_established(run):
+        return [f"nenhuma resposta foi produzida: {message}"]
+    if run.failure_stage == "terminal_persistence":
+        caveat = (
+            "o provider pode ter produzido uma resposta, mas o resultado não pôde ser gravado."
+        )
+    else:
+        caveat = "não é possível confirmar se o provider chegou a produzir uma resposta."
+    return [f"nenhuma resposta foi registrada: {message}", caveat]
+
+
 def human_direct_run(
     run: DirectCompletedRunResponse | DirectFailedRunResponse | DirectRunningRunResponse,
 ) -> str:
@@ -352,10 +385,7 @@ def human_direct_run(
         ]
         return "\n".join(lines)
     if isinstance(run, DirectFailedRunResponse):
-        lines = [
-            "status: falhou",
-            f"nenhuma resposta foi produzida: {terminal_safe_text(_fmt(run.message))}",
-        ]
+        lines = ["status: falhou", *_direct_no_answer_lines(run)]
         if run.response is not None and run.response.error is not None:
             lines.append(
                 f"erro do provider: {run.response.error.type.value} -- "

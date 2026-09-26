@@ -196,3 +196,80 @@ def test_openapi_documents_the_direct_shapes_with_their_kind():
     completed = schemas["DirectCompletedRunResponse"]["properties"]
     assert {"answer", "response", "accounting", "config"} <= set(completed)
     assert not {"final_answer", "claims", "judge_verdict"} & set(completed)
+
+
+async def _seed_council_accepted_row_with_run_kind(components, run_kind):
+    from sqlalchemy import text
+
+    from tests.storage.fixtures import now, run_config
+
+    await components.repository.save_accepted(
+        "conselho", run_config=run_config(enabled_providers=["openai"]), started_at=now(), provider_execution_policy=POLICY
+    )
+    async with components.engine.begin() as conn:
+        await conn.execute(text("UPDATE accepted_runs SET run_kind = :kind WHERE id = 'conselho'"), {"kind": run_kind})
+
+
+@pytest.mark.parametrize("run_kind", ["dircet", "council-v2"])
+def test_malformed_persisted_run_kind_fails_closed_on_detail_audit_and_list(run_kind):
+    """Uma linha aceita com `run_kind` não nulo desconhecido (e config de
+    Conselho válido) nunca é servida como Conselho: detalhe, auditoria e
+    histórico respondem o 500 genérico (`internal_error`), como qualquer
+    outro estado persistido malformado."""
+    factory = make_components_factory(provider_execution_policy=POLICY)
+    app = create_app(settings=Settings(_env_file=None), components_factory=factory)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.portal.call(_seed_council_accepted_row_with_run_kind, app.state.components, run_kind)
+        responses = [client.get(path) for path in ("/runs/conselho", "/runs/conselho/audit", "/runs")]
+
+    for resp in responses:
+        assert resp.status_code == 500
+        assert resp.json()["error"]["code"] == "internal_error"
+        assert run_kind not in resp.text
+
+
+def test_null_persisted_run_kind_still_serves_the_council_shape():
+    factory = make_components_factory(provider_execution_policy=POLICY)
+    app = create_app(settings=Settings(_env_file=None), components_factory=factory)
+
+    with TestClient(app) as client:
+        client.portal.call(_seed_council_accepted_row_with_run_kind, app.state.components, None)
+        detail = client.get("/runs/conselho").json()
+        [summary] = client.get("/runs").json()["runs"]
+
+    assert detail["status"] == "running" and "kind" not in detail
+    assert summary["kind"] == "council"
+
+
+def test_runtime_run_union_routes_by_kind_then_status_and_stays_strict():
+    """M2 -- a união publicada em dois níveis é a MESMA que valida em runtime:
+    ausência de `kind` = Conselho, `kind="direct"` = direta; nenhum `kind`
+    extra no Conselho, nenhum Direct sem `kind`, nenhum `kind` desconhecido."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from app.presentation.schemas import (
+        CompletedRunResponse,
+        DirectCompletedRunResponse,
+        DirectFailedRunResponse,
+        RunResponse,
+    )
+
+    openai = ScriptedApiProvider("openai", [ok("Brasília."), ProviderTimeoutError("t")])
+    with _client(openai=openai, anthropic=ScriptedApiProvider("anthropic", [])) as client:
+        council = client.post("/runs", json={"question": "q", "enabled_providers": ["openai", "anthropic"]}).json()
+        direct = _direct(client).json()
+        direct_failed = _direct(client).json()
+
+    adapter = TypeAdapter(RunResponse)
+    assert "kind" not in council and direct["kind"] == direct_failed["kind"] == "direct"
+    assert isinstance(adapter.validate_python(council), CompletedRunResponse)
+    assert isinstance(adapter.validate_python(direct), DirectCompletedRunResponse)
+    assert isinstance(adapter.validate_python(direct_failed), DirectFailedRunResponse)
+    for invalid in (
+        {**council, "kind": "council"},
+        {**direct, "kind": "dircet"},
+        {k: v for k, v in direct.items() if k != "kind"},
+    ):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(invalid)

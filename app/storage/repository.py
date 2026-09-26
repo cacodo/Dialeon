@@ -20,8 +20,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+from typing import Literal
 from uuid import uuid4
 
+from pydantic import TypeAdapter
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -119,6 +121,20 @@ def _policy_from_json(data: dict | None) -> ProviderExecutionPolicy | None:
     desta coluna existir (ver `_upgrade_legacy_provider_execution_policy`,
     app/storage/database.py) -- NUNCA substituído por um default atual."""
     return ProviderExecutionPolicy(**data) if data is not None else None
+
+
+# Direct Answer Execution V1 -- valores PERSISTIDOS válidos de
+# `accepted_runs.run_kind`: NULL (toda linha anterior à coluna e toda run do
+# Conselho, que continua gravada sem o valor) ou "direct". Qualquer outro
+# valor não nulo ("dircet", "council-v2", ...) é estado persistido
+# malformado: a reconstrução FALHA (`ValidationError`, mesma disciplina de
+# test_malformed_request_provenance_json_fails_closed_on_load) -- nunca vira
+# Conselho por exclusão, nunca é normalizado nem regravado.
+_PERSISTED_RUN_KIND = TypeAdapter(Literal["direct"] | None)
+
+
+def _run_kind_from_row(row: AcceptedRunRow) -> Literal["council", "direct"]:
+    return "direct" if _PERSISTED_RUN_KIND.validate_python(row.run_kind) == "direct" else "council"
 
 
 def _default_model_authority_snapshot_from_json(
@@ -854,7 +870,7 @@ class CouncilRepository:
                         dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None
                     ),
                     question=row.run_config_json["question"],
-                    kind="direct" if row.run_kind == "direct" else "council",
+                    kind=_run_kind_from_row(row),
                 )
                 for row in accepted
             ]
@@ -1283,8 +1299,9 @@ def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord | DirectAcce
     não há árvore nenhuma pra remontar além dos campos da própria
     linha. Direct Answer Execution V1: `run_kind="direct"` reconstrói uma
     `DirectAcceptedRunRecord`; NULL (toda linha legada e toda run do
-    Conselho) continua sendo uma run do Conselho."""
-    if row.run_kind == "direct":
+    Conselho) continua sendo uma run do Conselho; qualquer outro valor
+    falha (ver `_PERSISTED_RUN_KIND`)."""
+    if _run_kind_from_row(row) == "direct":
         return DirectAcceptedRunRecord(
             status=row.status,  # type: ignore[arg-type]  # "running" | "failed"
             id=row.id,
