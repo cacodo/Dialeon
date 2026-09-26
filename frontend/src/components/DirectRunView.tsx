@@ -185,24 +185,15 @@ function CompletedDirectAnswer({ run }: { run: DirectCompletedRunResponse }) {
   )
 }
 
-// M4 (revisão do Direct) -- "nenhuma resposta foi produzida" só quando o
-// registro PROVA isso: o próprio provider respondeu com recusa, erro ou
-// formato inesperado, e nenhuma tentativa anterior pode ter chegado a ele.
-// Timeout, erro não classificado, tentativa anterior incerta, falha de
-// execução ou de gravação do desfecho: o modelo pode ter produzido uma
-// resposta que não chegou ou não foi gravada -- só se afirma que nenhuma foi
-// registrada. Mesma regra da CLI (app/cli/output.py).
-const NO_ANSWER_ERROR_TYPES = new Set(['auth', 'rate_limit', 'api_error', 'malformed_response'])
-
-function noAnswerIsEstablished(run: DirectFailedRunResponse): boolean {
-  const response = run.response
-  return (
-    run.failure_stage === 'provider' &&
-    response !== null &&
-    response.error !== null &&
-    NO_ANSWER_ERROR_TYPES.has(response.error.type) &&
-    !response.had_uncertain_prior_attempts
-  )
+// M4 (revisão do Direct) -- o Dialeon só observa o SEU lado da chamada:
+// nenhum status HTTP, tipo de erro, timeout ou texto vazio prova o que o
+// modelo produziu (ou não). Sem resposta utilizável registrada, o texto diz
+// só o que o Dialeon sabe, e depende apenas de ONDE a run parou -- nunca do
+// tipo de erro: no estágio "provider" a chamada terminou e está registrada,
+// sem resposta utilizável; na execução ou na gravação do desfecho, nenhuma
+// resposta foi registrada. Mesma regra da CLI (app/cli/output.py).
+function callWasRecorded(run: DirectFailedRunResponse): boolean {
+  return run.failure_stage === 'provider'
 }
 
 function unconfirmedAnswerNote(run: DirectFailedRunResponse): string {
@@ -219,17 +210,20 @@ function failedMessage(run: DirectFailedRunResponse): string {
 }
 
 function FailedDirectRun({ run }: { run: DirectFailedRunResponse }) {
-  const established = noAnswerIsEstablished(run)
+  const recorded = callWasRecorded(run)
+  const model = formatProviderName(run.config.provider)
   return (
     <>
       <section aria-labelledby="direct-failed-heading" className="notice notice--error run-outcome">
-        <h2 id="direct-failed-heading">{established ? 'Sem resposta' : 'Sem resposta registrada'}</h2>
+        <h2 id="direct-failed-heading">{recorded ? 'Sem resposta utilizável' : 'Sem resposta registrada'}</h2>
         <p>{failedMessage(run)}</p>
         <p>
-          {established ? 'Nenhuma resposta foi produzida' : 'Nenhuma resposta foi registrada'}, e
-          nenhum outro modelo foi usado no lugar de {formatProviderName(run.config.provider)}.
+          {recorded
+            ? 'O Dialeon não recebeu uma resposta utilizável'
+            : 'Nenhuma resposta foi registrada'}
+          , e nenhum outro modelo foi usado no lugar de {model}.
         </p>
-        {!established && <p>{unconfirmedAnswerNote(run)}</p>}
+        {!recorded && <p>{unconfirmedAnswerNote(run)}</p>}
         {run.response?.had_uncertain_prior_attempts && (
           <p>Uma tentativa anterior pode ter chegado ao provider; o custo dela é desconhecido.</p>
         )}

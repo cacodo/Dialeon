@@ -10,8 +10,14 @@ import pytest_asyncio
 from app.cli import commands, output
 from app.cli.main import _build_parser
 from app.config import Settings
-from app.models.provider_models import ProviderExecutionPolicy
-from app.providers.errors import ProviderAPIError, ProviderAuthError, ProviderTimeoutError
+from app.models.provider_models import ProviderExecutionPolicy, TokenUsage
+from app.providers.errors import (
+    ProviderAPIError,
+    ProviderAuthError,
+    ProviderMalformedResponseError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+)
 from app.text_safety import terminal_safe_text
 from tests.api.helpers import build_test_components
 from tests.direct.fakes import ScriptedApiProvider, ok
@@ -133,7 +139,7 @@ async def test_provider_failure_exits_5_with_status_first(capsys):
 
     assert lines[0] == "status: falhou"
     # Timeout: o provider pode ter produzido algo que nunca chegou (M4).
-    assert lines[1] == "nenhuma resposta foi registrada: A chamada ao provider excedeu o tempo limite."
+    assert lines[1] == "nenhuma resposta utilizável foi recebida: A chamada ao provider excedeu o tempo limite."
     assert "tentativa_anterior_incerta: não" in lines
     assert anthropic.requests == []
 
@@ -303,43 +309,54 @@ async def test_council_still_treats_a_blank_source_as_absent(capsys):
 
 
 # ---------------------------------------------------------------------------
-# M4 -- "nenhuma resposta foi produzida" só quando o registro prova isso
+# M4 -- o Dialeon nunca afirma o que o modelo produziu do lado do provider:
+# só o que recebeu/registrou. O texto depende do estágio, nunca do tipo de erro.
 # ---------------------------------------------------------------------------
 
 _UNCONFIRMED = "não é possível confirmar se o provider chegou a produzir uma resposta."
+_NOT_RECEIVED = "nenhuma resposta utilizável foi recebida: "
+
+
+def _asserts_no_claim_about_remote_production(lines):
+    assert not any("foi produzida" in line or "não produziu" in line for line in lines)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "script, max_retries, first_line, caveat",
+    "script, max_retries, message",
     [
-        # o provider respondeu, sem texto utilizável -> fato estabelecido
-        ([ok("   ")], 0, "nenhuma resposta foi produzida: A resposta do provider veio num formato inesperado.", None),
-        ([ProviderAuthError("401")], 0, "nenhuma resposta foi produzida: O provider recusou a autenticação.", None),
-        # desfecho remoto incerto -> só "registrada"
-        ([ProviderTimeoutError("t")], 0, "nenhuma resposta foi registrada: A chamada ao provider excedeu o tempo limite.", _UNCONFIRMED),
-        ([RuntimeError("sdk")], 0, "nenhuma resposta foi registrada: A chamada ao provider falhou.", _UNCONFIRMED),
-        # recusa final, mas uma tentativa ANTERIOR pode ter chegado ao provider
+        # resposta recebida sem texto utilizável
+        ([ok("   ")], 0, "A resposta do provider veio num formato inesperado."),
+        # HTTP 200 que não pôde ser normalizado (o provider pode ter processado e cobrado)
         (
-            [ProviderTimeoutError("t"), ProviderAPIError("400", retryable=False)],
-            1,
-            "nenhuma resposta foi registrada: O provider devolveu um erro.",
-            _UNCONFIRMED,
+            [ProviderMalformedResponseError("sem bloco de texto", observed_usage=TokenUsage(input_tokens=9, output_tokens=40))],
+            0,
+            "A resposta do provider veio num formato inesperado.",
         ),
+        ([ProviderAuthError("401")], 0, "O provider recusou a autenticação."),
+        ([ProviderRateLimitError("429")], 0, "O provider recusou a chamada por limite de uso."),
+        # 5xx numa ÚNICA tentativa, sem tentativa anterior: pode ter havido
+        # processamento remoto -- nunca "nenhuma resposta foi produzida"
+        ([ProviderAPIError("503", retryable=True)], 0, "O provider devolveu um erro."),
+        ([ProviderTimeoutError("t")], 0, "A chamada ao provider excedeu o tempo limite."),
+        ([RuntimeError("transporte")], 0, "A chamada ao provider falhou."),
+        # tentativa ANTERIOR incerta
+        ([ProviderTimeoutError("t"), ProviderAPIError("400", retryable=False)], 1, "O provider devolveu um erro."),
     ],
+    ids=["blank_text", "malformed_200", "auth", "rate_limit", "single_attempt_5xx", "timeout", "unknown", "uncertain_retry"],
 )
-async def test_provider_failure_wording_follows_the_recorded_evidence(script, max_retries, first_line, caveat, capsys):
-    components = await _components(openai=ScriptedApiProvider("openai", script, max_retries=max_retries))
+async def test_provider_failures_say_only_that_no_usable_answer_was_received(script, max_retries, message, capsys):
+    openai = ScriptedApiProvider("openai", script, max_retries=max_retries)
+    components = await _components(openai=openai)
 
     assert await _run(components) == commands.EXIT_PROVIDER_FAILED
     lines = capsys.readouterr().out.split("\n")
 
     assert lines[0] == "status: falhou"
-    assert lines[1] == first_line
-    if caveat is None:
-        assert not any("confirmar" in line or "pode ter produzido" in line for line in lines)
-    else:
-        assert lines[2] == caveat
+    assert lines[1] == _NOT_RECEIVED + message
+    _asserts_no_claim_about_remote_production(lines)
+    assert len(openai.requests) == max_retries + 1  # nenhuma chamada extra
+    assert ("tentativa_anterior_incerta: sim" in lines) is (max_retries > 0)
 
 
 @pytest.mark.asyncio
@@ -368,4 +385,4 @@ async def test_accepted_direct_failures_never_claim_that_no_answer_was_produced(
     lines = capsys.readouterr().out.split("\n")
 
     assert lines[:3] == ["status: falhou", "nenhuma resposta foi registrada: Falha.", caveat]
-    assert not any("produzida" in line for line in lines)
+    _asserts_no_claim_about_remote_production(lines)

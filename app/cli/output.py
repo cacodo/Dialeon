@@ -327,30 +327,19 @@ def _direct_cost_line(response) -> str:
     return f"custo estimado: {cost} (contabilidade completa: {'sim' if complete else 'não'})"
 
 
-# M4 (revisão adversarial) -- "nenhuma resposta foi produzida" só quando o
-# registro PROVA isso: o próprio provider respondeu com recusa/erro/formato
-# inesperado, e nenhuma tentativa anterior pode ter chegado a ele. Timeout,
-# erro não classificado, tentativa anterior incerta, falha de execução ou de
-# gravação do desfecho: o provider pode ter produzido uma resposta que não
-# chegou ou não foi gravada -- aí o texto diz só que nenhuma foi registrada.
-_DIRECT_NO_ANSWER_ERROR_TYPES = frozenset({"auth", "rate_limit", "api_error", "malformed_response"})
-
-
-def _direct_no_answer_is_established(run: DirectFailedRunResponse) -> bool:
-    response = run.response
-    return (
-        run.failure_stage == "provider"
-        and response is not None
-        and response.error is not None
-        and response.error.type.value in _DIRECT_NO_ANSWER_ERROR_TYPES
-        and not response.had_uncertain_prior_attempts
-    )
-
-
+# M4 (revisão adversarial) -- o Dialeon só observa o SEU lado da chamada:
+# nenhum status HTTP, tipo de erro, timeout ou texto vazio prova o que o
+# modelo produziu (ou não) do lado do provider. Sem resposta utilizável
+# registrada, o texto diz só o que o Dialeon sabe, e depende apenas de ONDE a
+# run parou -- nunca do tipo de erro:
+# - "provider": a chamada terminou e está registrada, sem resposta
+#   utilizável -> nenhuma resposta utilizável foi recebida;
+# - execução/gravação do desfecho: nenhuma resposta foi registrada (o
+#   provider pode ter respondido).
 def _direct_no_answer_lines(run: DirectFailedRunResponse) -> list[str]:
     message = terminal_safe_text(_fmt(run.message))
-    if _direct_no_answer_is_established(run):
-        return [f"nenhuma resposta foi produzida: {message}"]
+    if run.failure_stage == "provider":
+        return [f"nenhuma resposta utilizável foi recebida: {message}"]
     if run.failure_stage == "terminal_persistence":
         caveat = (
             "o provider pode ter produzido uma resposta, mas o resultado não pôde ser gravado."

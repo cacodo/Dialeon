@@ -257,9 +257,9 @@ describe('RunDetail -- run direta', () => {
     vi.mocked(apiClient.getRun).mockResolvedValue(failed)
     renderApp('/runs/direct-2')
 
-    // timeout com tentativa anterior incerta: nada prova que nenhuma resposta
-    // foi produzida -- só que nenhuma foi registrada (M4).
-    const outcome = await screen.findByRole('region', { name: 'Sem resposta registrada' })
+    // timeout com tentativa anterior incerta: o Dialeon só sabe que não
+    // recebeu uma resposta utilizável (M4).
+    const outcome = await screen.findByRole('region', { name: 'Sem resposta utilizável' })
     expect(outcome).toHaveTextContent('A chamada ao provider excedeu o tempo limite.')
     expect(outcome).toHaveTextContent(/nenhum outro modelo foi usado no lugar de GPT/)
     expect(outcome).toHaveTextContent(/uma tentativa anterior pode ter chegado ao provider/i)
@@ -270,40 +270,39 @@ describe('RunDetail -- run direta', () => {
     )
   })
 
-  // M4 (revisão do Direct) -- "nenhuma resposta foi produzida" só quando o
-  // registro prova isso.
-  it('o provider respondeu sem resposta utilizável: "nenhuma resposta foi produzida"', async () => {
-    const refused: DirectFailedRunResponse = {
+  // M4 (revisão do Direct) -- o Dialeon só afirma o que recebeu/registrou,
+  // nunca o que o modelo produziu do lado do provider; o texto não depende do
+  // tipo de erro.
+  const NOT_RECEIVED = 'O Dialeon não recebeu uma resposta utilizável, e nenhum outro modelo foi usado no lugar de GPT.'
+
+  function providerFailure(type: string, message: string, retryable: boolean): DirectFailedRunResponse {
+    return {
       ...failed,
-      failure_reason: 'malformed_response',
-      message: 'A resposta do provider veio num formato inesperado.',
+      failure_reason: type,
+      message,
       response: {
         ...failed.response!,
         attempts: 1,
         had_uncertain_prior_attempts: false,
-        error: { type: 'malformed_response', message: 'sem texto', retryable: false },
+        error: { type, message: 'detalhe do provider', retryable },
       },
     }
-    vi.mocked(apiClient.getRun).mockResolvedValue(refused)
+  }
+
+  it.each([
+    // HTTP 200 sem texto utilizável: o provider pode ter processado a chamada
+    ['resposta malformada', providerFailure('malformed_response', 'A resposta do provider veio num formato inesperado.', false)],
+    // 5xx numa única tentativa, sem tentativa anterior
+    ['erro do servidor (5xx) numa única tentativa', providerFailure('api_error', 'O provider devolveu um erro.', true)],
+    ['timeout sem tentativa anterior incerta', providerFailure('timeout', 'A chamada ao provider excedeu o tempo limite.', true)],
+  ])('%s: só "não recebeu uma resposta utilizável", nunca "nenhuma resposta foi produzida"', async (_label, run) => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(run)
     renderApp('/runs/direct-2')
 
-    const outcome = await screen.findByRole('region', { name: 'Sem resposta' })
-    expect(outcome).toHaveTextContent('Nenhuma resposta foi produzida, e nenhum outro modelo foi usado no lugar de GPT.')
-    expect(outcome).not.toHaveTextContent(/registrada|confirmar|pode ter/i)
-  })
-
-  it('timeout sem tentativa anterior incerta: ainda só "nenhuma resposta foi registrada"', async () => {
-    const timedOut: DirectFailedRunResponse = {
-      ...failed,
-      response: { ...failed.response!, attempts: 1, had_uncertain_prior_attempts: false },
-    }
-    vi.mocked(apiClient.getRun).mockResolvedValue(timedOut)
-    renderApp('/runs/direct-2')
-
-    const outcome = await screen.findByRole('region', { name: 'Sem resposta registrada' })
-    expect(outcome).toHaveTextContent('Nenhuma resposta foi registrada, e nenhum outro modelo foi usado no lugar de GPT.')
-    expect(outcome).toHaveTextContent('Não é possível confirmar se o modelo chegou a produzir uma resposta.')
-    expect(outcome).not.toHaveTextContent(/foi produzida/)
+    const outcome = await screen.findByRole('region', { name: 'Sem resposta utilizável' })
+    expect(outcome).toHaveTextContent(run.message!)
+    expect(outcome).toHaveTextContent(NOT_RECEIVED)
+    expect(screen.queryByText(/foi produzida|não produziu/i)).toBeNull()
   })
 
   it.each([
