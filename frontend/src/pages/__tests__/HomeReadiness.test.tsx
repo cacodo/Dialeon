@@ -242,4 +242,23 @@ describe('Home -- prontidão local do Conselho', () => {
     expect(alert).toHaveTextContent('Você pode perguntar de novo; o servidor avalia a configuração local outra vez.')
     expect(alert).not.toHaveTextContent(/não há configuração local ausente|aviso acima/)
   })
+
+  it('409 com resumo fora do contrato: texto neutro, sem afirmar ausência nem pedir reconhecimento', async () => {
+    vi.mocked(apiClient.previewCouncilReadiness).mockResolvedValue(readiness('missing'))
+    vi.mocked(apiClient.createRun).mockRejectedValueOnce(
+      new ApiError(409, 'council_readiness_changed', 'mudou', {
+        readiness: { ...readiness('met'), summary: 'mostly_fine' },
+      }),
+    )
+    renderHome()
+
+    await screen.findByRole('button', { name: 'Modelos: GPT' })
+    await ask()
+    await userEvent.click(await screen.findByRole('checkbox', { name: /Perguntar mesmo assim/ }))
+    await submit()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Você pode perguntar de novo; o servidor avalia a configuração local outra vez.')
+    expect(alert).not.toHaveTextContent(/não há configuração local ausente|aviso acima|mesmo assim/)
+  })
 })

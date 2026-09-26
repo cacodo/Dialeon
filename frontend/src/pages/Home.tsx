@@ -44,7 +44,10 @@ function readinessFromDetails(details: Record<string, unknown> | null): CouncilR
     candidate !== null &&
     candidate.contract_version === 'council_local_readiness_v1' &&
     Array.isArray(candidate.dependencies) &&
-    typeof candidate.summary === 'string'
+    // só os valores do contrato (CouncilReadinessSummary no backend)
+    (candidate.summary === 'all_met' ||
+      candidate.summary === 'some_unknown' ||
+      candidate.summary === 'some_missing')
     ? (candidate as CouncilReadiness)
     : null
 }
