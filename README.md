@@ -360,10 +360,10 @@ Usar a CLI diretamente, sem subir a API:
 
 ```bash
 dialeon providers                       # lista os identificadores de provider disponíveis
-dialeon run "sua pergunta aqui"         # executa e imprime o resultado
+dialeon run "sua pergunta aqui"         # executa e imprime a resposta (detalhes logo abaixo)
 dialeon run "..." --providers openai,anthropic --source "texto de referência opcional"
 dialeon list                             # lista execuções recentes
-dialeon get <run_id>                     # detalhe de uma execução
+dialeon get <run_id>                     # resposta e detalhes de uma execução
 dialeon audit <run_id>                   # auditoria completa (claims, vereditos, reconciliação, custo)
 ```
 

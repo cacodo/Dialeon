@@ -90,7 +90,9 @@ def _build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--offset", type=_offset_type, default=0)
     list_parser.add_argument("--json", action="store_true", dest="as_json")
 
-    get_parser = subparsers.add_parser("get", help="Mostra os detalhes de uma execução.")
+    get_parser = subparsers.add_parser(
+        "get", help="Mostra a resposta de uma execução e, depois dela, os detalhes."
+    )
     get_parser.add_argument("run_id")
     get_parser.add_argument("--json", action="store_true", dest="as_json")
 

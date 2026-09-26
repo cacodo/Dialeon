@@ -126,94 +126,104 @@ def human_run_result(run: CompletedRunResponse) -> str:
     `terminal_safe_text`, sempre em modo estrito). Este é o único
     ponto que de fato escreve num terminal real nesta função -- é aqui,
     e só aqui, que a neutralização acontece."""
-    lines = [
-        "status: concluída",
-        f"run_id: {run.id}",
-        f"status_da_resposta: {run.final_answer.status}",
-        f"editor_model: {terminal_safe_text(_fmt(run.final_answer.editor_model))}",
-        f"editor_model_identity_source: "
-        f"{_fmt_model_identity_source(run.final_answer.editor_model_identity_source)}",
-        f"confiança_do_juiz: {_fmt(run.final_answer.judge_confidence)}",
-        "",
-    ]
-    # Resposta (aditiva): ordem de fallback fixa -- Natural Answer primeiro
-    # quando existe E a política atual a considera elegível; senão a
-    # resposta principal estruturada. A avaliação completa (`answer_text`)
-    # continua SEMPRE impressa logo depois. Mesmo tratamento de segurança de
-    # terminal: texto de claim (verbatim nas duas) é não confiável.
-    if (
-        run.final_answer.linguistic_realization is not None
-        and run.final_answer.linguistic_realization_presentation_eligible
-    ):
+    final_answer = run.final_answer
+    shows_realization = (
+        final_answer.linguistic_realization is not None
+        and final_answer.linguistic_realization_presentation_eligible
+    )
+    shows_natural = not shows_realization and (
+        final_answer.natural_answer is not None and final_answer.natural_answer_presentation_eligible
+    )
+    shows_primary = (
+        not shows_realization and not shows_natural and final_answer.primary_answer is not None
+    )
+
+    # ANSWER FIRST (mesma hierarquia da interface web): 1) a resposta, 2) as
+    # limitações registradas, 3) um bloco curto de detalhes da execução, 4)
+    # como a resposta foi montada (proveniência, resposta principal
+    # estruturada, avaliação completa), 5) onde ver a auditoria completa.
+    # Nada deixou de ser impresso -- só a ordem mudou. A escolha da resposta
+    # é a MESMA ordem de fallback de sempre: realização linguística
+    # (elegível) -> resposta natural (elegível) -> resposta principal ->
+    # avaliação completa; o rótulo de cada seção continua dizendo qual foi.
+    # Mesmo tratamento de segurança de terminal: texto de claim (verbatim em
+    # todas) é não confiável.
+    lines: list[str] = []
+    if shows_realization:
         lines.append("resposta:")
-        lines.append(
-            terminal_safe_text(run.final_answer.linguistic_realization.rendered_text)
-        )
+        lines.append(terminal_safe_text(final_answer.linguistic_realization.rendered_text))
         lines.append("")
         lines.append(
             "nota: redação gerada por modelo a partir de afirmações selecionadas e "
             "avaliadas pelo Judge; não é verificação externa."
         )
-        if run.final_answer.limitations:
-            lines.append("")
-            lines.append("limitações:")
-            lines.extend(
-                f"  - {terminal_safe_text(item)}" for item in run.final_answer.limitations
-            )
-        if run.final_answer.primary_answer is not None:
-            lines.append("")
-            lines.append("resposta principal (estruturada):")
-            lines.append(
-                terminal_safe_text(run.final_answer.primary_answer.rendered_text)
-            )
-        lines.append("")
-        lines.append("avaliação completa:")
-    elif (
-        run.final_answer.natural_answer is not None
-        and run.final_answer.natural_answer_presentation_eligible
-    ):
+    elif shows_natural:
         lines.append("resposta:")
-        lines.append(terminal_safe_text(run.final_answer.natural_answer.rendered_text))
-        lines.append("")
-        if run.final_answer.primary_answer is not None:
-            lines.append("resposta principal (estruturada):")
-            lines.append(terminal_safe_text(run.final_answer.primary_answer.rendered_text))
-            lines.append("")
-        lines.append("avaliação completa:")
-    elif run.final_answer.primary_answer is not None:
+        lines.append(terminal_safe_text(final_answer.natural_answer.rendered_text))
+    elif shows_primary:
         lines.append("resposta principal:")
-        lines.append(terminal_safe_text(run.final_answer.primary_answer.rendered_text))
-        lines.append("")
-        lines.append("avaliação completa:")
-    lines.append(terminal_safe_text(run.final_answer.answer_text))
-    if (
-        run.final_answer.limitations
-        and not (
-            run.final_answer.linguistic_realization is not None
-            and run.final_answer.linguistic_realization_presentation_eligible
-        )
-    ):
+        lines.append(terminal_safe_text(final_answer.primary_answer.rendered_text))
+    else:
+        # Sem resposta principal: a avaliação completa JÁ é a resposta.
+        lines.append("resposta (avaliação completa):")
+        lines.append(terminal_safe_text(final_answer.answer_text))
+    if final_answer.limitations:
         lines.append("")
         lines.append("limitações:")
-        lines.extend(f"  - {terminal_safe_text(item)}" for item in run.final_answer.limitations)
+        lines.extend(f"  - {terminal_safe_text(item)}" for item in final_answer.limitations)
+
     lines.append("")
+    lines.append("detalhes:")
+    lines.append("status: concluída")
+    lines.append(f"run_id: {run.id}")
+    lines.append(
+        "modelos: " + ", ".join(terminal_safe_text(p) for p in run.config.enabled_providers)
+    )
     lines.append(
         f"custo estimado: {run.accounting.estimated_cost_usd:.6f} USD "
         f"(contabilidade completa: {'não' if run.accounting.has_unknown_accounting_components else 'sim'})"
     )
+    lines.append(f"concluída em: {run.completed_at.isoformat()}")
+
+    lines.append("")
+    lines.append("como a resposta foi montada:")
+    lines.append(f"status_da_resposta: {final_answer.status}")
+    lines.append(f"editor_model: {terminal_safe_text(_fmt(final_answer.editor_model))}")
+    lines.append(
+        "editor_model_identity_source: "
+        f"{_fmt_model_identity_source(final_answer.editor_model_identity_source)}"
+    )
+    lines.append(f"confiança_do_juiz: {_fmt(final_answer.judge_confidence)}")
     lines.append(_human_provider_execution_policy_line(run.provider_execution_policy))
+    if (shows_realization or shows_natural) and final_answer.primary_answer is not None:
+        lines.append("")
+        lines.append("resposta principal (estruturada):")
+        lines.append(terminal_safe_text(final_answer.primary_answer.rendered_text))
+    if shows_realization or shows_natural or shows_primary:
+        lines.append("")
+        lines.append("avaliação completa:")
+        lines.append(terminal_safe_text(final_answer.answer_text))
+
+    lines.append("")
+    lines.append(f"auditoria completa: dialeon audit {run.id}")
     return "\n".join(lines)
 
 
 def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
+    # Sem resposta, o desfecho É o resultado: status e explicação primeiro,
+    # depois o identificador/política e onde ver o motivo de cada modelo.
     return "\n".join(
         [
             "status: quórum insuficiente",
-            f"run_id: {run.id}",
+            "Nenhuma resposta final foi composta -- o quórum mínimo não foi atingido.",
             f"respostas bem-sucedidas: {run.successful_count}/{run.total_providers} "
             f"(mínimo pra retornar: {run.min_to_return})",
-            "Nenhuma resposta final foi composta -- o quórum mínimo não foi atingido.",
+            "",
+            "detalhes:",
+            f"run_id: {run.id}",
             _human_provider_execution_policy_line(run.provider_execution_policy),
+            "",
+            f"motivo de cada modelo: dialeon audit {run.id}",
         ]
     )
 
