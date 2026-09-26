@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
-import type { RunConfigPublic, RunResponse } from '../api/types'
+import { isDirectRun, type RunConfigPublic, type RunResponse } from '../api/types'
 import {
   formatDateTime,
   formatErrorCode,
@@ -11,6 +11,7 @@ import {
   formatRecordedDuration,
 } from '../api/formatting'
 import { AnswerAssessmentDetails, FinalAnswerView } from '../components/FinalAnswerView'
+import { DirectRunView } from '../components/DirectRunView'
 import { InspectionPanel } from '../components/InspectionPanel'
 import { ProviderExecutionPolicyView } from '../components/ProviderExecutionPolicyView'
 import { isValidPage } from '../lib/safePage'
@@ -189,6 +190,26 @@ export function RunDetail() {
   }
 
   const run = state.run
+
+  // Direct Answer Execution V1 -- run direta: página própria, sem nenhuma
+  // seção do Conselho.
+  if (isDirectRun(run)) {
+    return (
+      <main className="run-detail" id="main-content">
+        <p className="run-detail__back">
+          <Link to={backHref}>← Histórico</Link>
+        </p>
+        <DirectRunView
+          run={run}
+          refreshing={refresh.phase === 'refreshing'}
+          stillWithoutOutcome={refresh.phase === 'still_without_outcome'}
+          refreshError={refresh.phase === 'error' ? refresh.message : null}
+          onRefresh={handleRefresh}
+        />
+      </main>
+    )
+  }
+
   const models = formatModelList(run.config.enabled_providers)
 
   return (

@@ -21,6 +21,7 @@ from app.application.errors import (
     InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
+    LocalPrerequisitesMissingError,
     UnknownProviderError,
 )
 from app.orchestrator.errors import InsufficientQuorumError
@@ -67,6 +68,21 @@ def register_exception_handlers(app: FastAPI) -> None:
                         "unknown_providers": exc.unknown_providers,
                         "known_providers": exc.known_providers,
                     },
+                )
+            ),
+        )
+
+    @app.exception_handler(LocalPrerequisitesMissingError)
+    async def _handle_local_prerequisites_missing(
+        request: Request, exc: LocalPrerequisitesMissingError
+    ) -> JSONResponse:
+        return _error_json(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="provider_prerequisites_missing",
+                    message="O provider escolhido não tem a configuração local necessária.",
+                    details={"provider": exc.provider},
                 )
             ),
         )

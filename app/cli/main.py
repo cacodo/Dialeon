@@ -83,6 +83,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "reconciliado deterministicamente com a avaliação do Judge na "
         "resposta final.",
     )
+    run_parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="Resposta direta: pergunta a UM provider (--providers com exatamente um id), "
+        "sem as etapas do conselho e sem fonte. A resposta é a desse provider -- não é "
+        "consenso nem verificação.",
+    )
     run_parser.add_argument("--json", action="store_true", dest="as_json")
 
     list_parser = subparsers.add_parser("list", help="Lista execuções recentes.")
@@ -116,6 +123,14 @@ def _parse_providers(raw: str | None) -> list[str] | None:
 
 
 async def _dispatch(args: argparse.Namespace, components) -> int:
+    if args.command == "run" and args.direct:
+        return await commands.cmd_run_direct(
+            components,
+            question=args.question,
+            providers=_parse_providers(args.providers),
+            source_text=args.source,
+            as_json=args.as_json,
+        )
     if args.command == "run":
         return await commands.cmd_run(
             components,

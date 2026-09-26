@@ -37,7 +37,9 @@ INTERNAL_ERROR_RESPONSE = error_response(
 )
 INVALID_REQUEST_RESPONSE = error_response(
     "Request inválido (`error.code` = `invalid_request`, ou `invalid_provider` "
-    "quando `enabled_providers` contém provider inexistente)."
+    "quando `enabled_providers` contém provider inexistente, ou "
+    "`provider_prerequisites_missing` quando o provider de uma run direta não tem "
+    "a configuração local necessária)."
 )
 RUN_NOT_FOUND_RESPONSE = error_response("Run não encontrada (`error.code` = `run_not_found`).")
 INSUFFICIENT_QUORUM_RESPONSE = error_response(

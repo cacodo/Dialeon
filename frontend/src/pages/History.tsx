@@ -179,6 +179,11 @@ export function History() {
                     <span className="history__meta">
                       <time dateTime={run.started_at}>{formatDateTime(run.started_at)}</time>
                       <span className="history__status">{STATUS_LABELS[run.status]}</span>
+                      {/* Direct Answer Execution V1: o tipo vem do registro,
+                          nunca inferido; runs do Conselho não ganham marca. */}
+                      {run.kind === 'direct' && (
+                        <span className="history__kind">Resposta direta</span>
+                      )}
                     </span>
                   </Link>
                 </li>

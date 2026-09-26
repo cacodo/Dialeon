@@ -11,6 +11,12 @@
 // extensão futura, mas nada além disso é renderizado aqui -- sem
 // placeholders, sem controles "em breve".
 //
+// Direct Answer Execution V1 -- um controle de modo escolhe entre o
+// Conselho (padrão, comportamento de sempre) e a resposta direta (UM modelo
+// responde sozinho, sem as etapas do conselho e sem fonte). As duas seleções
+// de modelo são estados separados: trocar de modo nunca fabrica nem apaga a
+// escolha do outro, e o envio só leva o que vale no modo atual.
+//
 // Enter continua inserindo nova linha (a pergunta pode ser longa e
 // multi-linha); Ctrl/⌘+Enter envia. O atalho é anunciado por
 // `aria-keyshortcuts` e por uma dica discreta ligada ao campo por
@@ -38,9 +44,18 @@ interface RunComposerProps {
   providersError: string | null
   submitting: boolean
   initialInput?: ReuseInput | null
-  onSubmit: (question: string, enabledProviders: string[], sourceText: string | null) => void
+  // `kind` só é passado pra resposta direta (o envio do Conselho continua
+  // exatamente como era).
+  onSubmit: (
+    question: string,
+    enabledProviders: string[],
+    sourceText: string | null,
+    kind?: 'direct',
+  ) => void
   onRetryProviders?: () => void
 }
+
+export type RunMode = 'council' | 'direct'
 
 const SOURCE_PANEL_ID = 'run-composer-source-panel'
 const MODELS_PANEL_ID = 'provider-selector-panel'
@@ -116,6 +131,40 @@ function reconcileSelection(
     : current
 }
 
+// Resposta direta: o modelo escolhido (no máximo um), com a mesma regra de
+// base da seleção do Conselho -- "met" pode ser escolhido automaticamente;
+// "unknown" só por escolha explícita nesse estado; "missing" nunca.
+interface DirectChoice {
+  id: string | null
+  basis: SelectionBasis | null
+  // A escolha já aconteceu (automática ou do usuário): uma lista nova só
+  // pode REMOVER, nunca trocar de modelo sozinha.
+  settled: boolean
+}
+
+function reconcileDirectChoice(
+  current: DirectChoice,
+  providers: readonly string[],
+  states: PrerequisiteStates,
+  preferred: readonly string[],
+  fallbackToAnyMet: boolean,
+): DirectChoice {
+  const isMet = (id: string) => providers.includes(id) && prerequisiteOf(states, id) === 'met'
+  if (current.settled) {
+    if (current.id === null) return current
+    if (!holdsInSelection(current.id, current.basis ?? undefined, providers, states)) {
+      return { id: null, basis: null, settled: true }
+    }
+    const basis: SelectionBasis = isMet(current.id) ? 'met' : 'unknown'
+    return basis === current.basis ? current : { ...current, basis }
+  }
+  const pick = preferred.find(isMet) ?? (fallbackToAnyMet ? providers.find(isMet) : undefined)
+  if (pick !== undefined) return { id: pick, basis: 'met', settled: true }
+  // Reuso de uma run direta cujo modelo não pode ser marcado agora: nenhum
+  // outro é escolhido no lugar dele.
+  return fallbackToAnyMet ? current : { id: null, basis: null, settled: providers.length > 0 }
+}
+
 export function RunComposer({
   providers,
   localPrerequisites,
@@ -127,7 +176,14 @@ export function RunComposer({
   onRetryProviders,
 }: RunComposerProps) {
   const [question, setQuestion] = useState(initialInput?.question ?? '')
+  const reusedDirectProvider = initialInput?.kind === 'direct' ? initialInput.enabledProviders[0] : null
+  const [mode, setMode] = useState<RunMode>(initialInput?.kind === 'direct' ? 'direct' : 'council')
   const [selection, setSelection] = useState<Selection>({ ids: [], basis: {}, settled: false })
+  const [directChoice, setDirectChoice] = useState<DirectChoice>({
+    id: null,
+    basis: null,
+    settled: false,
+  })
   // Lista de modelos com que a seleção foi reconciliada por último. Uma lista
   // nova (resposta de GET /providers) reconcilia durante o render -- sem
   // efeito, sem render intermediário com uma seleção desatualizada.
@@ -142,7 +198,24 @@ export function RunComposer({
   ) {
     setReconciledWith({ providers, states: localPrerequisites })
     setSelection((current) =>
-      reconcileSelection(current, providers, localPrerequisites, initialInput?.enabledProviders ?? []),
+      reconcileSelection(
+        current,
+        providers,
+        localPrerequisites,
+        // o reuso de uma run direta não pré-seleciona nada no Conselho
+        initialInput?.kind === 'direct' ? [] : (initialInput?.enabledProviders ?? []),
+      ),
+    )
+    setDirectChoice((current) =>
+      current.settled || mode === 'direct'
+        ? reconcileDirectChoice(
+            current,
+            providers,
+            localPrerequisites,
+            reusedDirectProvider !== null ? [reusedDirectProvider] : [],
+            reusedDirectProvider === null,
+          )
+        : current,
     )
   }
   const selected = selection.ids
@@ -167,6 +240,24 @@ export function RunComposer({
     })
   }
 
+  function chooseDirect(next: string[]) {
+    const id = next[0]
+    const state = id === undefined ? 'missing' : prerequisiteOf(localPrerequisites, id)
+    if (id === undefined || state === 'missing') return
+    setDirectChoice({ id, basis: state === 'met' ? 'met' : 'unknown', settled: true })
+  }
+
+  function changeMode(next: RunMode) {
+    if (next === 'direct' && !directChoice.settled) {
+      // Primeira vez no modo direto: só um modelo "met" é escolhido
+      // automaticamente, de preferência um que já estava escolhido no Conselho.
+      setDirectChoice((current) =>
+        reconcileDirectChoice(current, providers, localPrerequisites, validSelected, true),
+      )
+    }
+    setMode(next)
+  }
+
   const modelOptions: ModelOption[] = providers.map((id) => ({
     id,
     label: formatProviderName(id),
@@ -181,6 +272,18 @@ export function RunComposer({
   const validSelected = selected.filter((id) =>
     holdsInSelection(id, selection.basis[id], exposedProviders, localPrerequisites),
   )
+  const validDirect =
+    directChoice.id !== null &&
+    holdsInSelection(directChoice.id, directChoice.basis ?? undefined, exposedProviders, localPrerequisites)
+      ? [directChoice.id]
+      : []
+  const isDirect = mode === 'direct'
+  // Reuso de uma run direta cujo modelo não pôde ser marcado de novo: dito
+  // com clareza, sem trocar de modelo por conta própria.
+  const reuseNotRestored =
+    isDirect && reusedDirectProvider !== null && directChoice.id === null && !providersLoading
+      ? reusedDirectProvider
+      : null
   // Primeira execução: a lista chegou, mas nenhum modelo tem a configuração
   // local CONFIRMADA ("met"). Isso não quer dizer que ela falte: só os
   // "missing" são ausência conhecida; os "unknown" não puderam ser
@@ -207,9 +310,10 @@ export function RunComposer({
 
   const canSubmit =
     question.trim().length > 0 &&
-    validSelected.length > 0 &&
+    (isDirect ? validDirect.length === 1 : validSelected.length > 0) &&
     !questionTooLong &&
-    !sourceTooLong &&
+    // a fonte nunca é enviada na resposta direta
+    (isDirect || !sourceTooLong) &&
     !submitting &&
     !providersLoading
 
@@ -221,6 +325,10 @@ export function RunComposer({
     // `canSubmit` é só detecção de "em branco" pra UX. Fonte: whitespace só
     // decide se ela está vazia; conteúdo não vazio segue VERBATIM, igual à
     // API e à CLI.
+    if (isDirect) {
+      onSubmit(question, validDirect, null, 'direct')
+      return
+    }
     onSubmit(question, validSelected, sourceBlank ? null : sourceText)
   }
 
@@ -296,6 +404,51 @@ export function RunComposer({
         </section>
       )}
 
+      <fieldset className="composer__mode" disabled={submitting}>
+        <legend className="composer__mode-legend">Como responder</legend>
+        <label className="composer__mode-option">
+          <input
+            type="radio"
+            name="run-mode"
+            value="council"
+            checked={!isDirect}
+            onChange={() => changeMode('council')}
+            aria-describedby="run-mode-council-hint"
+          />
+          <span>Conselho de modelos</span>
+        </label>
+        <label className="composer__mode-option">
+          <input
+            type="radio"
+            name="run-mode"
+            value="direct"
+            checked={isDirect}
+            onChange={() => changeMode('direct')}
+            aria-describedby="run-mode-direct-hint"
+          />
+          <span>Resposta direta</span>
+        </label>
+        <p id="run-mode-council-hint" className="composer__mode-hint" hidden={isDirect}>
+          Vários modelos respondem; o Dialeon compara, avalia e organiza a resposta.
+        </p>
+        <p id="run-mode-direct-hint" className="composer__mode-hint" hidden={!isDirect}>
+          Um modelo responde sozinho, sem as etapas do conselho e sem fonte. A resposta é a
+          desse modelo: não é consenso nem verificação.
+          {!sourceBlank && ' O texto de fonte que você colou não é enviado neste modo.'}
+        </p>
+      </fieldset>
+
+      {reuseNotRestored !== null && (
+        <p role="status" className="notice notice--neutral composer__reuse-note">
+          O modelo usado antes ({formatProviderName(reuseNotRestored)}) não foi marcado:{' '}
+          {!providers.includes(reuseNotRestored)
+            ? 'ele não está mais na lista de modelos desta instalação.'
+            : prerequisiteOf(localPrerequisites, reuseNotRestored) === 'missing'
+              ? 'falta a configuração local dele nesta instalação.'
+              : 'não foi possível verificar a configuração local dele; você pode marcá-lo em “Modelo”.'}
+        </p>
+      )}
+
       <div className="composer__frame">
         <label htmlFor="question-input" className="sr-only">
           Faça uma pergunta
@@ -315,19 +468,21 @@ export function RunComposer({
         />
 
         <div className="composer__bar">
-          <button
-            type="button"
-            className="composer__control composer__source-toggle"
-            onClick={() => setSourceExpanded((expanded) => !expanded)}
-            disabled={submitting}
-            aria-expanded={sourceExpanded}
-            aria-controls={SOURCE_PANEL_ID}
-          >
-            Fonte (opcional)
-            <span className="composer__control-chevron" aria-hidden="true">
-              ▾
-            </span>
-          </button>
+          {!isDirect && (
+            <button
+              type="button"
+              className="composer__control composer__source-toggle"
+              onClick={() => setSourceExpanded((expanded) => !expanded)}
+              disabled={submitting}
+              aria-expanded={sourceExpanded}
+              aria-controls={SOURCE_PANEL_ID}
+            >
+              Fonte (opcional)
+              <span className="composer__control-chevron" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+          )}
 
           {providersLoading && (
             <p aria-live="polite" className="composer__status">
@@ -337,11 +492,12 @@ export function RunComposer({
           {!providersLoading && !providersError && (
             <ModelSummaryButton
               options={modelOptions}
-              selected={validSelected}
+              selected={isDirect ? validDirect : validSelected}
               expanded={modelsExpanded}
               onToggle={() => setModelsExpanded((expanded) => !expanded)}
               disabled={submitting}
               panelId={MODELS_PANEL_ID}
+              single={isDirect}
             />
           )}
 
@@ -350,7 +506,7 @@ export function RunComposer({
           </button>
         </div>
 
-        {sourceExpanded && (
+        {!isDirect && sourceExpanded && (
           <div id={SOURCE_PANEL_ID} className="composer__panel composer__source">
             <label htmlFor="source-input" className="composer__label">
               Fonte de texto (opcional)
@@ -385,10 +541,11 @@ export function RunComposer({
         {modelsExpanded && !providersLoading && !providersError && (
           <ModelSelectionPanel
             options={modelOptions}
-            selected={validSelected}
-            onChange={chooseModels}
+            selected={isDirect ? validDirect : validSelected}
+            onChange={isDirect ? chooseDirect : chooseModels}
             disabled={submitting}
             panelId={MODELS_PANEL_ID}
+            single={isDirect}
           />
         )}
       </div>
@@ -413,9 +570,9 @@ export function RunComposer({
         </p>
       )}
 
-      {sourceTooLong && (
+      {!isDirect && sourceTooLong && (
         // Fora do painel recolhível: o erro nunca fica escondido se a fonte
-        // estiver recolhida.
+        // estiver recolhida. (Na resposta direta a fonte não é enviada.)
         <p role="alert" className="notice notice--validation">
           A fonte passa do limite de {formatCharacterLimit(MAX_SOURCE_TEXT_CHARACTERS)} caracteres (
           {formatCharacterLimit(sourceCount)}). Abra “Fonte (opcional)” e reduza o texto.

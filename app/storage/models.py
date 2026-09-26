@@ -199,6 +199,33 @@ class AcceptedRunRow(Base):
     # reconstrução, NULL só pra linhas persistidas antes desta coluna
     # existir -- nunca backfillado.
     default_model_authority_snapshot_json: Mapped[dict | None] = mapped_column(JSON)
+    # Direct Answer Execution V1 -- que tipo de run foi ACEITA: "direct", ou
+    # NULL pra uma run do Conselho (toda linha anterior a esta coluna, e toda
+    # run do Conselho nova, que continua sendo gravada exatamente como antes).
+    # Nunca inferido de outro dado (número de providers, forma do config).
+    # Pra "direct", `run_config_json` guarda um `DirectRunConfig`.
+    run_kind: Mapped[str | None]
+
+
+class DirectRunRow(Base):
+    """Direct Answer Execution V1 -- desfecho TERMINAL de uma run direta
+    (`completed` ou `failed` por erro do provider), gravado na mesma
+    transação que apaga a linha de aceite (mesma disciplina de
+    `CouncilRunRow`/`QuorumFailureRow`). Tabela própria, aditiva: a única
+    resposta do provider fica em `response_json` (um `ModelResponse`
+    inteiro, com a proveniência de modelo/custo/request/tentativas) --
+    `model_responses` pertence ao Conselho (restrição de pai único) e não
+    é tocada."""
+
+    __tablename__ = "direct_runs"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    status: Mapped[str]  # "completed" | "failed"
+    started_at: Mapped[datetime]
+    ended_at: Mapped[datetime]
+    run_config_json: Mapped[dict] = mapped_column(JSON)
+    response_json: Mapped[dict] = mapped_column(JSON)
+    provider_execution_policy_json: Mapped[dict] = mapped_column(JSON)
 
 
 class ModelResponseRow(Base):

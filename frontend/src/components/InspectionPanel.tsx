@@ -51,6 +51,7 @@ import type {
   RoundAccountingPublic,
   RunAuditResponse,
 } from '../api/types'
+import { isDirectRun } from '../api/types'
 import {
   formatAuditFragmentOmittedReason,
   UNSAFE_INTEGER_FIDELITY_NOTICE,
@@ -436,7 +437,13 @@ function TechnicalAudit({
   )
 }
 
-function InspectionContent({ audit }: { audit: RunAuditResponse }) {
+function InspectionContent({ audit: anyAudit }: { audit: RunAuditResponse }) {
+  // Painel do Conselho: uma run direta tem inspeção própria (RunDetail),
+  // nunca seções do Conselho vazias.
+  if (isDirectRun(anyAudit)) {
+    return null
+  }
+  const audit = anyAudit
   if (audit.status !== 'completed' && audit.status !== 'insufficient_quorum') {
     // T02.4 -- este componente só é montado (ver RunDetail.tsx) pra runs
     // com desfecho terminal auditável; "running"/"failed" nunca chegam

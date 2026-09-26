@@ -490,7 +490,12 @@ export interface RunSummaryResponse {
   // (ver frontend/src/pages/History.tsx). Aditivo sobre o contrato já
   // existente.
   question: string
+  // Direct Answer Execution V1 -- tipo de run persistido. Ausente em
+  // servidores anteriores a este campo (= Conselho).
+  kind?: RunKind
 }
+
+export type RunKind = 'council' | 'direct'
 
 export interface RunListResponse {
   runs: RunSummaryResponse[]
@@ -559,11 +564,79 @@ export interface FailedRunResponse {
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
 }
 
-export type RunResponse =
+export type CouncilRunResponse =
   | CompletedRunResponse
   | QuorumFailureRunResponse
   | RunningRunResponse
   | FailedRunResponse
+
+// ---------------------------------------------------------------------------
+// Direct Answer Execution V1 -- run DIRETA: uma pergunta, um provider, a
+// resposta desse provider. Sempre com `kind: 'direct'`; nunca carrega
+// afirmações, veredito, quórum ou avaliação do Conselho. As respostas do
+// Conselho não têm `kind` (forma inalterada).
+// ---------------------------------------------------------------------------
+
+export interface DirectRunConfigPublic {
+  question: string
+  provider: string
+  // Modelo padrão configurado no deployment NO ACEITE -- nunca reinterpretado.
+  requested_model: string
+  max_output_tokens: number
+}
+
+export interface DirectRunningRunResponse {
+  kind: 'direct'
+  status: 'running'
+  id: string
+  started_at: string
+  config: DirectRunConfigPublic
+  provider_execution_policy: ProviderExecutionPolicy | null
+}
+
+export interface DirectCompletedRunResponse {
+  kind: 'direct'
+  status: 'completed'
+  id: string
+  started_at: string
+  completed_at: string
+  config: DirectRunConfigPublic
+  // O texto que o provider devolveu, exatamente -- conteúdo NÃO CONFIÁVEL.
+  answer: string
+  response: ModelResponsePublic
+  accounting: AccountingSummary
+  provider_execution_policy: ProviderExecutionPolicy
+}
+
+export interface DirectFailedRunResponse {
+  kind: 'direct'
+  status: 'failed'
+  id: string
+  started_at: string
+  failed_at: string | null
+  config: DirectRunConfigPublic
+  // 'provider': a chamada terminou sem texto utilizável (registro em
+  // `response`); 'execution'/'terminal_persistence': sem `response`.
+  failure_stage: 'provider' | 'execution' | 'terminal_persistence' | null
+  failure_reason: string | null
+  message: string | null
+  response: ModelResponsePublic | null
+  accounting: AccountingSummary | null
+  provider_execution_policy: ProviderExecutionPolicy | null
+}
+
+export type DirectRunResponse =
+  | DirectCompletedRunResponse
+  | DirectFailedRunResponse
+  | DirectRunningRunResponse
+
+export type RunResponse = CouncilRunResponse | DirectRunResponse
+
+export function isDirectRun<T extends object>(
+  run: T,
+): run is Extract<T, { kind: 'direct' }> {
+  return 'kind' in run && (run as { kind?: unknown }).kind === 'direct'
+}
 
 export interface DebateOutcome {
   skipped_reason: string | null
@@ -671,6 +744,7 @@ export type RunAuditResponse =
   | QuorumFailureAudit
   | RunningRunResponse
   | FailedRunResponse
+  | DirectRunResponse
 
 // Estado dos pré-requisitos LOCAIS de um provider, como o backend o conhece
 // a partir da configuração com que foi iniciado (sem rede): "met" não é
@@ -688,6 +762,10 @@ export interface CreateRunRequest {
   question: string
   enabled_providers: string[]
   source_text: string | null
+  // Direct Answer Execution V1 -- omitido = Conselho (o envio do Conselho
+  // continua sem este campo); 'direct' exige exatamente um provider e
+  // nenhuma fonte.
+  kind?: RunKind
 }
 
 // Etapa 16 -- audit-only. Só tipagem pra consistência; nenhum componente
@@ -793,6 +871,9 @@ export type ErrorCode =
   | 'insufficient_quorum'
   | 'run_not_found'
   | 'internal_error'
+  // Direct Answer Execution V1: o provider de uma resposta direta não tem a
+  // configuração local necessária (rejeitada antes de qualquer registro).
+  | 'provider_prerequisites_missing'
 
 export interface ErrorBody {
   code: ErrorCode

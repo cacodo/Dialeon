@@ -146,6 +146,35 @@ uma estimativa prévia, nem um teto garantido de cobrança. O custo mostrado
 depois da resposta é uma estimativa calculada a partir do uso reportado. Ver
 [Orçamento e contabilização](#orçamento-e-contabilização).
 
+### Resposta direta ou Conselho
+
+Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
+v1.2.0 só tem o Conselho), cada pergunta pode ser feita de dois jeitos:
+
+- **Conselho de modelos** (padrão, o comportamento de sempre): os modelos
+  escolhidos respondem, e o Dialeon extrai as afirmações, as compara, avalia
+  (juiz) e organiza a resposta.
+- **Resposta direta**: **um** modelo responde sozinho. É uma única chamada ao
+  provider escolhido, usando o modelo padrão que este deployment tem
+  configurado para ele (congelado no momento da pergunta; o modelo que o
+  provider reportar fica registrado ao lado). Não passa por nenhuma etapa do
+  Conselho -- nada de afirmações, juiz, fonte ou editor --, então a resposta é
+  a desse modelo: não é consenso nem verificação. Fonte não é aceita neste
+  modo. O provider precisa estar com a configuração local presente (`met`;
+  `missing` é recusado antes de qualquer chamada, `unknown` só por escolha
+  explícita); isso não garante que a chamada funcione -- erro, timeout ou
+  resposta vazia continuam possíveis e ficam registrados como uma resposta
+  direta sem resposta, sem troca de modelo e sem cair no Conselho. Os
+  detalhes da chamada (modelo solicitado e reportado, tokens, custo
+  estimado, tentativas, proveniência do pedido) ficam em “Como esta resposta
+  foi produzida” e na auditoria.
+
+Na interface, escolha em “Como responder”. Pela CLI:
+`dialeon run "pergunta" --direct --providers openai` (exatamente um
+provider; sai com código 5 se o provider não produzir resposta). Pela API:
+`POST /runs` com `"kind": "direct"` e exatamente um item em
+`enabled_providers`; sem `kind`, a run é do Conselho, como sempre.
+
 ## O que já está implementado
 
 - Execução concorrente de uma pergunta contra múltiplos providers/modelos
@@ -279,6 +308,12 @@ significados estáveis, mas um valor novo pode quebrar clientes que os
 tratam de forma exaustiva -- não é evolução automaticamente compatível
 como um campo opcional novo.
 
+Runs diretas (ver [Resposta direta ou Conselho](#resposta-direta-ou-conselho))
+só existem quando pedidas com `"kind": "direct"`. Os detalhes delas sempre
+trazem `"kind": "direct"` e têm forma própria (`answer`, `response`, sem
+`final_answer`); respostas sem `kind` continuam sendo do Conselho, com a forma
+de sempre. A listagem ganhou `kind` (`council`/`direct`) em cada item.
+
 **Não fazem parte da API estável:** o texto exato de mensagens da CLI e de
 erros; o schema SQLite bruto e as classes ORM; os módulos internos `app.*`,
 adapters de provider e detalhes internos do domínio; componentes
@@ -362,6 +397,7 @@ Usar a CLI diretamente, sem subir a API:
 dialeon providers                       # lista os identificadores de provider disponíveis
 dialeon run "sua pergunta aqui"         # executa e imprime a resposta (detalhes logo abaixo)
 dialeon run "..." --providers openai,anthropic --source "texto de referência opcional"
+dialeon run "..." --direct --providers openai   # resposta direta de um único provider
 dialeon list                             # lista execuções recentes
 dialeon get <run_id>                     # resposta e detalhes de uma execução
 dialeon audit <run_id>                   # resumo legível da auditoria

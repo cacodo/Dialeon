@@ -19,6 +19,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from app.council.result import CouncilRunResult
+from app.direct.models import DirectRunConfig, DirectRunStatus
+from app.models.domain import ModelResponse
 from app.models.provider_models import DefaultModelAuthoritySnapshot, ProviderExecutionPolicy
 from app.orchestrator.config import RunConfig
 from app.orchestrator.result import RoundResult
@@ -116,7 +118,52 @@ class AcceptedRunRecord(BaseModel):
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None
 
 
-PersistedRun = CompletedRunRecord | QuorumFailureRecord | AcceptedRunRecord
+class DirectAcceptedRunRecord(BaseModel):
+    """Direct Answer Execution V1 -- run DIRETA aceita sem registro
+    terminal: `running` (em andamento, ou o processo parou antes de
+    terminar -- indistinguíveis, igual ao Conselho) ou `failed` (exceção
+    inesperada, ou falha ao gravar o desfecho). Nunca tem resposta: nada
+    intermediário é persistido. `kind` distingue da run do Conselho aceita
+    (`AcceptedRunRecord`), que continua exatamente como era."""
+
+    model_config = _CONFIG
+
+    kind: Literal["direct"] = "direct"
+    status: Literal["running", "failed"]
+    id: str
+    started_at: datetime
+    config: DirectRunConfig
+    failed_at: datetime | None = None
+    failure_classification: str | None = None
+    failure_message: str | None = None
+    failure_stage: FailureStage | None = None
+    provider_execution_policy: ProviderExecutionPolicy | None = None
+
+
+class DirectRunRecord(BaseModel):
+    """Direct Answer Execution V1 -- desfecho terminal de uma run direta:
+    a única resposta do provider (`completed` com texto, ou `failed` por
+    erro do provider, com o registro da chamada preservado)."""
+
+    model_config = _CONFIG
+
+    kind: Literal["direct"] = "direct"
+    status: DirectRunStatus
+    id: str
+    started_at: datetime
+    ended_at: datetime
+    config: DirectRunConfig
+    response: ModelResponse
+    provider_execution_policy: ProviderExecutionPolicy
+
+
+PersistedRun = (
+    CompletedRunRecord
+    | QuorumFailureRecord
+    | AcceptedRunRecord
+    | DirectRunRecord
+    | DirectAcceptedRunRecord
+)
 
 
 class RunSummary(BaseModel):
@@ -145,3 +192,6 @@ class RunSummary(BaseModel):
     started_at: datetime
     ended_at: datetime | None  # completed_at/failed_at, ou None se "running"
     question: str
+    # Direct Answer Execution V1 -- tipo de run, vindo do fato persistido
+    # (tabela terminal ou `accepted_runs.run_kind`), nunca inferido.
+    kind: Literal["council", "direct"] = "council"

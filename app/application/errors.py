@@ -102,3 +102,16 @@ class InvalidExecutionLimitsError(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(reason)
+
+
+class LocalPrerequisitesMissingError(Exception):
+    """Direct Answer Execution V1 -- o provider escolhido para uma run
+    direta está `missing` (`LLMProvider.local_prerequisite_state()`): falta
+    um pré-requisito local conhecido, então a chamada nunca poderia sair do
+    processo. Levantada ANTES do aceite durável -- nenhum registro é criado,
+    nenhuma chamada é tentada. Nunca carrega valor, tamanho ou nome de
+    credencial -- só o identificador do provider."""
+
+    def __init__(self, provider: str):
+        self.provider = provider
+        super().__init__(f"o provider {provider!r} não tem a configuração local necessária")

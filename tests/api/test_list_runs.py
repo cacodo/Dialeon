@@ -152,8 +152,9 @@ def test_list_runs_does_not_load_full_audit_tree():
         resp = client.get("/runs")
 
     run = resp.json()["runs"][0]
-    assert set(run.keys()) == {"id", "status", "started_at", "ended_at", "question"}
+    assert set(run.keys()) == {"id", "status", "started_at", "ended_at", "question", "kind"}
     assert run["question"] == "pergunta"
+    assert run["kind"] == "council"  # Direct Answer Execution V1: aditivo, run do Conselho
 
 
 def test_list_runs_exposes_exact_canonical_question_for_every_lifecycle_status():

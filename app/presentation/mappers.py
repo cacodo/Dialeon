@@ -33,6 +33,10 @@ from app.presentation.schemas import (
     CompletedRunResponse,
     DebateOutcome,
     DeterministicVerificationAttemptPublic,
+    DirectCompletedRunResponse,
+    DirectFailedRunResponse,
+    DirectRunConfigPublic,
+    DirectRunningRunResponse,
     EditorAttemptPublic,
     EditorOutcome,
     FailedRunResponse,
@@ -86,7 +90,15 @@ from app.source_analysis.models import (
     ValidSourceRelation,
 )
 from app.source_analysis.result import SourceAnalysisResult
-from app.storage.records import AcceptedRunRecord, QuorumFailureRecord, RunSummary
+from app.direct.models import DirectRunConfig
+from app.orchestrator.budget import sum_usage_and_cost
+from app.storage.records import (
+    AcceptedRunRecord,
+    DirectAcceptedRunRecord,
+    DirectRunRecord,
+    QuorumFailureRecord,
+    RunSummary,
+)
 
 
 def model_response_public(mr: ModelResponse) -> ModelResponsePublic:
@@ -756,4 +768,100 @@ def run_summary_response(summary: RunSummary) -> RunSummaryResponse:
         started_at=summary.started_at,
         ended_at=summary.ended_at,
         question=summary.question,
+        kind=summary.kind,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Direct Answer Execution V1
+# ---------------------------------------------------------------------------
+
+# Frase fixa por tipo de falha do provider (o erro reportado fica em
+# `response.error`). Nunca texto cru de provider aqui.
+_DIRECT_PROVIDER_FAILURE_MESSAGES = {
+    "timeout": "A chamada ao provider excedeu o tempo limite.",
+    "auth": "O provider recusou a autenticação.",
+    "rate_limit": "O provider recusou a chamada por limite de uso.",
+    "api_error": "O provider devolveu um erro.",
+    "malformed_response": "A resposta do provider veio num formato inesperado.",
+    "unknown": "A chamada ao provider falhou.",
+    "empty_response": "O provider não devolveu texto.",
+}
+
+
+def direct_run_config_public(config: DirectRunConfig) -> DirectRunConfigPublic:
+    return DirectRunConfigPublic(
+        question=config.question,
+        provider=config.provider,
+        requested_model=config.requested_model,
+        max_output_tokens=config.max_output_tokens,
+    )
+
+
+def _direct_accounting(response) -> AccountingSummary:
+    total_input, total_output, known_cost, has_unknown = sum_usage_and_cost([response])
+    return AccountingSummary(
+        total_input_tokens=total_input,
+        total_output_tokens=total_output,
+        estimated_cost_usd=known_cost,
+        has_unknown_accounting_components=has_unknown,
+    )
+
+
+def direct_run_response(
+    record: DirectRunRecord,
+) -> DirectCompletedRunResponse | DirectFailedRunResponse:
+    response = record.response
+    config = direct_run_config_public(record.config)
+    if record.status == "completed":
+        assert response.response_text is not None
+        return DirectCompletedRunResponse(
+            id=record.id,
+            started_at=record.started_at,
+            completed_at=record.ended_at,
+            config=config,
+            answer=response.response_text,
+            response=model_response_public(response),
+            accounting=_direct_accounting(response),
+            provider_execution_policy=record.provider_execution_policy,
+        )
+    reason = response.error.type.value if response.error is not None else "empty_response"
+    return DirectFailedRunResponse(
+        id=record.id,
+        started_at=record.started_at,
+        failed_at=record.ended_at,
+        config=config,
+        failure_stage="provider",
+        failure_reason=reason,
+        message=_DIRECT_PROVIDER_FAILURE_MESSAGES.get(
+            reason, _DIRECT_PROVIDER_FAILURE_MESSAGES["unknown"]
+        ),
+        response=model_response_public(response),
+        accounting=_direct_accounting(response),
+        provider_execution_policy=record.provider_execution_policy,
+    )
+
+
+def direct_accepted_run_response(
+    record: DirectAcceptedRunRecord,
+) -> DirectRunningRunResponse | DirectFailedRunResponse:
+    config = direct_run_config_public(record.config)
+    if record.status == "running":
+        return DirectRunningRunResponse(
+            id=record.id,
+            started_at=record.started_at,
+            config=config,
+            provider_execution_policy=record.provider_execution_policy,
+        )
+    return DirectFailedRunResponse(
+        id=record.id,
+        started_at=record.started_at,
+        failed_at=record.failed_at,
+        config=config,
+        failure_stage=record.failure_stage,
+        failure_reason=record.failure_classification,
+        message=record.failure_message,
+        response=None,
+        accounting=None,
+        provider_execution_policy=record.provider_execution_policy,
     )

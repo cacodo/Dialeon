@@ -381,7 +381,8 @@ def test_no_public_or_configuration_knob_exposes_the_reasoning_policy():
         assert not any(
             "reasoning" in name or "thinking" in name for name in model.model_fields
         ), model.__name__
-    assert set(CreateRunRequest.model_fields) == {"question", "enabled_providers", "source_text"}
+    # `kind` (Direct Answer Execution V1) escolhe o tipo de run -- não é knob de raciocínio.
+    assert set(CreateRunRequest.model_fields) == {"question", "enabled_providers", "source_text", "kind"}
 
     for rel in ("app/api", "app/cli", "app/presentation", "frontend/src/api/types.ts"):
         target = REPO_ROOT / rel

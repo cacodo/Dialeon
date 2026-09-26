@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
-import type { LocalPrerequisiteState } from '../api/types'
+import { isDirectRun, type LocalPrerequisiteState } from '../api/types'
 import { formatErrorCode, formatInvalidRequest } from '../api/formatting'
 import { parseReuseInput } from '../lib/reuseInput'
 import { completedRunState } from '../lib/completedRunState'
@@ -71,15 +71,21 @@ export function Home() {
     question: string,
     enabledProviders: string[],
     sourceText: string | null,
+    kind?: 'direct',
   ) {
     setSubmission({ phase: 'submitting' })
     try {
-      const result = await apiClient.createRun({
-        question,
-        enabled_providers: enabledProviders,
-        source_text: sourceText,
-      })
-      if (result.status === 'completed') {
+      const result = await apiClient.createRun(
+        // Conselho: exatamente o envio de sempre. Direta: opt-in explícito.
+        kind === 'direct'
+          ? { question, enabled_providers: enabledProviders, source_text: null, kind: 'direct' }
+          : { question, enabled_providers: enabledProviders, source_text: sourceText },
+      )
+      if (isDirectRun(result)) {
+        // Run direta criada (resposta ou falha do provider registrada): a
+        // página dela busca o registro pela URL.
+        navigate(`/runs/${encodeURIComponent(result.id)}`)
+      } else if (result.status === 'completed') {
         navigate(`/runs/${encodeURIComponent(result.id)}`, { state: completedRunState(result) })
       }
     } catch (error) {
@@ -92,7 +98,10 @@ export function Home() {
         }
       } else if (error instanceof ApiError && error.code === 'invalid_request') {
         setSubmission({ phase: 'invalid', message: formatInvalidRequest(error.details) })
-      } else if (error instanceof ApiError && error.code === 'invalid_provider') {
+      } else if (
+        error instanceof ApiError &&
+        (error.code === 'invalid_provider' || error.code === 'provider_prerequisites_missing')
+      ) {
         setSubmission({ phase: 'unknown_provider', message: formatErrorCode(error.code) })
       } else {
         setSubmission({ phase: 'outcome_uncertain' })

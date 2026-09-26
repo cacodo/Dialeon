@@ -27,12 +27,18 @@ const PREREQUISITE_NOTES: Partial<Record<LocalPrerequisiteState, string>> = {
 
 const SUMMARY_NAME_LIMIT = 3
 
-function modelSummaryText(options: readonly ModelOption[], selected: readonly string[]): string {
+function modelSummaryText(
+  options: readonly ModelOption[],
+  selected: readonly string[],
+  single: boolean,
+): string {
   const names = options.filter((option) => selected.includes(option.id)).map((option) => option.label)
-  if (names.length === 0) return 'Modelos: nenhum'
+  // Resposta direta: exatamente um modelo responde.
+  const prefix = single ? 'Modelo' : 'Modelos'
+  if (names.length === 0) return `${prefix}: nenhum`
   const shown = names.slice(0, SUMMARY_NAME_LIMIT).join(', ')
   const hidden = names.length - SUMMARY_NAME_LIMIT
-  return hidden > 0 ? `Modelos: ${shown} +${hidden}` : `Modelos: ${shown}`
+  return hidden > 0 ? `${prefix}: ${shown} +${hidden}` : `${prefix}: ${shown}`
 }
 
 interface ModelSummaryButtonProps {
@@ -42,6 +48,7 @@ interface ModelSummaryButtonProps {
   onToggle: () => void
   disabled?: boolean
   panelId: string
+  single?: boolean
 }
 
 export function ModelSummaryButton({
@@ -51,6 +58,7 @@ export function ModelSummaryButton({
   onToggle,
   disabled,
   panelId,
+  single = false,
 }: ModelSummaryButtonProps) {
   return (
     <button
@@ -61,7 +69,7 @@ export function ModelSummaryButton({
       onClick={onToggle}
       disabled={disabled}
     >
-      <span className="composer__models-text">{modelSummaryText(options, selected)}</span>
+      <span className="composer__models-text">{modelSummaryText(options, selected, single)}</span>
       <span className="composer__control-chevron" aria-hidden="true">
         ▾
       </span>
@@ -75,6 +83,8 @@ interface ModelSelectionPanelProps {
   onChange: (selected: string[]) => void
   disabled?: boolean
   panelId: string
+  // Resposta direta: escolha ÚNICA (radio) -- um modelo responde sozinho.
+  single?: boolean
 }
 
 export function ModelSelectionPanel({
@@ -83,14 +93,19 @@ export function ModelSelectionPanel({
   onChange,
   disabled,
   panelId,
+  single = false,
 }: ModelSelectionPanelProps) {
   function toggle(id: string) {
+    if (single) {
+      onChange([id])
+      return
+    }
     onChange(selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id])
   }
 
   return (
     <fieldset id={panelId} className="composer__panel model-selection">
-      <legend>Modelos que vão responder</legend>
+      <legend>{single ? 'Modelo que vai responder' : 'Modelos que vão responder'}</legend>
       <div className="model-selection__options">
         {options.map((option) => {
           const note = PREREQUISITE_NOTES[option.prerequisite]
@@ -104,7 +119,8 @@ export function ModelSelectionPanel({
             >
               <label className="model-selection__option">
                 <input
-                  type="checkbox"
+                  type={single ? 'radio' : 'checkbox'}
+                  name={single ? `${panelId}-single` : undefined}
                   checked={selected.includes(option.id)}
                   onChange={() => toggle(option.id)}
                   disabled={disabled || option.prerequisite === 'missing'}
@@ -122,7 +138,9 @@ export function ModelSelectionPanel({
         })}
       </div>
       {selected.length === 0 && options.some((option) => option.prerequisite !== 'missing') && (
-        <p className="model-selection__hint">Escolha pelo menos um modelo para perguntar.</p>
+        <p className="model-selection__hint">
+          {single ? 'Escolha um modelo para perguntar.' : 'Escolha pelo menos um modelo para perguntar.'}
+        </p>
       )}
     </fieldset>
   )

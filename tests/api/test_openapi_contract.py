@@ -115,8 +115,10 @@ def test_request_schema_remains_closed_in_the_document(openapi):
     schema = _schemas(openapi)["CreateRunRequest"]
 
     assert schema["additionalProperties"] is False
-    assert set(schema["properties"]) == {"question", "enabled_providers", "source_text"}
-    assert set(schema["required"]) == {"question", "enabled_providers"}
+    assert set(schema["properties"]) == {"question", "enabled_providers", "source_text", "kind"}
+    assert set(schema["required"]) == {"question", "enabled_providers"}  # `kind` opcional: omitido = Conselho
+    assert schema["properties"]["kind"]["enum"] == ["council", "direct"]
+    assert schema["properties"]["kind"]["default"] == "council"
 
 
 def test_unknown_request_field_is_still_rejected_at_runtime():
@@ -147,6 +149,7 @@ def test_error_response_is_a_documented_component(openapi):
         "insufficient_quorum",
         "run_not_found",
         "internal_error",
+        "provider_prerequisites_missing",  # Direct Answer Execution V1
     }
 
 
@@ -185,7 +188,16 @@ def test_successful_response_schemas_are_still_documented(openapi):
         one_of = operation["responses"][union]["content"]["application/json"]["schema"]["oneOf"]
         assert {o["$ref"] for o in one_of} == {
             REF + n
-            for n in ("CompletedRunResponse", "QuorumFailureRunResponse", "RunningRunResponse", "FailedRunResponse")
+            for n in (
+                "CompletedRunResponse",
+                "QuorumFailureRunResponse",
+                "RunningRunResponse",
+                "FailedRunResponse",
+                # Direct Answer Execution V1 -- sempre com `kind="direct"`
+                "DirectCompletedRunResponse",
+                "DirectFailedRunResponse",
+                "DirectRunningRunResponse",
+            )
         }
     audit_one_of = paths["/runs/{run_id}/audit"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["oneOf"]
     assert {REF + "CompletedRunAudit", REF + "QuorumFailureAudit"} <= {o["$ref"] for o in audit_one_of}

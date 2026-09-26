@@ -31,6 +31,7 @@ from app.application.errors import (
     InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
+    LocalPrerequisitesMissingError,
     UnknownProviderError,
 )
 from app.bootstrap import AppComponents
@@ -40,6 +41,8 @@ from app.orchestrator.errors import InsufficientQuorumError
 from app.presentation.mappers import (
     completed_run_audit,
     completed_run_response,
+    direct_accepted_run_response,
+    direct_run_response,
     failed_run_response,
     quorum_failure_audit,
     quorum_failure_run_response,
@@ -47,13 +50,22 @@ from app.presentation.mappers import (
     run_summary_response,
 )
 from app.presentation.schemas import CreateRunRequest, ProviderIdsResponse, RunListResponse
-from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
+from app.storage.records import (
+    AcceptedRunRecord,
+    CompletedRunRecord,
+    DirectAcceptedRunRecord,
+    DirectRunRecord,
+    QuorumFailureRecord,
+)
 
 EXIT_OK = 0
 EXIT_INTERNAL_ERROR = 1
 EXIT_INVALID_INPUT = 2
 EXIT_INSUFFICIENT_QUORUM = 3
 EXIT_NOT_FOUND = 4
+# Direct Answer Execution V1: a run direta foi criada e registrada, mas o
+# provider não produziu resposta (erro, timeout, resposta vazia/malformada).
+EXIT_PROVIDER_FAILED = 5
 
 
 def _pydantic_errors(exc: ValidationError) -> list[dict]:
@@ -207,6 +219,86 @@ async def cmd_run(
     return EXIT_OK
 
 
+async def cmd_run_direct(
+    components: AppComponents,
+    *,
+    question: str,
+    providers: list[str] | None,
+    source_text: str | None,
+    as_json: bool,
+) -> int:
+    """Direct Answer Execution V1 (`dialeon run --direct`): uma pergunta,
+    EXATAMENTE um provider (`--providers` obrigatório, com um id), sem fonte.
+    Nunca o pipeline do Conselho, nunca troca de provider, nunca repete a run.
+    Mesma validação de forma da API (`CreateRunRequest` com `kind="direct"`)."""
+    try:
+        body = CreateRunRequest(
+            question=question,
+            enabled_providers=providers if providers is not None else [],
+            source_text=source_text,
+            kind="direct",
+        )
+    except ValidationError as exc:
+        message = "Request inválido."
+        if as_json:
+            output.emit_json_error(
+                "invalid_request", message, details={"errors": _pydantic_errors(exc)}
+            )
+        else:
+            output.print_error(message)
+            if providers is None:
+                output.print_error("  - --direct exige --providers com exatamente um provider.")
+            for err in exc.errors():
+                location = ".".join(str(p) for p in err["loc"]) or "request"
+                output.print_error(f"  - {location}: {err['msg']}")
+        return EXIT_INVALID_INPUT
+
+    try:
+        result = await components.direct_service.run(
+            question=body.question,
+            provider=body.enabled_providers[0],
+            max_output_tokens=components.settings.default_max_output_tokens_per_call,
+        )
+    except InvalidQuestionError as exc:
+        if as_json:
+            output.emit_json_error("invalid_request", exc.reason)
+        else:
+            output.print_error(exc.reason)
+        return EXIT_INVALID_INPUT
+    except UnknownProviderError as exc:
+        message = "Um ou mais providers solicitados não existem."
+        if as_json:
+            output.emit_json_error(
+                "invalid_provider",
+                message,
+                details={
+                    "unknown_providers": exc.unknown_providers,
+                    "known_providers": exc.known_providers,
+                },
+            )
+        else:
+            output.print_error(message)
+        return EXIT_INVALID_INPUT
+    except LocalPrerequisitesMissingError as exc:
+        message = "O provider escolhido não tem a configuração local necessária."
+        if as_json:
+            output.emit_json_error(
+                "provider_prerequisites_missing", message, details={"provider": exc.provider}
+            )
+        else:
+            output.print_error(message)
+        return EXIT_INVALID_INPUT
+
+    record = await components.repository.get_run(result.id)
+    assert isinstance(record, DirectRunRecord)
+    response = direct_run_response(record)
+    if as_json:
+        output.emit_json(response)
+    else:
+        print(output.human_direct_run(response))
+    return EXIT_OK if record.status == "completed" else EXIT_PROVIDER_FAILED
+
+
 async def cmd_list(components: AppComponents, *, limit: int, offset: int, as_json: bool) -> int:
     summaries = await components.repository.list_runs(limit=limit, offset=offset)
     runs = [run_summary_response(s) for s in summaries]
@@ -256,6 +348,16 @@ async def cmd_get(components: AppComponents, *, run_id: str, as_json: bool) -> i
             output.emit_json(response)
         else:
             print(output.human_quorum_failure(response))
+    elif isinstance(record, (DirectRunRecord, DirectAcceptedRunRecord)):
+        direct = (
+            direct_run_response(record)
+            if isinstance(record, DirectRunRecord)
+            else direct_accepted_run_response(record)
+        )
+        if as_json:
+            output.emit_json(direct)
+        else:
+            print(output.human_direct_run(direct))
     else:
         assert isinstance(record, AcceptedRunRecord)
         lifecycle_response = (
@@ -286,6 +388,17 @@ async def cmd_audit(components: AppComponents, *, run_id: str, as_json: bool) ->
         )
     elif isinstance(record, QuorumFailureRecord):
         audit = quorum_failure_audit(record)
+    elif isinstance(record, (DirectRunRecord, DirectAcceptedRunRecord)):
+        direct = (
+            direct_run_response(record)
+            if isinstance(record, DirectRunRecord)
+            else direct_accepted_run_response(record)
+        )
+        if as_json:
+            output.emit_json(direct)
+        else:
+            print(output.human_direct_audit(direct))
+        return EXIT_OK
     else:
         assert isinstance(record, AcceptedRunRecord)
         audit = running_run_response(record) if record.status == "running" else failed_run_response(record)

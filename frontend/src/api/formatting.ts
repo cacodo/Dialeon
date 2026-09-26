@@ -235,6 +235,8 @@ const ERROR_CODE_LABELS: Record<ErrorCode | 'unknown', string> = {
   insufficient_quorum: 'Poucos modelos responderam para montar uma resposta.',
   run_not_found: 'Pergunta não encontrada.',
   internal_error: 'Algo deu errado do nosso lado. Tente novamente.',
+  provider_prerequisites_missing:
+    'O modelo escolhido não tem a configuração local necessária nesta instalação.',
   unknown: 'Não foi possível completar a solicitação.',
 }
 

@@ -30,6 +30,9 @@ from pydantic import BaseModel
 from app.models.provider_models import ModelIdentitySource, ProviderExecutionPolicy
 from app.presentation.schemas import (
     CompletedRunResponse,
+    DirectCompletedRunResponse,
+    DirectFailedRunResponse,
+    DirectRunningRunResponse,
     FailedRunResponse,
     QuorumFailureRunResponse,
     RunningRunResponse,
@@ -283,7 +286,169 @@ def human_run_summary_list(runs: list) -> str:
     lines = []
     for run in runs:
         status = _RUN_SUMMARY_STATUS_LABELS.get(run.status, run.status)
-        lines.append(f"{run.id}  {status:24s}  {run.started_at.isoformat()}")
+        line = f"{run.id}  {status:24s}  {run.started_at.isoformat()}"
+        # Direct Answer Execution V1: runs do Conselho continuam com a mesma linha.
+        if run.kind == "direct":
+            line += "  (resposta direta)"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Direct Answer Execution V1 -- saída humana de uma run DIRETA: a resposta
+# primeiro, dita como resposta de UM provider (nunca "conselho", consenso,
+# veredito ou verificação), depois detalhes curtos. Todo texto vindo do
+# provider/usuário passa por `terminal_safe_text` (modo estrito).
+# ---------------------------------------------------------------------------
+
+_DIRECT_NOTE = (
+    "nota: resposta de um único provider, sem as etapas do conselho; não é "
+    "consenso, veredito do juiz nem verificação."
+)
+
+
+def _yes_no(value: bool) -> str:
+    return "sim" if value else "não"
+
+
+def _direct_identity_lines(response) -> list[str]:
+    return [
+        f"modelo solicitado: {terminal_safe_text(response.requested_model)}",
+        f"modelo reportado: {terminal_safe_text(response.model)} "
+        f"({_fmt_model_identity_source(response.model_identity_source)})",
+    ]
+
+
+def _direct_cost_line(response) -> str:
+    """Custo da ÚNICA chamada: desconhecido nunca vira 0; uma tentativa
+    anterior incerta torna o valor conhecido incompleto."""
+    cost = "desconhecido" if response.cost_usd is None else f"{response.cost_usd:.6f} USD"
+    complete = response.cost_usd is not None and not response.had_uncertain_prior_attempts
+    return f"custo estimado: {cost} (contabilidade completa: {'sim' if complete else 'não'})"
+
+
+def human_direct_run(
+    run: DirectCompletedRunResponse | DirectFailedRunResponse | DirectRunningRunResponse,
+) -> str:
+    provider = terminal_safe_text(run.config.provider)
+    pointers = _audit_pointer_lines(run.id, json_detail="dados estruturados")
+    if isinstance(run, DirectCompletedRunResponse):
+        lines = [
+            f"resposta direta ({provider}):",
+            terminal_safe_text(run.answer),
+            "",
+            _DIRECT_NOTE,
+            "",
+            "detalhes:",
+            "tipo: resposta direta",
+            "status: concluída",
+            f"run_id: {run.id}",
+            f"provider: {provider}",
+            *_direct_identity_lines(run.response),
+            _direct_cost_line(run.response),
+            f"concluída em: {run.completed_at.isoformat()}",
+            "",
+            *pointers,
+        ]
+        return "\n".join(lines)
+    if isinstance(run, DirectFailedRunResponse):
+        lines = [
+            "status: falhou",
+            f"nenhuma resposta foi produzida: {terminal_safe_text(_fmt(run.message))}",
+        ]
+        if run.response is not None and run.response.error is not None:
+            lines.append(
+                f"erro do provider: {run.response.error.type.value} -- "
+                f"{terminal_safe_text(run.response.error.message)}"
+            )
+        lines += [
+            "",
+            "detalhes:",
+            "tipo: resposta direta",
+            f"run_id: {run.id}",
+            f"provider: {provider}",
+            f"modelo solicitado: {terminal_safe_text(run.config.requested_model)}",
+            f"estágio da falha: {_fmt(run.failure_stage)}",
+        ]
+        if run.response is not None:
+            lines.append(f"tentativas_de_transporte: {run.response.attempts}")
+            lines.append(
+                "tentativa_anterior_incerta: "
+                f"{_yes_no(run.response.had_uncertain_prior_attempts)}"
+            )
+        if run.response is not None:
+            lines.append(_direct_cost_line(run.response))
+        if run.failed_at is not None:
+            lines.append(f"falhou em: {run.failed_at.isoformat()}")
+        lines += ["", *pointers]
+        return "\n".join(lines)
+    return "\n".join(
+        [
+            "status: sem desfecho registrado",
+            "Nenhum desfecho terminal foi registrado -- a execução pode ainda "
+            "estar ativa, ou o processo pode ter sido interrompido antes "
+            "de terminar; os dois casos são indistinguíveis a partir deste registro.",
+            "",
+            "detalhes:",
+            "tipo: resposta direta",
+            f"run_id: {run.id}",
+            f"provider: {provider}",
+            f"modelo solicitado: {terminal_safe_text(run.config.requested_model)}",
+            f"iniciada em: {run.started_at.isoformat()}",
+        ]
+    )
+
+
+def human_direct_audit(
+    run: DirectCompletedRunResponse | DirectFailedRunResponse | DirectRunningRunResponse,
+) -> str:
+    """Resumo técnico da única chamada de uma run direta -- só fatos que
+    existem pra ela (nenhuma seção do conselho)."""
+    status = {"completed": "concluída", "failed": "falhou", "running": "sem desfecho registrado"}
+    lines = [
+        f"status: {status[run.status]}",
+        f"run_id: {run.id}",
+        "tipo: resposta direta",
+        f"provider: {terminal_safe_text(run.config.provider)}",
+        f"modelo solicitado (aceite): {terminal_safe_text(run.config.requested_model)}",
+        f"max_output_tokens: {run.config.max_output_tokens}",
+    ]
+    response = getattr(run, "response", None)
+    if response is not None:
+        usage = response.usage
+        lines += [
+            f"modelo reportado: {terminal_safe_text(response.model)} "
+            f"({_fmt_model_identity_source(response.model_identity_source)})",
+            f"status_da_chamada: {response.status}",
+            f"tokens_de_entrada: {_fmt(usage.input_tokens if usage else None)}",
+            f"tokens_de_saída: {_fmt(usage.output_tokens if usage else None)}",
+            f"custo_estimado_usd: {_fmt(response.cost_usd)}",
+            "precificação: "
+            + (
+                f"{terminal_safe_text(response.pricing_provenance.source_id)} "
+                f"({terminal_safe_text(response.pricing_provenance.tier)})"
+                if response.pricing_provenance is not None
+                else "desconhecida"
+            ),
+            f"tentativas_de_transporte: {response.attempts}",
+            f"tentativa_anterior_incerta: {_yes_no(response.had_uncertain_prior_attempts)}",
+            f"latência_ms: {response.latency_ms}",
+            f"motivo_de_parada_do_provider: {terminal_safe_text(_fmt(response.provider_finish_reason))}",
+        ]
+        if response.request_provenance is not None:
+            lines += [
+                f"contrato_do_request: {response.request_provenance.contract_version}",
+                f"digest_do_request: {response.request_provenance.request_digest}",
+            ]
+        if response.error is not None:
+            lines.append(
+                f"erro_do_provider: {response.error.type.value} -- "
+                f"{terminal_safe_text(response.error.message)}"
+            )
+    if isinstance(run, DirectFailedRunResponse):
+        lines.append(f"estágio_da_falha: {_fmt(run.failure_stage)}")
+        lines.append(f"classificação: {terminal_safe_text(_fmt(run.failure_reason))}")
+    lines.append(_human_provider_execution_policy_line(run.provider_execution_policy))
     return "\n".join(lines)
 
 

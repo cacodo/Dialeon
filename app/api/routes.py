@@ -23,6 +23,8 @@ from app.api.openapi import (
 from app.presentation.mappers import (
     completed_run_audit,
     completed_run_response,
+    direct_accepted_run_response,
+    direct_run_response,
     failed_run_response,
     quorum_failure_audit,
     quorum_failure_run_response,
@@ -37,7 +39,13 @@ from app.presentation.schemas import (
     RunResponse,
 )
 from app.orchestrator.config import RunConfig
-from app.storage.records import AcceptedRunRecord, CompletedRunRecord, QuorumFailureRecord
+from app.storage.records import (
+    AcceptedRunRecord,
+    CompletedRunRecord,
+    DirectAcceptedRunRecord,
+    DirectRunRecord,
+    QuorumFailureRecord,
+)
 
 # Todas as rotas podem devolver o catch-all 500 (`internal_error`) -- ver
 # `error_handlers.py`. Os demais erros são declarados por rota.
@@ -123,6 +131,21 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
     boundary que a CLI também compartilha, em vez de duplicada."""
     components = _components(request)
 
+    if body.kind == "direct":
+        # Direct Answer Execution V1 -- opt-in explícito; nunca o pipeline do
+        # Conselho. `CreateRunRequest` já garantiu exatamente um provider e
+        # nenhuma fonte; o service valida provider/pré-requisitos antes do
+        # aceite. 201 também pra `status="failed"` (erro do provider): a run
+        # foi criada e tem um desfecho terminal registrado.
+        direct = await components.direct_service.run(
+            question=body.question,
+            provider=body.enabled_providers[0],
+            max_output_tokens=components.settings.default_max_output_tokens_per_call,
+        )
+        direct_record = await components.repository.get_run(direct.id)
+        assert isinstance(direct_record, DirectRunRecord)
+        return direct_run_response(direct_record)
+
     run_config = RunConfig.from_settings(
         components.settings,
         question=body.question,
@@ -177,6 +200,10 @@ async def get_run(run_id: str, request: Request) -> RunResponse:
         )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_run_response(record)
+    if isinstance(record, DirectRunRecord):
+        return direct_run_response(record)
+    if isinstance(record, DirectAcceptedRunRecord):
+        return direct_accepted_run_response(record)
     assert isinstance(record, AcceptedRunRecord)
     if record.status == "running":
         return running_run_response(record)
@@ -202,6 +229,10 @@ async def get_run_audit(run_id: str, request: Request) -> RunAuditResponse:
         )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_audit(record)
+    if isinstance(record, DirectRunRecord):
+        return direct_run_response(record)
+    if isinstance(record, DirectAcceptedRunRecord):
+        return direct_accepted_run_response(record)
     assert isinstance(record, AcceptedRunRecord)
     if record.status == "running":
         return running_run_response(record)

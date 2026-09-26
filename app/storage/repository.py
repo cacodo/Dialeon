@@ -26,13 +26,14 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.council.result import CouncilRunResult
+from app.direct.models import DirectRunConfig, DirectRunResult
 from app.debate.claims import get_current_claims
 from app.debate.result import CritiqueResult, DebateResult
 from app.editor.result import EditorResult
 from app.editor.linguistic_realization import parse_semantic_review
 from app.judge.result import JudgeResult
 from app.source_analysis.result import SourceAnalysisResult
-from app.models.domain import ClaimAssessment, ClaimSupport
+from app.models.domain import ClaimAssessment, ClaimSupport, ModelResponse
 from app.models.provider_models import DefaultModelAuthoritySnapshot, ProviderExecutionPolicy
 from app.orchestrator.budget import sum_usage_and_cost
 from app.orchestrator.config import RunConfig
@@ -57,6 +58,7 @@ from app.storage.models import (
     ClaimSupportRow,
     CouncilRunRow,
     DeterministicVerificationAttemptRow,
+    DirectRunRow,
     EditorAttemptRow,
     FinalAnswerRow,
     JudgeAttemptRow,
@@ -70,6 +72,8 @@ from app.storage.models import (
 from app.storage.records import (
     AcceptedRunRecord,
     CompletedRunRecord,
+    DirectAcceptedRunRecord,
+    DirectRunRecord,
     FailureStage,
     QuorumFailureRecord,
     RunSummary,
@@ -322,6 +326,59 @@ class CouncilRepository:
                     ),
                 )
             )
+
+    async def save_direct_accepted(
+        self,
+        run_id: str,
+        *,
+        config: DirectRunConfig,
+        started_at: datetime,
+        provider_execution_policy: ProviderExecutionPolicy,
+    ) -> None:
+        """Direct Answer Execution V1 -- mesmo aceite durável de
+        `save_accepted` (ANTES de qualquer chamada ao provider), na mesma
+        tabela, marcado `run_kind="direct"` e com o `DirectRunConfig`
+        congelado (inclui o modelo solicitado) em `run_config_json`."""
+        async with session_scope(self._session_factory) as session:
+            session.add(
+                AcceptedRunRow(
+                    id=run_id,
+                    status="running",
+                    started_at=dt_to_naive_utc(started_at),
+                    run_config_json=config.model_dump(mode="json"),
+                    failed_at=None,
+                    failure_classification=None,
+                    failure_message=None,
+                    failure_stage=None,
+                    provider_execution_policy_json=provider_execution_policy.model_dump(
+                        mode="json"
+                    ),
+                    default_model_authority_snapshot_json=None,
+                    run_kind="direct",
+                )
+            )
+
+    async def save_direct_result(self, result: DirectRunResult) -> None:
+        """Direct Answer Execution V1 -- desfecho terminal numa única
+        transação: grava `direct_runs` e apaga a linha de aceite (mesma
+        disciplina de `save_success`; se falhar, o rollback preserva o
+        aceite intacto)."""
+        async with session_scope(self._session_factory) as session:
+            session.add(
+                DirectRunRow(
+                    id=result.id,
+                    status=result.status,
+                    started_at=dt_to_naive_utc(result.started_at),
+                    ended_at=dt_to_naive_utc(result.ended_at),
+                    run_config_json=result.config.model_dump(mode="json"),
+                    response_json=result.response.model_dump(mode="json"),
+                    provider_execution_policy_json=result.provider_execution_policy.model_dump(
+                        mode="json"
+                    ),
+                )
+            )
+            await session.flush()
+            await session.execute(delete(AcceptedRunRow).where(AcceptedRunRow.id == result.id))
 
     async def save_unexpected_failure(
         self,
@@ -677,7 +734,14 @@ class CouncilRepository:
 
     async def get_run(
         self, run_id: str
-    ) -> CompletedRunRecord | QuorumFailureRecord | AcceptedRunRecord | None:
+    ) -> (
+        CompletedRunRecord
+        | QuorumFailureRecord
+        | AcceptedRunRecord
+        | DirectRunRecord
+        | DirectAcceptedRunRecord
+        | None
+    ):
         async with self._session_factory() as session:
             run_row = await session.get(CouncilRunRow, run_id)
             if run_row is not None:
@@ -686,6 +750,10 @@ class CouncilRepository:
             failure_row = await session.get(QuorumFailureRow, run_id)
             if failure_row is not None:
                 return await self._reconstruct_quorum_failure(session, failure_row)
+
+            direct_row = await session.get(DirectRunRow, run_id)
+            if direct_row is not None:
+                return _reconstruct_direct(direct_row)
 
             accepted_row = await session.get(AcceptedRunRow, run_id)
             if accepted_row is not None:
@@ -727,6 +795,17 @@ class CouncilRepository:
                     await session.execute(
                         select(QuorumFailureRow)
                         .order_by(QuorumFailureRow.started_at.desc())
+                        .limit(fetch_count)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            direct = (
+                (
+                    await session.execute(
+                        select(DirectRunRow)
+                        .order_by(DirectRunRow.started_at.desc())
                         .limit(fetch_count)
                     )
                 )
@@ -775,8 +854,20 @@ class CouncilRepository:
                         dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None
                     ),
                     question=row.run_config_json["question"],
+                    kind="direct" if row.run_kind == "direct" else "council",
                 )
                 for row in accepted
+            ]
+            + [
+                RunSummary(
+                    id=row.id,
+                    status=row.status,  # type: ignore[arg-type]  # "completed" | "failed"
+                    started_at=dt_from_naive_utc(row.started_at),
+                    ended_at=dt_from_naive_utc(row.ended_at),
+                    question=row.run_config_json["question"],
+                    kind="direct",
+                )
+                for row in direct
             ]
         )
         summaries.sort(key=lambda s: s.started_at, reverse=True)
@@ -1172,11 +1263,39 @@ class CouncilRepository:
 # ---------------------------------------------------------------------------
 
 
-def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord:
+def _reconstruct_direct(row: DirectRunRow) -> DirectRunRecord:
+    return DirectRunRecord(
+        status=row.status,  # type: ignore[arg-type]  # "completed" | "failed"
+        id=row.id,
+        started_at=dt_from_naive_utc(row.started_at),
+        ended_at=dt_from_naive_utc(row.ended_at),
+        config=DirectRunConfig.model_validate(row.run_config_json),
+        response=ModelResponse.model_validate(row.response_json),
+        provider_execution_policy=ProviderExecutionPolicy.model_validate(
+            row.provider_execution_policy_json
+        ),
+    )
+
+
+def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord | DirectAcceptedRunRecord:
     """T02.4 -- reconstrução direta, sem sub-consultas: `accepted_runs`
     nunca tem tabelas filhas (ver docstring de `AcceptedRunRow`), então
     não há árvore nenhuma pra remontar além dos campos da própria
-    linha."""
+    linha. Direct Answer Execution V1: `run_kind="direct"` reconstrói uma
+    `DirectAcceptedRunRecord`; NULL (toda linha legada e toda run do
+    Conselho) continua sendo uma run do Conselho."""
+    if row.run_kind == "direct":
+        return DirectAcceptedRunRecord(
+            status=row.status,  # type: ignore[arg-type]  # "running" | "failed"
+            id=row.id,
+            started_at=dt_from_naive_utc(row.started_at),
+            config=DirectRunConfig.model_validate(row.run_config_json),
+            failed_at=dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None,
+            failure_classification=row.failure_classification,
+            failure_message=row.failure_message,
+            failure_stage=row.failure_stage,  # type: ignore[arg-type]  # FailureStage | None
+            provider_execution_policy=_policy_from_json(row.provider_execution_policy_json),
+        )
     return AcceptedRunRecord(
         status=row.status,  # type: ignore[arg-type]  # "running" | "failed"
         id=row.id,

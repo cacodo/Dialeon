@@ -453,7 +453,9 @@ def test_create_run_request_contract_is_unchanged_and_exposes_no_transport_knobs
     cliente é RECUSADA (extra="forbid"), nunca aceita."""
     from app.presentation.schemas import CreateRunRequest
 
-    assert set(CreateRunRequest.model_fields) == {"question", "enabled_providers", "source_text"}
+    # `kind` (Direct Answer Execution V1) só escolhe o tipo de run (Conselho x
+    # direta); não é knob de transporte e é um Literal fechado.
+    assert set(CreateRunRequest.model_fields) == {"question", "enabled_providers", "source_text", "kind"}
 
     # cliente NÃO consegue enviar knob de transporte (extra="forbid")
     for forged in ("judge_provider_timeout_seconds", "judge_override", "attempt_timeout_seconds"):
@@ -464,3 +466,4 @@ def test_create_run_request_contract_is_unchanged_and_exposes_no_transport_knobs
 
     ok = CreateRunRequest.model_validate({"question": "Pergunta?", "enabled_providers": ["openai"]})
     assert ok.source_text is None
+    assert ok.kind == "council"  # omitido = Conselho, como sempre

@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.application.direct_service import DirectExecutionService
 from app.application.service import CouncilExecutionService
 from app.config import Settings
 from app.council.runner import CouncilRunner
@@ -91,6 +92,17 @@ class AppComponents:
     repository: CouncilRepository
     service: CouncilExecutionService
     provider_execution_policy: ProviderExecutionPolicy
+
+    @property
+    def direct_service(self) -> DirectExecutionService:
+        """Direct Answer Execution V1 -- sem estado próprio: montado a partir
+        do MESMO repositório, registry de providers e política de execução
+        resolvida desta composição (nunca uma segunda leitura de Settings)."""
+        return DirectExecutionService(
+            repository=self.repository,
+            providers=self.providers,
+            provider_execution_policy=self.provider_execution_policy,
+        )
 
 
 def _validate_internal_provider_config(

@@ -17,7 +17,9 @@ real (não por preguiça).
 `RunResponse`/`RunAuditResponse` são uniões discriminadas por `status` --
 o mesmo padrão já usado internamente por
 `CompletedRunRecord`/`QuorumFailureRecord` (app/storage/records.py),
-espelhado aqui como contrato público (HTTP e CLI).
+espelhado aqui como contrato público (HTTP e CLI). Direct Answer Execution
+V1: a discriminação é pelo par (`kind`, `status`) -- as respostas diretas
+têm `kind="direct"`; as do Conselho não têm `kind` (forma inalterada).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_validator, model_validator
 
 from app.audit_fragment import AuditFragmentOmittedReason
 from app.editor.answer_blocks import AnswerSectionHeading, AnswerVerdictLabel
@@ -75,6 +77,23 @@ class CreateRunRequest(BaseModel):
     question: str = Field(min_length=1)
     enabled_providers: list[str] = Field(min_length=1)
     source_text: str | None = None
+    # Direct Answer Execution V1 -- escolha EXPLÍCITA do tipo de run.
+    # Omitido = "council": toda requisição existente continua sendo uma run
+    # do Conselho, exatamente como antes. "direct": uma pergunta, exatamente
+    # um provider, sem fonte (ver `_direct_run_shape`).
+    kind: Literal["council", "direct"] = "council"
+
+    @model_validator(mode="after")
+    def _direct_run_shape(self) -> "CreateRunRequest":
+        if self.kind == "direct":
+            if len(self.enabled_providers) != 1:
+                raise ValueError("uma run direta usa exatamente um provider")
+            if self.source_text is not None:
+                raise ValueError(
+                    "fonte não é suportada numa run direta (a resposta direta não é "
+                    "comparada com nenhum texto)"
+                )
+        return self
 
     @field_validator("source_text")
     @classmethod
@@ -710,6 +729,9 @@ class RunSummaryResponse(BaseModel):
     started_at: datetime
     ended_at: datetime | None
     question: str
+    # Direct Answer Execution V1 -- tipo de run persistido ("council" pra
+    # toda run do Conselho, inclusive as históricas).
+    kind: Literal["council", "direct"]
 
 
 class ProvidersResponse(BaseModel):
@@ -858,9 +880,113 @@ class FailedRunResponse(BaseModel):
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
 
 
+# ---------------------------------------------------------------------------
+# Direct Answer Execution V1 -- runs DIRETAS: uma pergunta, um provider, a
+# resposta do provider. Formas próprias, sempre com `kind="direct"`; nunca
+# carregam afirmações, veredito, quórum, avaliação completa nem limitações
+# do Conselho. As respostas do Conselho continuam sem `kind` (forma
+# inalterada) -- ausência de `kind` significa Conselho.
+# ---------------------------------------------------------------------------
+
+
+class DirectRunConfigPublic(BaseModel):
+    """Autoridade aceita da run direta: pergunta, provider escolhido e o
+    modelo solicitado (o padrão configurado no deployment NO ACEITE, nunca
+    reinterpretado por configuração posterior)."""
+
+    model_config = _CONFIG
+
+    question: str
+    provider: str
+    requested_model: str
+    max_output_tokens: int
+
+
+class DirectRunningRunResponse(BaseModel):
+    """Run direta aceita sem desfecho registrado (em andamento, ou o processo
+    parou antes de terminar -- indistinguíveis por design)."""
+
+    model_config = _CONFIG
+
+    kind: Literal["direct"] = "direct"
+    status: Literal["running"] = "running"
+    id: str
+    started_at: datetime
+    config: DirectRunConfigPublic
+    provider_execution_policy: ProviderExecutionPolicy | None
+
+
+class DirectCompletedRunResponse(BaseModel):
+    """Run direta concluída: `answer` é o texto que o provider devolveu,
+    exatamente. É a resposta DE UM provider -- não consenso, veredito nem
+    verificação. `response` é o registro completo da chamada (modelo
+    solicitado x reportado, uso, custo estimado, proveniência)."""
+
+    model_config = _CONFIG
+
+    kind: Literal["direct"] = "direct"
+    status: Literal["completed"] = "completed"
+    id: str
+    started_at: datetime
+    completed_at: datetime
+    config: DirectRunConfigPublic
+    answer: str
+    response: ModelResponsePublic
+    accounting: AccountingSummary
+    provider_execution_policy: ProviderExecutionPolicy
+
+
+class DirectFailedRunResponse(BaseModel):
+    """Run direta sem resposta. `failure_stage`:
+
+    - "provider": a chamada terminou sem texto utilizável (erro do provider,
+      timeout, resposta malformada/vazia); `response` guarda o registro da
+      chamada (erro, tentativas, custo conhecido/desconhecido, incerteza);
+    - "execution": exceção inesperada durante a execução (sem `response`);
+    - "terminal_persistence": a chamada terminou, mas gravar o desfecho
+      falhou (sem `response` -- o detalhe não foi preservado).
+
+    `failure_reason` é um identificador estável (tipo de erro do provider ou
+    classe da exceção) e `message` uma frase fixa -- nunca texto cru de
+    provider/traceback (o erro reportado pelo provider fica em
+    `response.error`, como na auditoria do Conselho)."""
+
+    model_config = _CONFIG
+
+    kind: Literal["direct"] = "direct"
+    status: Literal["failed"] = "failed"
+    id: str
+    started_at: datetime
+    failed_at: datetime | None
+    config: DirectRunConfigPublic
+    failure_stage: Literal["provider", "execution", "terminal_persistence"] | None
+    failure_reason: str | None
+    message: str | None
+    response: ModelResponsePublic | None
+    accounting: AccountingSummary | None
+    provider_execution_policy: ProviderExecutionPolicy | None
+
+
+def _run_response_tag(value: Any) -> str:
+    """Discrimina por (tipo, status): respostas do Conselho não têm `kind`."""
+    if isinstance(value, dict):
+        kind, run_status = value.get("kind", "council"), value.get("status")
+    else:
+        kind, run_status = getattr(value, "kind", "council"), getattr(value, "status", None)
+    return f"{kind}:{run_status}"
+
+
 RunResponse = Annotated[
-    Union[CompletedRunResponse, QuorumFailureRunResponse, RunningRunResponse, FailedRunResponse],
-    Field(discriminator="status"),
+    Union[
+        Annotated[CompletedRunResponse, Tag("council:completed")],
+        Annotated[QuorumFailureRunResponse, Tag("council:insufficient_quorum")],
+        Annotated[RunningRunResponse, Tag("council:running")],
+        Annotated[FailedRunResponse, Tag("council:failed")],
+        Annotated[DirectCompletedRunResponse, Tag("direct:completed")],
+        Annotated[DirectFailedRunResponse, Tag("direct:failed")],
+        Annotated[DirectRunningRunResponse, Tag("direct:running")],
+    ],
+    Discriminator(_run_response_tag),
 ]
 
 
@@ -1049,9 +1175,21 @@ class QuorumFailureAudit(BaseModel):
 # aqui em vez de criar RunningRunAudit/FailedRunAudit idênticos evita
 # inventar detalhe de auditoria que não existe (requisito de teste I:
 # "não invente fatos de auditoria detalhados pra um run incompleto").
+#
+# Direct Answer Execution V1: a auditoria de uma run direta é o próprio
+# detalhe -- ele já contém todos os fatos da única chamada (não há afirmação,
+# veredito nem tentativa de outra etapa pra mostrar).
 RunAuditResponse = Annotated[
-    Union[CompletedRunAudit, QuorumFailureAudit, RunningRunResponse, FailedRunResponse],
-    Field(discriminator="status"),
+    Union[
+        Annotated[CompletedRunAudit, Tag("council:completed")],
+        Annotated[QuorumFailureAudit, Tag("council:insufficient_quorum")],
+        Annotated[RunningRunResponse, Tag("council:running")],
+        Annotated[FailedRunResponse, Tag("council:failed")],
+        Annotated[DirectCompletedRunResponse, Tag("direct:completed")],
+        Annotated[DirectFailedRunResponse, Tag("direct:failed")],
+        Annotated[DirectRunningRunResponse, Tag("direct:running")],
+    ],
+    Discriminator(_run_response_tag),
 ]
 
 
@@ -1064,6 +1202,9 @@ class ErrorBody(BaseModel):
         "insufficient_quorum",
         "run_not_found",
         "internal_error",
+        # Direct Answer Execution V1: o provider de uma run direta não tem a
+        # configuração local necessária -- rejeitada antes do aceite.
+        "provider_prerequisites_missing",
     ]
     message: str
     details: dict | None = None

@@ -107,6 +107,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_natural_answer)
         await conn.run_sync(_upgrade_legacy_linguistic_realization)
         await conn.run_sync(_upgrade_legacy_audit_fragment_bounds)
+        await conn.run_sync(_upgrade_legacy_run_kind)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -532,6 +533,19 @@ def _upgrade_legacy_audit_fragment_bounds(sync_conn) -> None:  # noqa: ANN001
         existing = {col["name"] for col in inspector.get_columns(table_name)}
         if column not in existing:
             sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} TEXT"))
+
+
+def _upgrade_legacy_run_kind(sync_conn) -> None:  # noqa: ANN001
+    """Direct Answer Execution V1: `accepted_runs.run_kind`. Só `ALTER
+    TABLE` quando a coluna não existe; sem backfill. NULL é o valor
+    verdadeiro pra toda linha legada: antes desta coluna só existiam runs
+    do Conselho. (`direct_runs` é tabela nova -- `create_all` a cria.)"""
+    inspector = sa_inspect(sync_conn)
+    if "accepted_runs" not in set(inspector.get_table_names()):
+        return
+    existing = {col["name"] for col in inspector.get_columns("accepted_runs")}
+    if "run_kind" not in existing:
+        sync_conn.execute(text("ALTER TABLE accepted_runs ADD COLUMN run_kind TEXT"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
