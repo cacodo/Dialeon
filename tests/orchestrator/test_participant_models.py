@@ -117,6 +117,71 @@ def test_invisible_control_and_format_characters_are_rejected(char, category, po
 
 
 @pytest.mark.parametrize(
+    "char, category",
+    [
+        # Default_Ignorable_Code_Point fora das categorias Cc/Cf/Cs/Co/Cn/Z*
+        ("\u034f", "Mn"),  # COMBINING GRAPHEME JOINER
+        ("\ufe0f", "Mn"),  # VARIATION SELECTOR-16
+        ("\U000e0100", "Mn"),  # VARIATION SELECTOR-17
+        ("\u17b4", "Mn"),  # KHMER VOWEL INHERENT AQ
+        ("\u180b", "Mn"),  # MONGOLIAN FREE VARIATION SELECTOR ONE
+        ("\u180f", "Mn"),  # MONGOLIAN FREE VARIATION SELECTOR FOUR
+        ("\u115f", "Lo"),  # HANGUL CHOSEONG FILLER
+        ("\u3164", "Lo"),  # HANGUL FILLER
+        ("\uffa0", "Lo"),  # HALFWIDTH HANGUL FILLER
+    ],
+)
+def test_default_ignorable_code_points_are_rejected_even_outside_the_blocked_categories(char, category):
+    with pytest.raises(ValueError) as caught:
+        validate_participant_model_overrides({"openai": f"gpt{char}x"}, ["openai"])
+
+    assert f"U+{ord(char):04X}, {category}" in str(caught.value)
+
+
+def test_default_ignorable_table_is_the_unicode_16_property():
+    """A tabela é a propriedade `Default_Ignorable_Code_Point` completa do
+    Unicode 16.0.0 (conferida contra a enumeração do motor de regex do Perl
+    5.42, que embute o mesmo Unicode 16.0.0): intervalos ordenados, sem
+    sobreposição nem adjacência, 4174 code points, só de categorias
+    Cf/Cn/Mn/Lo."""
+    import unicodedata
+
+    from app.orchestrator.participant_models import _DEFAULT_IGNORABLE_CODE_POINT_RANGES as ranges
+
+    assert all(start <= end for start, end in ranges)
+    assert all(a_end + 1 < b_start for (_, a_end), (b_start, _) in zip(ranges, ranges[1:]))
+    assert sum(end - start + 1 for start, end in ranges) == 4174
+    if unicodedata.unidata_version == "16.0.0":
+        categories = {unicodedata.category(chr(c)) for start, end in ranges for c in range(start, end + 1)}
+        assert categories == {"Cf", "Cn", "Mn", "Lo"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "mode\u0301le",  # combinação visível (acento agudo combinante): aceita, sem normalizar
+        "e\u0308\u0301-model",
+    ],
+)
+def test_visible_combining_marks_are_accepted_verbatim(value):
+    assert validate_participant_model_overrides({"openai": value}, ["openai"]) == {"openai": value}
+
+
+def test_a_stored_choice_with_an_ignorable_character_stays_readable():
+    """Leitura histórica continua leniente: a regra estrita vale só pra
+    entrada nova, nunca reinterpreta o que já foi aceito e gravado."""
+    stored = run_config().model_dump(mode="json")
+    stored["participant_models"] = [
+        {"provider": "openai", "requested_model": "gpt\u034fx", "origin": "run_override"},
+        {"provider": "anthropic", "requested_model": "claude-default", "origin": "configured_default"},
+    ]
+
+    rc = RunConfig(**stored)
+
+    assert rc.requested_model_for("openai") == "gpt\u034fx"
+
+
+@pytest.mark.parametrize(
     "value",
     [
         "gpt-5.5",

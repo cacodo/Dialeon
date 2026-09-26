@@ -61,13 +61,49 @@ ParticipantModelOrigin = Literal["configured_default", "run_override"]
 # escrita (L/M/N/P/S) continuam aceitos -- a regra não é "só ASCII".
 _FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zs", "Zl", "Zp"})
 
+# A propriedade Unicode `Default_Ignorable_Code_Point` COMPLETA, versão
+# 16.0.0 (DerivedCoreProperties.txt), em intervalos fechados. `unicodedata`
+# não expõe essa propriedade; a tabela é a enumeração dela no Unicode 16.0.0
+# (a mesma versão do `unicodedata` do Python 3.14). Ela cobre os invisíveis
+# que as categorias acima deixam passar por serem Mn/Lo -- COMBINING GRAPHEME
+# JOINER (U+034F), seletores de variação (U+FE00..U+FE0F, U+E0100..U+E01EF),
+# seletores/separadores mongóis, vogais inerentes khmer e os preenchimentos
+# hangul -- além de Cf/Cn já rejeitados. Não é detecção de homóglifos nem
+# normalização: só "não tem aparência própria".
+_DEFAULT_IGNORABLE_CODE_POINT_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def is_default_ignorable_code_point(char: str) -> bool:
+    code_point = ord(char)
+    return any(start <= code_point <= end for start, end in _DEFAULT_IGNORABLE_CODE_POINT_RANGES)
+
 
 def _first_forbidden_character(value: str) -> str | None:
     return next(
         (
             char
             for char in value
-            if char.isspace() or unicodedata.category(char) in _FORBIDDEN_CATEGORIES
+            if char.isspace()
+            or unicodedata.category(char) in _FORBIDDEN_CATEGORIES
+            or is_default_ignorable_code_point(char)
         ),
         None,
     )
@@ -77,7 +113,8 @@ def validate_model_override_identifier(value: str) -> str:
     """Forma de um identificador escolhido numa run: a mesma regra mínima do
     modelo padrão configurado (`validate_model_identifier_edges`), mais: sem
     espaço em branco nem caractere de controle, de formato ou outro
-    invisível em lugar nenhum (ver `_FORBIDDEN_CATEGORIES`), e no máximo
+    invisível em lugar nenhum (ver `_FORBIDDEN_CATEGORIES` e
+    `_DEFAULT_IGNORABLE_CODE_POINT_RANGES`), e no máximo
     `MAX_MODEL_IDENTIFIER_CHARACTERS`. Nunca reescreve nem normaliza: aceita
     ou rejeita."""
     validate_model_identifier_edges(value, "o modelo escolhido")

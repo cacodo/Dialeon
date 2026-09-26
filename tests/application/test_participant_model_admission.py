@@ -94,6 +94,7 @@ async def test_a_later_default_change_never_rewrites_an_accepted_run():
         ({"openai": "g" * 257}, "máximo"),
         ({"openai": "gpt\u202ex"}, "U\\+202E"),  # bidi override (Cf)
         ({"openai": "gpt\x9bx"}, "U\\+009B"),  # C1 (Cc)
+        ({"openai": "gpt\u034fx"}, "U\\+034F"),  # COMBINING GRAPHEME JOINER (Mn, ignorável)
     ],
 )
 async def test_invalid_overrides_are_rejected_before_any_side_effect(overrides, fragment):

@@ -190,7 +190,9 @@ def test_invalid_override_errors_point_at_the_field():
     assert error["loc"][-1] == "participant_model_overrides"
 
 
-@pytest.mark.parametrize("value", ["gpt\u202e-x", "gpt\u200b-x", "gpt\x85-x", "gpt\x9b-x"])
+@pytest.mark.parametrize(
+    "value", ["gpt\u202e-x", "gpt\u200b-x", "gpt\x85-x", "gpt\x9b-x", "gpt\u034fx", "gpt\ufe0fx"]
+)
 def test_invisible_or_control_characters_never_become_an_accepted_model(value):
     """Regressão: U+202E (e outros invisíveis/C1) passavam pela validação e o
     identificador era persistido exatamente como enviado (201)."""
@@ -225,3 +227,27 @@ def test_visible_non_ascii_identifiers_are_still_accepted_verbatim():
         "requested_model": "modèle-é",
         "origin": "run_override",
     }
+
+
+def test_a_persisted_choice_with_an_ignorable_character_is_still_served():
+    """Historicamente leniente: um valor já gravado (ex.: aceito antes desta
+    regra) continua legível no detalhe -- só a entrada nova é estrita."""
+    with _client(_providers()) as client:
+        created = _create(client, participant_model_overrides={"openai": "gpt-x"}).json()
+        engine = client.app.state.components.engine
+
+        async def store_legacy_value():
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE council_runs SET run_config_json = json_set(run_config_json, "
+                        "'$.participant_models[0].requested_model', :model) WHERE id = :id"
+                    ),
+                    {"model": "gpt\u034fx", "id": created["id"]},
+                )
+
+        client.portal.call(store_legacy_value)
+        detail = client.get(f"/runs/{created['id']}")
+
+    assert detail.status_code == 200
+    assert detail.json()["config"]["participant_models"][0]["requested_model"] == "gpt\u034fx"
