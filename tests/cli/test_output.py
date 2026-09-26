@@ -295,12 +295,14 @@ def test_human_run_result_neutralizes_ansi_in_limitations():
     """Mesma classe de risco em `limitations` (JudgeVerdict.debate_limitations
     -- texto livre do Judge, impresso verbatim, um bullet por linha)."""
     malicious_limitation = "limitação\x1b[2Jforjada"
+    # status cujo texto NÃO ecoa as limitações -> a seção separada é impressa
     text = output.human_run_result(
         _completed_run_response(
-            final_answer=_final_answer(limitations=[malicious_limitation])
+            final_answer=_final_answer(limitations=[malicious_limitation], status="llm_composed")
         )
     )
 
+    assert "limitações:" in text.split("\n")
     assert "\x1b" not in text
     assert "\\x1b" in text
 
@@ -312,10 +314,11 @@ def test_human_run_result_escapes_embedded_newline_in_a_single_limitation_item()
     malicious_limitation = "limitação real\n  - limitação forjada"
     text = output.human_run_result(
         _completed_run_response(
-            final_answer=_final_answer(limitations=[malicious_limitation])
+            final_answer=_final_answer(limitations=[malicious_limitation], status="llm_composed")
         )
     )
 
+    assert "limitações:" in text.split("\n")
     assert "\n  - limitação forjada" not in text
     assert "\\n" in text
 

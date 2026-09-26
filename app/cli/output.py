@@ -105,6 +105,22 @@ def _human_provider_execution_policy_line(policy: ProviderExecutionPolicy | None
     return line
 
 
+# Status cujo `answer_text` já termina com as limitações registradas (ver o
+# fechamento em app/editor/compose.py::_compose_answer) -- a mesma lista que
+# a interface web usa (FinalAnswerView).
+_STATUSES_WHOSE_TEXT_INCLUDES_LIMITATIONS = frozenset({"llm_planned", "deterministic_from_verdict"})
+
+
+def _audit_pointer_lines(run_id: str, *, json_detail: str) -> list[str]:
+    """Onde aprofundar -- descrevendo só o que cada destino realmente
+    mostra: a saída humana de `audit` é um resumo; o `--json` traz a
+    auditoria estruturada (`json_detail` diz o que interessa nela aqui)."""
+    return [
+        f"resumo da auditoria: dialeon audit {run_id}",
+        f"{json_detail} (JSON): dialeon audit {run_id} --json",
+    ]
+
+
 def human_run_result(run: CompletedRunResponse) -> str:
     """Patch de segurança de terminal (FinalAnswer da CLI, round 2) --
     `run.final_answer.answer_text`/`limitations`/`editor_model` podem
@@ -137,12 +153,31 @@ def human_run_result(run: CompletedRunResponse) -> str:
     shows_primary = (
         not shows_realization and not shows_natural and final_answer.primary_answer is not None
     )
+    # A seção separada de limitações só aparece quando o texto mostrado como
+    # resposta NÃO as traz (mesma distinção da interface web), decidida pelos
+    # campos estruturados -- nunca procurando o texto dentro da resposta:
+    # - realização linguística: não traz -> mostra;
+    # - resposta natural/principal: renderizadas da resposta principal, que
+    #   carrega as próprias limitações; se forem as mesmas da resposta final
+    #   (o contrato de coerência exige), já estão no texto -> omite;
+    # - avaliação completa: `llm_planned`/`deterministic_from_verdict` sempre
+    #   ecoam as limitações em `answer_text` (app/editor/compose.py) -> omite;
+    #   os demais status (sem veredito, histórico) não -> mostra.
+    if shows_realization:
+        answer_carries_limitations = False
+    elif shows_natural or shows_primary:
+        answer_carries_limitations = (
+            final_answer.primary_answer is not None
+            and list(final_answer.primary_answer.limitations) == list(final_answer.limitations)
+        )
+    else:
+        answer_carries_limitations = final_answer.status in _STATUSES_WHOSE_TEXT_INCLUDES_LIMITATIONS
 
     # ANSWER FIRST (mesma hierarquia da interface web): 1) a resposta, 2) as
-    # limitações registradas, 3) um bloco curto de detalhes da execução, 4)
-    # como a resposta foi montada (proveniência, resposta principal
-    # estruturada, avaliação completa), 5) onde ver a auditoria completa.
-    # Nada deixou de ser impresso -- só a ordem mudou. A escolha da resposta
+    # limitações registradas, quando o texto da resposta ainda não as traz,
+    # 3) um bloco curto de detalhes da execução, 4) como a resposta foi
+    # montada (proveniência, resposta principal estruturada, avaliação
+    # completa), 5) onde ver a auditoria (resumo e JSON). A escolha da resposta
     # é a MESMA ordem de fallback de sempre: realização linguística
     # (elegível) -> resposta natural (elegível) -> resposta principal ->
     # avaliação completa; o rótulo de cada seção continua dizendo qual foi.
@@ -167,7 +202,7 @@ def human_run_result(run: CompletedRunResponse) -> str:
         # Sem resposta principal: a avaliação completa JÁ é a resposta.
         lines.append("resposta (avaliação completa):")
         lines.append(terminal_safe_text(final_answer.answer_text))
-    if final_answer.limitations:
+    if final_answer.limitations and not answer_carries_limitations:
         lines.append("")
         lines.append("limitações:")
         lines.extend(f"  - {terminal_safe_text(item)}" for item in final_answer.limitations)
@@ -176,8 +211,11 @@ def human_run_result(run: CompletedRunResponse) -> str:
     lines.append("detalhes:")
     lines.append("status: concluída")
     lines.append(f"run_id: {run.id}")
+    # Os providers PEDIDOS pra execução -- não prova quais responderam nem
+    # quais contribuíram pra resposta (isso está na auditoria).
     lines.append(
-        "modelos: " + ", ".join(terminal_safe_text(p) for p in run.config.enabled_providers)
+        "providers solicitados: "
+        + ", ".join(terminal_safe_text(p) for p in run.config.enabled_providers)
     )
     lines.append(
         f"custo estimado: {run.accounting.estimated_cost_usd:.6f} USD "
@@ -205,7 +243,7 @@ def human_run_result(run: CompletedRunResponse) -> str:
         lines.append(terminal_safe_text(final_answer.answer_text))
 
     lines.append("")
-    lines.append(f"auditoria completa: dialeon audit {run.id}")
+    lines.extend(_audit_pointer_lines(run.id, json_detail="dados estruturados"))
     return "\n".join(lines)
 
 
@@ -223,7 +261,7 @@ def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
             f"run_id: {run.id}",
             _human_provider_execution_policy_line(run.provider_execution_policy),
             "",
-            f"motivo de cada modelo: dialeon audit {run.id}",
+            *_audit_pointer_lines(run.id, json_detail="status e erro de cada resposta"),
         ]
     )
 

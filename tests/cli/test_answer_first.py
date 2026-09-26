@@ -1,8 +1,8 @@
 """CLI -- apresentação ANSWER FIRST da saída humana de `run`/`get`.
 
 A saída humana de uma run concluída põe a resposta primeiro, depois as
-limitações, um bloco curto de detalhes, como a resposta foi montada e onde
-ver a auditoria completa. A escolha da resposta é a mesma ordem de fallback
+limitações (quando o texto da resposta não as traz), um bloco curto de
+detalhes, como a resposta foi montada e onde ver a auditoria. A escolha da resposta é a mesma ordem de fallback
 de sempre. A saída `--json` NÃO faz parte desta apresentação: continua sendo
 exatamente o schema público serializado.
 """
@@ -91,14 +91,11 @@ def test_the_answer_comes_first_verbatim_and_metadata_comes_after(variant):
     assert first_metadata > 1
     assert lines.index("detalhes:") < lines.index("status: concluída") < lines.index("como a resposta foi montada:")
 
-    # 3. limitações visíveis entre a resposta e os detalhes
-    assert response.final_answer.limitations
-    assert lines.index(label) < lines.index("limitações:") < lines.index("detalhes:")
-    for item in response.final_answer.limitations:
-        assert f"  - {terminal_safe_text(item)}" in lines
-
-    # 4. onde aprofundar, no fim
-    assert lines[-1] == f"auditoria completa: dialeon audit {response.id}"
+    # 3. onde aprofundar, no fim
+    assert lines[-2:] == [
+        f"resumo da auditoria: dialeon audit {response.id}",
+        f"dados estruturados (JSON): dialeon audit {response.id} --json",
+    ]
 
 
 @pytest.mark.parametrize("variant", ["realization", "natural", "primary"])
@@ -129,7 +126,7 @@ def test_details_block_holds_only_concise_run_context():
     assert details == [
         "status: concluída",
         f"run_id: {response.id}",
-        "modelos: " + ", ".join(response.config.enabled_providers),
+        "providers solicitados: " + ", ".join(response.config.enabled_providers),
         f"custo estimado: {response.accounting.estimated_cost_usd:.6f} USD (contabilidade completa: sim)",
         f"concluída em: {response.completed_at.isoformat()}",
     ]
@@ -146,7 +143,7 @@ async def test_run_and_get_print_the_same_answer_first_output_for_the_same_run(c
         components, question="Qual a capital do Brasil?", providers=None, source_text=None, as_json=False
     ) == commands.EXIT_OK
     run_out = capsys.readouterr().out
-    run_id = run_out.rsplit("dialeon audit ", 1)[1].strip()
+    run_id = run_out.split("resumo da auditoria: dialeon audit ", 1)[1].split("\n", 1)[0]
 
     assert await commands.cmd_get(components, run_id=run_id, as_json=False) == commands.EXIT_OK
     get_out = capsys.readouterr().out
@@ -169,7 +166,13 @@ async def test_quorum_failure_keeps_the_outcome_primary_and_never_fabricates_an_
     assert lines[1] == "Nenhuma resposta final foi composta -- o quórum mínimo não foi atingido."
     assert not ANSWER_LABELS & set(lines)
     assert lines.index("detalhes:") < lines.index(f"run_id: {failure_id}")
-    assert lines[-1] == f"motivo de cada modelo: dialeon audit {failure_id}"
+    # só promete o que cada destino mostra: resumo (humano) e o status/erro
+    # de cada resposta (JSON) -- nunca "o motivo de cada modelo" no humano
+    assert lines[-2:] == [
+        f"resumo da auditoria: dialeon audit {failure_id}",
+        f"status e erro de cada resposta (JSON): dialeon audit {failure_id} --json",
+    ]
+    assert "motivo" not in "\n".join(lines)
 
 
 @pytest.mark.asyncio
@@ -216,7 +219,7 @@ async def test_get_json_is_exactly_the_serialized_public_schema(variant, capsys)
 
     out = capsys.readouterr().out
     assert out == expected + "\n"
-    assert "detalhes" not in out and "auditoria completa" not in out
+    assert "detalhes" not in out and "resumo da auditoria" not in out
 
 
 @pytest.mark.asyncio
@@ -264,3 +267,137 @@ async def test_providers_json_and_human_output_are_untouched(capsys):
 
     await commands.cmd_providers(components, as_json=False)
     assert capsys.readouterr().out == "anthropic\nopenai\n"
+
+
+# ---------------------------------------------------------------------------
+# Repair da revisão de fechamento: rótulo honesto dos providers, ponteiro de
+# auditoria fiel ao destino, limitações sem duplicação.
+# ---------------------------------------------------------------------------
+
+
+def _with_config(response, **config_updates):
+    return response.model_copy(update={"config": response.config.model_copy(update=config_updates)})
+
+
+def test_requested_providers_are_labeled_as_requested_not_as_contributing_models():
+    # "gemini" foi pedido, mas nenhuma resposta dele existe nesta run
+    response = _with_config(_response(_natural()), enabled_providers=["openai", "anthropic", "gemini"])
+    lines = output.human_run_result(response).split("\n")
+
+    assert "providers solicitados: openai, anthropic, gemini" in lines
+    assert not any(line.startswith(("modelos:", "modelos que responderam", "participantes:")) for line in lines)
+
+
+def test_requested_provider_ids_stay_terminal_safe():
+    evil = "prov\x1b[31m\nstatus: forjado"
+    response = _with_config(_response(_natural()), enabled_providers=["openai", evil])
+    lines = output.human_run_result(response).split("\n")
+
+    assert "\x1b" not in "\n".join(lines)
+    assert f"providers solicitados: openai, {terminal_safe_text(evil)}" in lines
+    assert sum(1 for line in lines if line.startswith("status:")) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_json_audit_pointer_is_real_and_holds_what_it_promises(capsys):
+    """`dialeon audit <id> --json` é uma invocação válida da CLI, e pra uma
+    falha de quórum traz o status e o erro de cada resposta."""
+    from app.cli.main import _build_parser
+
+    args = _build_parser().parse_args(["audit", "run-x", "--json"])
+    assert (args.command, args.run_id, args.as_json) == ("audit", "run-x", True)
+
+    components = await _components()
+    failure_id = await components.repository.save_quorum_failure(
+        quorum_failure_exception(), run_config=run_config(), started_at=now(), failed_at=now()
+    )
+    await commands.cmd_audit(components, run_id=failure_id, as_json=True)
+    responses = json.loads(capsys.readouterr().out)["round_result"]["responses"]
+
+    assert responses
+    for item in responses:
+        assert {"provider", "status", "error"} <= set(item)
+    assert any(item["status"] == "error" and item["error"] is not None for item in responses)
+
+
+def _limitations_section(lines):
+    return "limitações:" in lines
+
+
+@pytest.mark.parametrize("variant", ["realization"])
+def test_separate_limitations_stay_when_the_answer_does_not_carry_them(variant):
+    response = _response(VARIANTS[variant][0]())
+    lines = output.human_run_result(response).split("\n")
+
+    assert response.final_answer.limitations
+    assert lines.index(VARIANTS[variant][1]) < lines.index("limitações:") < lines.index("detalhes:")
+    for item in response.final_answer.limitations:
+        assert f"  - {terminal_safe_text(item)}" in lines
+
+
+@pytest.mark.parametrize("variant", ["natural", "primary"])
+def test_limitations_are_not_repeated_when_the_answer_already_carries_them(variant):
+    make, label, answer_of = VARIANTS[variant]
+    response = _response(make())
+    fa = response.final_answer
+    # pré-condição estrutural: a resposta principal carrega as MESMAS limitações
+    assert fa.limitations and list(fa.primary_answer.limitations) == list(fa.limitations)
+    lines = output.human_run_result(response).split("\n")
+
+    assert not _limitations_section(lines)
+    # não se perdem: estão no texto mostrado como resposta
+    for item in fa.limitations:
+        assert terminal_safe_text(item) in lines[1]
+
+
+def _deterministic_from_verdict_run():
+    """Resposta final COMPOSTA pelo caminho real do Editor (sem resposta
+    principal): `answer_text` termina com as limitações registradas."""
+    from app.debate.claims import get_current_claims
+    from app.editor.compose import Editor
+
+    result = full_council_run_result()
+    fa = Editor._deterministic_from_verdict_answer(
+        "Qual a capital do Brasil?",
+        result.judge_result.verdict,
+        get_current_claims(result.debate_result.claims),
+        None,
+        {},
+        result.debate_result,
+    )
+    editor_result = result.editor_result.model_copy(update={"final_answer": fa})
+    return result.model_copy(update={"editor_result": editor_result})
+
+
+@pytest.mark.parametrize("status", ["deterministic_from_verdict", "llm_planned"])
+def test_complete_assessment_that_echoes_limitations_does_not_repeat_them(status):
+    response = _response(_deterministic_from_verdict_run())
+    if status != response.final_answer.status:
+        # mesma composição de texto (`_compose_answer`); só o caminho difere
+        response = response.model_copy(
+            update={"final_answer": response.final_answer.model_copy(update={"status": status})}
+        )
+    fa = response.final_answer
+    lines = output.human_run_result(response).split("\n")
+
+    assert lines[0] == "resposta (avaliação completa):"
+    assert fa.limitations
+    assert not _limitations_section(lines)
+    for item in fa.limitations:
+        assert terminal_safe_text(item) in lines[1]
+    # a avaliação completa aparece uma vez só (é a resposta)
+    assert "avaliação completa:" not in lines
+    assert "\n".join(lines).count(terminal_safe_text(fa.answer_text)) == 1
+
+
+@pytest.mark.parametrize("status", ["llm_composed", "deterministic_no_verdict"])
+def test_complete_assessment_whose_text_does_not_echo_limitations_keeps_the_section(status):
+    response = _response(full_council_run_result())
+    response = response.model_copy(
+        update={"final_answer": response.final_answer.model_copy(update={"status": status})}
+    )
+    lines = output.human_run_result(response).split("\n")
+
+    assert lines.index("resposta (avaliação completa):") < lines.index("limitações:") < lines.index("detalhes:")
+    for item in response.final_answer.limitations:
+        assert f"  - {terminal_safe_text(item)}" in lines
