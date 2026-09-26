@@ -24,7 +24,7 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Versão do pacote nesta árvore: **1.3.0**. O número de versão no código
+Versão do pacote nesta árvore: **1.4.0**. O número de versão no código
 não indica, por si só, que uma tag ou release já foi publicada. A política
 da linha 1.x está em
 [Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
@@ -66,7 +66,7 @@ diretório (ver [Configuração](#configuração)).
 mkdir dialeon && cd dialeon
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install https://github.com/cacodo/Dialeon/releases/download/v1.3.0/llm_council-1.3.0-py3-none-any.whl
+pip install https://github.com/cacodo/Dialeon/releases/download/v1.4.0/llm_council-1.4.0-py3-none-any.whl
 ```
 
 A página da release mostra o SHA-256 de cada arquivo, se você quiser conferir
@@ -189,14 +189,13 @@ Pela API: `POST /runs` com `"kind": "direct"` e exatamente um item em
 
 ### Configuração local das etapas do Conselho
 
-Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
-v1.3.0 não tem), o Dialeon confere, antes de uma pergunta do Conselho, a
-configuração **local** de cada dependência dela: os modelos escolhidos e as
-etapas internas (extração de afirmações, análise da fonte, juiz, editor e
-revisão da redação, que hoje usa o fornecedor do juiz). Isso resolve um caso
-concreto: com OpenAI e Gemini configurados e sem `ANTHROPIC_API_KEY`, os
-modelos escolhidos respondem (e cobram), mas as etapas internas, que usam a
-Anthropic por padrão, falham em seguida.
+A partir da v1.4.0 (a v1.3.0 não tem), o Dialeon confere, antes de uma
+pergunta do Conselho, a configuração **local** de cada dependência dela: os
+modelos escolhidos e as etapas internas (extração de afirmações, análise da
+fonte, juiz, editor e revisão da redação, que hoje usa o fornecedor do juiz).
+Isso resolve um caso concreto: com OpenAI e Gemini configurados e sem
+`ANTHROPIC_API_KEY`, os modelos escolhidos respondem (e cobram), mas as
+etapas internas, que usam a Anthropic por padrão, falham em seguida.
 
 - **O que é**: o mesmo estado local da lista de modelos (`met` presente,
   `missing` ausente, `unknown` não verificável), agora por etapa, com o
@@ -235,8 +234,8 @@ true` com `"acknowledged_degradation_fingerprint"` igual ao
 etapas sem configuração, não uma credencial): se a degradação avaliada no
 aceite for outra, a resposta é `409` `council_readiness_changed`, sem criar
 nada, com a avaliação nova em `error.details.readiness`.
-Sem esses campos, o aceite é o da v1.3.0. Toda run nova do Conselho guarda a
-avaliação feita no aceite, o modo de admissão e o reconhecimento em
+Sem esses campos, o aceite é o mesmo da v1.3.0. Toda run nova do Conselho
+guarda a avaliação feita no aceite, o modo de admissão e o reconhecimento em
 `council_admission` (detalhe e auditoria); runs anteriores têm `null` (não
 registrado), nunca reconstruído da configuração atual.
 
@@ -316,9 +315,9 @@ registrado), nunca reconstruído da configuração atual.
   etapa do Conselho; resultado ou falha registrados com a mesma
   proveniência de modelo, uso, custo e request (ver
   [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
-- Configuração local das etapas do Conselho (em desenvolvimento nesta
-  árvore): prévia sem efeito, admissão estrita opcional e registro, no
-  aceite, da configuração local de cada etapa (ver
+- Configuração local das etapas do Conselho (a partir da v1.4.0): prévia sem
+  efeito, admissão estrita opcional e registro, no aceite, da configuração
+  local de cada etapa (ver
   [Configuração local das etapas do Conselho](#configuração-local-das-etapas-do-conselho)).
 - CLI (`dialeon`), API HTTP (FastAPI) e frontend (React) para disparar
   execuções e inspecionar resultados.
@@ -390,7 +389,7 @@ trazem `"kind": "direct"` e têm forma própria (`answer`, `response`, sem
 `final_answer`); respostas sem `kind` continuam sendo do Conselho, com a forma
 de sempre. A listagem ganhou `kind` (`council`/`direct`) em cada item.
 
-Na versão em desenvolvimento desta árvore (ver
+A partir da v1.4.0 (ver
 [Configuração local das etapas do Conselho](#configuração-local-das-etapas-do-conselho)):
 `POST /runs/readiness` é novo e opcional; `readiness_admission`,
 `acknowledge_known_degradation` e `acknowledged_degradation_fingerprint` são

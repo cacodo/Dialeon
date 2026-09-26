@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-council"
-version = "1.3.0"
+version = "1.4.0"
 description = "Resposta direta de um modelo configurado ou debate multi-LLM com juiz (Conselho), com proveniência e auditoria de cada execução."
 license = "Apache-2.0"
 license-files = ["LICENSE"]

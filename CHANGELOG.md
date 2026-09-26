@@ -1,3 +1,126 @@
+# Dialeon 1.4.0
+
+Versão menor compatível com a linha 1.x. Antes de uma pergunta do Conselho, o
+Dialeon passa a conferir a configuração **local** de cada dependência dela
+(os modelos escolhidos e as etapas internas) e a dizer, antes de qualquer
+chamada paga, quando alguma etapa já se sabe sem configuração. Resolve um
+caso concreto: com OpenAI e Gemini configurados e sem a chave da Anthropic,
+os modelos escolhidos respondiam (e cobravam) e as etapas internas, que usam
+a Anthropic por padrão, falhavam em seguida. Sem pedir nada de novo, o aceite
+de uma pergunta é o mesmo da 1.3.0; a resposta direta não mudou.
+
+## Prontidão local do Conselho
+
+- Cada dependência aparece com o papel, o provider, o modelo configurado para
+  ele nesta instalação e o estado local de sempre: `met` (presente),
+  `missing` (ausente) ou `unknown` (não verificável -- não é o mesmo que
+  ausente).
+- Dependências: os participantes escolhidos e as etapas internas que a
+  pergunta **pode** alcançar -- extração de afirmações, análise da fonte (só
+  quando há fonte), juiz, editor e a revisão da redação (que usa o provider do
+  juiz). "Pode alcançar" não quer dizer que vão rodar: quórum, afirmações
+  extraídas, veredito, orçamento e falhas anteriores decidem isso.
+- É só configuração local: nenhuma chamada de rede, nenhuma validação de
+  credencial no fornecedor, nenhuma garantia de que o modelo configurado
+  exista ou aceite a chamada. O modelo mostrado é um fato de configuração, não
+  o modelo solicitado nem o reportado.
+- Uma etapa alcançada sem a configuração necessária falha sem chamar o
+  fornecedor, como antes. O Dialeon não troca de provider nem de modelo.
+  Prontidão não é confiança na resposta nem verificação.
+
+## Admissão estrita e degradação reconhecida
+
+- Opcional: a admissão estrita recusa a pergunta, antes de criar qualquer
+  registro e de qualquer chamada, quando alguma dependência do caminho pedido
+  tem ausência local conhecida. `unknown` nunca bloqueia, e a análise da fonte
+  sem fonte também não.
+- Seguir mesmo assim é uma escolha explícita: o servidor devolve em cada
+  avaliação uma identidade da degradação conhecida
+  (`known_degradation_fingerprint`), e o reconhecimento precisa mandar essa
+  identidade. No aceite, o servidor avalia de novo; se a degradação for outra
+  (ou não houver mais nenhuma), a pergunta é recusada sem criar nada, com a
+  avaliação nova. Um reconhecimento antigo nunca vale para outra situação.
+
+## Interface web
+
+- No Conselho, a seleção atual é conferida antes do envio. Sem ausência
+  conhecida, nada muda na tela e o envio usa a admissão estrita.
+- Com ausência conhecida, um aviso compacto diz quais etapas e qual modelo
+  configurado, e perguntar exige marcar “Perguntar mesmo assim”. A marcação
+  vale só para aquele aviso e aquela entrada: mudar a pergunta, a fonte ou os
+  modelos pede a escolha de novo.
+- Configuração não verificável aparece como nota neutra, sem bloquear.
+- Quando o servidor recusa porque a situação mudou, a interface mostra a
+  avaliação nova (nada foi enviado aos modelos) e só pede reconhecimento se
+  ainda faltar configuração.
+- A auditoria técnica de uma pergunta mostra a prontidão local registrada no
+  aceite.
+
+## API
+
+- Novo `POST /runs/readiness` (opcional, sem efeito, `Content-Type` JSON),
+  com `enabled_providers` e `source_supplied`: devolve a avaliação
+  (`summary`, `strict_admission`, `known_degradation_fingerprint`,
+  `dependencies`). Provider desconhecido: `422 invalid_provider`, como na
+  criação.
+- `POST /runs` ganhou campos opcionais, só do Conselho:
+  `readiness_admission` (`standard`/`strict`), `acknowledge_known_degradation`
+  e `acknowledged_degradation_fingerprint` (sempre juntos, nunca com
+  `strict`). A resposta direta recusa os três.
+- Novos códigos de erro: `council_prerequisites_missing` (422, admissão
+  estrita recusada) e `council_readiness_changed` (409, a degradação
+  reconhecida não é a avaliada no aceite); os dois trazem a avaliação em
+  `error.details.readiness` e acontecem antes de qualquer registro ou chamada.
+- Detalhe e auditoria das runs do Conselho ganharam `council_admission`: a
+  avaliação feita no aceite, o modo de admissão e o reconhecimento (com a
+  identidade reconhecida).
+
+## CLI
+
+- `dialeon readiness [--providers ...] [--source ...] [--json]`: mostra a
+  avaliação sem executar nada, com as mesmas opções e o mesmo default de
+  `dialeon run`.
+- `dialeon run --strict-readiness`: recusa a pergunta (código de saída 2,
+  nada criado, nenhuma chamada) se faltar configuração local em alguma etapa
+  do caminho pedido. Não combina com `--direct`.
+- A saída humana de `run`, `get` e `audit` mostra a prontidão local registrada
+  no aceite. `dialeon run` sem a opção aceita como sempre.
+
+## Instalação e dependências
+
+- Sem mudanças de dependências nem de versão mínima do Python (3.11).
+- Artefatos da release: `llm_council-1.4.0-py3-none-any.whl` e
+  `llm_council-1.4.0.tar.gz`, com a interface web já compilada. Não há
+  publicação no PyPI.
+
+## Persistência e atualização
+
+- Mudança aditiva de banco: a coluna `council_admission_json` é criada
+  automaticamente em `accepted_runs`, `council_runs` e `quorum_failures` na
+  primeira abertura, sem preenchimento retroativo. Bancos criados pela v1.3,
+  v1.2, v1.1, v1.0 e v0.9 continuam abertos e legíveis.
+- Toda run nova do Conselho registra os fatos do aceite; runs anteriores
+  mostram `council_admission: null` (não registrado), nunca uma avaliação
+  reconstruída da configuração atual.
+
+## Compatibilidade
+
+- Tudo é aditivo e opt-in: um endpoint novo, campos opcionais de request, um
+  campo novo nas respostas do Conselho e dois códigos de erro que só aparecem
+  com os campos novos. Clientes devem ignorar chaves desconhecidas.
+- Clientes que tratam `error.code` de forma exaustiva precisam reconhecer
+  `council_prerequisites_missing` e `council_readiness_changed`.
+- A interface web passa a enviar as perguntas do Conselho com
+  `readiness_admission` (estrita, ou padrão com reconhecimento).
+
+## Limitações conhecidas
+
+As limitações da 1.3.0 continuam valendo. A prontidão é só local: não detecta
+chave inválida, cota, serviço fora do ar nem modelo inexistente. Hoje o único
+pré-requisito local verificado é a presença da credencial. A avaliação vale
+para a configuração com que o servidor iniciou; depois de mudar o `.env`, é
+preciso reiniciar a API.
+
 # Dialeon 1.3.0
 
 Versão menor compatível com a linha 1.x. Acrescenta um segundo modo de
