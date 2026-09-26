@@ -1,3 +1,121 @@
+# Dialeon 1.2.0
+
+Versão menor compatível com a linha 1.x. A interface web e a saída humana de
+`dialeon run`/`dialeon get` passam a mostrar a resposta primeiro, com os
+detalhes técnicos logo abaixo, e `GET /providers` passa a informar o estado
+dos pré-requisitos locais de cada provider, usado na primeira execução para
+orientar a escolha dos modelos. Nenhuma mudança de banco, de dependências ou
+dos formatos `--json` da CLI.
+
+## Pré-requisitos locais dos providers
+
+- `GET /providers` ganhou o campo aditivo `local_prerequisites`: para cada
+  provider da lista `providers`, `met`, `missing` ou `unknown`, a partir da
+  configuração com que a API iniciou.
+  - `met`: os pré-requisitos locais que o Dialeon sabe verificar parecem
+    presentes (hoje, uma chave de API não vazia). Não quer dizer que a
+    credencial tenha sido validada no fornecedor, nem garante que o provider
+    ou o modelo estejam disponíveis: nada disso é testado antes de uma
+    pergunta de verdade.
+  - `missing`: falta um pré-requisito local conhecido (chave ausente, vazia
+    ou só com espaços).
+  - `unknown`: não dá para determinar localmente; não é o mesmo que
+    `missing`.
+- O campo nunca inclui chaves, partes delas, tamanhos, nomes de variáveis ou
+  caminhos, e não faz nenhuma chamada de rede. A configuração é lida quando a
+  API inicia: depois de mudar o `.env`, é preciso reiniciar a API.
+- Na interface, todos os providers continuam visíveis. Só os `met` são
+  pré-selecionados; os `missing` aparecem desabilitados, com explicação; os
+  `unknown` só entram numa pergunta por escolha explícita. Quando nenhum está
+  `met`, a tela explica a situação, lembra de reiniciar a API depois de
+  configurar e oferece “Recarregar lista de modelos”, que só repete
+  `GET /providers`.
+
+## Resposta primeiro na interface web
+
+- A página de uma pergunta mostra, nesta ordem: a pergunta, a resposta com as
+  limitações necessárias, um resumo curto (modelos, custo estimado, duração),
+  as ações “Perguntar de novo” e “Nova pergunta”, e “Como esta resposta foi
+  produzida”, onde ficam a resposta principal estruturada, a avaliação
+  completa, as respostas de cada modelo e a auditoria técnica.
+- Uma pergunta concluída abre em `/runs/:id`, a mesma página de uma pergunta
+  reaberta pelo Histórico, já com o resultado em mãos. Quórum insuficiente
+  também abre o registro salvo.
+- O composer foi reorganizado (“O que você quer saber?”, fonte opcional,
+  modelos por nome, Ctrl/⌘ + Enter para perguntar).
+- Quando o resultado de uma pergunta não pode ser confirmado (erro do servidor
+  ou de rede depois do envio), a interface não oferece reenvio de um clique:
+  a pergunta pode ter sido processada, então ela aponta o Histórico. A lista
+  de modelos pode ser recarregada com segurança.
+- Avisos com gravidade distinta (validação, atenção, neutro, erro), temas claro
+  e escuro, contraste do botão principal e dos controles, leiaute em telas
+  estreitas, texto longo sem quebra e movimento reduzido.
+
+## Resposta primeiro na CLI
+
+- A saída humana de uma run concluída (`dialeon run` e `dialeon get`) começa
+  pela resposta (mesma ordem de escolha de sempre: realização linguística,
+  resposta natural, resposta principal, avaliação completa), seguida das
+  limitações, de um bloco `detalhes:` (status, run_id, providers solicitados,
+  custo estimado, conclusão), de “como a resposta foi montada” e de onde ver o
+  resumo da auditoria (`dialeon audit <id>`) e os dados estruturados
+  (`dialeon audit <id> --json`).
+- `dialeon get` de uma run com quórum insuficiente mostra primeiro o desfecho.
+- Todo `--json` da CLI continua idêntico; `dialeon providers --json` continua
+  devolvendo só a lista de identificadores.
+
+## Correções e reforços
+
+- Uma chave de API vazia ou só com espaços conta como ausente: a chamada ao
+  provider nem é tentada (falha local, custo conhecido zero), como já
+  acontecia com uma chave ausente. O valor de uma chave presente é enviado
+  exatamente como configurado.
+- A seleção de modelos é reconciliada a cada recarga da lista: modelos que
+  somem ou passam a `missing` saem da seleção, e um modelo marcado
+  automaticamente que passa a `unknown` é desmarcado até ser escolhido de
+  novo. “Perguntar de novo” só restaura modelos `met`.
+- A página de uma pergunta segue sempre o id da URL: navegação rápida entre
+  perguntas não mostra conteúdo de outra, e um resultado recebido incompleto
+  cai para a busca normal.
+- O texto sobre a fonte diz que ela é comparada com as afirmações
+  identificadas durante o debate, separadamente da avaliação delas.
+- CLI: os providers pedidos para a run aparecem como “providers solicitados”
+  (não como modelos que responderam), as indicações de auditoria descrevem o
+  que cada comando mostra, e as limitações não são repetidas quando o texto
+  mostrado como resposta já as traz.
+
+## Instalação e dependências
+
+- Sem mudanças de dependências nem de versão mínima do Python (3.11).
+- Artefatos da release: `llm_council-1.2.0-py3-none-any.whl` e
+  `llm_council-1.2.0.tar.gz`, com a interface web já compilada. Não há
+  publicação no PyPI. O README descreve o primeiro uso a partir do wheel da
+  release.
+
+## Persistência e atualização
+
+- Nenhuma mudança de banco. Bancos criados pela v1.1, v1.0 e v0.9 continuam
+  abertos e legíveis sem alteração.
+
+## Compatibilidade
+
+- `GET /providers` ganhou `local_prerequisites`; `providers` não mudou.
+  Clientes devem ignorar chaves desconhecidas.
+- A saída humana da CLI foi reorganizada; ela não faz parte do contrato
+  estável. Os formatos `--json` não mudaram.
+- A mensagem registrada quando a credencial local está ausente passou a ser
+  “configuração local obrigatória ausente”.
+
+## Limitações conhecidas
+
+As limitações da 1.1.0 continuam valendo. O estado de pré-requisitos cobre só
+os modelos escolhidos: as etapas internas (extração de afirmações, juiz,
+editor, análise da fonte) usam por padrão a Anthropic, e a interface não
+mostra se a configuração local dela está presente -- sem ela, as respostas
+dos modelos são coletadas, mas as afirmações não são extraídas nem avaliadas
+(ver o README). Nenhum provider atual informa `unknown`; o estado existe para
+adapters que não possam se avaliar localmente.
+
 # Dialeon 1.1.0
 
 Versão menor compatível com a linha 1.x. Acrescenta uma apresentação da

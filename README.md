@@ -18,7 +18,7 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Versão do pacote nesta árvore: **1.1.0**. O número de versão no código
+Versão do pacote nesta árvore: **1.2.0**. O número de versão no código
 não indica, por si só, que uma tag ou release já foi publicada. A política
 da linha 1.x está em
 [Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
@@ -60,7 +60,7 @@ diretório (ver [Configuração](#configuração)).
 mkdir dialeon && cd dialeon
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install https://github.com/cacodo/Dialeon/releases/download/v1.1.0/llm_council-1.1.0-py3-none-any.whl
+pip install https://github.com/cacodo/Dialeon/releases/download/v1.2.0/llm_council-1.2.0-py3-none-any.whl
 ```
 
 A página da release mostra o SHA-256 de cada arquivo, se você quiser conferir
@@ -98,9 +98,9 @@ Uma resposta pode levar alguns minutos.
 
 ### O que a lista de modelos indica
 
-Na versão em desenvolvimento desta árvore (ainda não publicada em release; na
-v1.1.0 a lista mostra os modelos sem essa indicação), cada modelo aparece com
-o estado da **configuração local** que o servidor encontrou ao iniciar:
+A partir da v1.2.0 (na v1.1.0 a lista mostra os modelos sem essa indicação),
+cada modelo aparece com o estado da **configuração local** que o servidor
+encontrou ao iniciar:
 
 - **presente** (`met`, sem nenhuma marca na tela): tudo que o Dialeon sabe
   verificar localmente está lá, por exemplo uma chave não vazia. Não quer
