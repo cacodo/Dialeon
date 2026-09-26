@@ -1,3 +1,123 @@
+# Dialeon 1.3.0
+
+Versão menor compatível com a linha 1.x. Acrescenta um segundo modo de
+execução, a **resposta direta**: a pergunta vai a um único provider, com o
+modelo que o deployment tem configurado para ele, sem nenhuma etapa do
+Conselho. O Conselho continua sendo o padrão em todo lugar: requests sem
+`kind`, `dialeon run` sem `--direct` e todas as runs históricas mantêm o
+comportamento de sempre. A resposta direta é a resposta daquele modelo: não é
+consenso, veredito de juiz, verificação nem evidência independente, e não usa
+fonte.
+
+## Resposta direta
+
+- Disponível na interface web, na API e na CLI, sempre por escolha explícita.
+- Exatamente um provider por run. O modelo padrão configurado no deployment
+  para esse provider é congelado no aceite e enviado explicitamente como o
+  modelo solicitado; o modelo que o provider reportar fica registrado ao lado,
+  com a origem dessa identidade (`requested_model`, `model`,
+  `model_identity_source`). Os dois podem diferir.
+- Uma única chamada lógica ao provider (as tentativas de transporte seguem a
+  política de execução vigente), sem extração de afirmações, crítica, análise
+  de fonte, juiz, reconciliação, editor nem realização linguística.
+- O provider precisa estar com a configuração local presente: `missing` é
+  recusado antes do aceite, sem nenhuma chamada; `unknown` só por escolha
+  explícita. Isso não garante que a chamada funcione.
+- Fonte não é aceita neste modo.
+- Resultado e falha ficam persistidos: a resposta do provider com modelo
+  solicitado e reportado, uso de tokens, custo estimado e sua proveniência de
+  preço, tentativas, incerteza de tentativas anteriores e proveniência do
+  request (contrato `direct_answer_v1`, com o modelo incluído no digest).
+  Quando a contabilização está incompleta, o custo aparece como o subtotal
+  conhecido.
+- Erro, timeout ou resposta vazia/malformada viram uma run direta `failed`,
+  com o registro da chamada. Nunca há troca de provider ou de modelo, nem
+  queda para o Conselho. Uma execução interrompida continua honestamente
+  `running`.
+- As mensagens de falha não afirmam o que o modelo produziu remotamente:
+  quando a chamada terminou sem resposta aproveitável, dizem que nenhuma
+  resposta utilizável foi recebida; quando a execução ou o registro final
+  falharam, dizem que nenhuma resposta foi registrada, lembrando que o
+  provider pode ter respondido.
+
+## Interface web
+
+- Nova escolha “Como responder”: **Conselho de modelos** (padrão) ou
+  **Resposta direta**, com seleção de um único modelo que segue as mesmas
+  regras de configuração local. No modo direto a fonte não é enviada, e o
+  texto de introdução não promete comparação entre modelos.
+- Página própria da run direta: pergunta, resposta, resumo curto, “Perguntar
+  de novo”/“Nova pergunta” e os detalhes da chamada em “Como esta resposta foi
+  produzida” (ou “O que aconteceu nesta pergunta”, quando nenhuma resposta foi
+  registrada).
+- O Histórico marca as runs diretas, que reabrem na página própria.
+  “Perguntar de novo” numa run direta volta ao modo direto com a mesma
+  pergunta e o mesmo provider; a run nova usa o modelo configurado no
+  momento, não o da run anterior.
+
+## API
+
+- `POST /runs` aceita `"kind": "direct"`, com exatamente um item em
+  `enabled_providers` e sem `source_text`. Sem `kind` (ou com
+  `"kind": "council"`), a run é do Conselho, como sempre.
+- Os detalhes e a auditoria de uma run direta sempre trazem `"kind": "direct"`
+  e têm forma própria (`config`, `answer`, `response`, `accounting`,
+  `provider_execution_policy`; em falha, `failure_stage`, `failure_reason` e
+  `message`), sem `final_answer`. As respostas do Conselho não mudaram e não
+  trazem `kind`.
+- Cada item de `GET /runs` ganhou `kind` (`council`/`direct`).
+- Novo código de erro `provider_prerequisites_missing` (422) quando o provider
+  escolhido para uma run direta está `missing`.
+- No OpenAPI, as uniões de resposta de run passaram a ser publicadas em dois
+  níveis nomeados: o ramo do Conselho é a mesma união por `status` da 1.2.0,
+  e o ramo direto é uma união por `status` cujos membros exigem `kind`.
+
+## CLI
+
+- `dialeon run "pergunta" --direct --providers <um provider>`: saída humana
+  com a resposta primeiro e `kind` no `--json`. `--source` é recusado com
+  `--direct`, inclusive vazio.
+- Novo código de saída 5: a run direta foi registrada, mas a chamada ao
+  provider terminou sem resposta utilizável.
+- `dialeon get`, `dialeon audit` e `dialeon list` reconhecem runs diretas;
+  `dialeon list --json` ganhou `kind` em cada item.
+
+## Instalação e dependências
+
+- Sem mudanças de dependências nem de versão mínima do Python (3.11).
+- Artefatos da release: `llm_council-1.3.0-py3-none-any.whl` e
+  `llm_council-1.3.0.tar.gz`, com a interface web já compilada. Não há
+  publicação no PyPI.
+
+## Persistência e atualização
+
+- Mudança aditiva de banco: `accepted_runs` ganha a coluna `run_kind`,
+  criada automaticamente na primeira abertura, sem preenchimento retroativo
+  (vazia é Conselho, o que vale para toda run anterior), e a nova tabela
+  `direct_runs` guarda o desfecho das runs diretas. Bancos criados pela v1.2,
+  v1.1, v1.0 e v0.9 continuam abertos e legíveis; runs antigas, inclusive as
+  do Conselho com um único provider, continuam sendo do Conselho.
+- Um `run_kind` desconhecido não é lido como Conselho: detalhe, auditoria e
+  listagem falham com erro interno, sem reescrever o registro.
+
+## Compatibilidade
+
+- Tudo é aditivo e opt-in: campos opcionais novos (`kind` na criação e na
+  listagem), a forma nova das runs diretas, um código de erro e um código de
+  saída novos. Clientes devem ignorar chaves desconhecidas.
+- Clientes que tratam a listagem ou os detalhes de forma exaustiva precisam
+  reconhecer runs com `"kind": "direct"`, que não têm `final_answer`.
+- Clientes gerados a partir do OpenAPI podem ver a estrutura das uniões de
+  resposta mudar; o JSON do Conselho em runtime é o mesmo.
+
+## Limitações conhecidas
+
+As limitações da 1.2.0 continuam valendo. A resposta direta depende
+inteiramente de um modelo: não é verificada, não é comparada com outros
+modelos nem com uma fonte. Não há teto de custo para ela além do limite de
+tokens de saída por chamada (`DEFAULT_MAX_OUTPUT_TOKENS_PER_CALL`).
+Configuração local presente não garante que o provider aceite a chamada.
+
 # Dialeon 1.2.0
 
 Versão menor compatível com a linha 1.x. A interface web e a saída humana de

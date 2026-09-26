@@ -1,14 +1,20 @@
 # LLM Council (Dialeon)
 
-Dialeon é uma aplicação local para fazer uma pergunta a vários modelos de
-linguagem ao mesmo tempo (hoje GPT, Claude e Gemini, cada um pela API do seu
-fornecedor) e receber uma resposta organizada: onde os modelos concordam, onde
-divergem, o que foi avaliado e o que continua incerto. Você usa pelo navegador
-(ou pela CLI `dialeon`), com as suas próprias chaves de API; cada pergunta faz
-chamadas pagas aos fornecedores. Para começar, veja
-[Primeiros passos](#primeiros-passos-release-publicada).
+Dialeon é uma aplicação local para fazer perguntas a modelos de linguagem
+(hoje GPT, Claude e Gemini, cada um pela API do seu fornecedor) de dois jeitos:
 
-Em detalhe: sistema que envia uma pergunta para vários modelos de linguagem
+- **Conselho de modelos** (padrão): vários modelos respondem à mesma pergunta
+  e você recebe uma resposta organizada: onde os modelos concordam, onde
+  divergem, o que foi avaliado e o que continua incerto.
+- **Resposta direta**: um único modelo configurado responde sozinho, sem as
+  etapas do Conselho (ver [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
+
+Nos dois casos cada pergunta fica registrada com a sua proveniência e
+auditoria. Você usa pelo navegador (ou pela CLI `dialeon`), com as suas
+próprias chaves de API; cada pergunta faz chamadas pagas aos fornecedores.
+Para começar, veja [Primeiros passos](#primeiros-passos-release-publicada).
+
+Em detalhe, o Conselho envia uma pergunta para vários modelos de linguagem
 independentemente, faz eles debaterem em rodadas, extrai as
 afirmações (claims) resultantes, e submete o resultado do debate a um
 juiz (outro modelo). Quando uma fonte textual opcional é fornecida
@@ -18,7 +24,7 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Versão do pacote nesta árvore: **1.2.0**. O número de versão no código
+Versão do pacote nesta árvore: **1.3.0**. O número de versão no código
 não indica, por si só, que uma tag ou release já foi publicada. A política
 da linha 1.x está em
 [Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
@@ -60,7 +66,7 @@ diretório (ver [Configuração](#configuração)).
 mkdir dialeon && cd dialeon
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install https://github.com/cacodo/Dialeon/releases/download/v1.2.0/llm_council-1.2.0-py3-none-any.whl
+pip install https://github.com/cacodo/Dialeon/releases/download/v1.3.0/llm_council-1.3.0-py3-none-any.whl
 ```
 
 A página da release mostra o SHA-256 de cada arquivo, se você quiser conferir
@@ -76,8 +82,9 @@ ANTHROPIC_API_KEY=sua-chave-da-anthropic
 GOOGLE_API_KEY=sua-chave-do-google-gemini
 ```
 
-Por padrão, as etapas internas de cada pergunta (extração das afirmações,
-juiz, editor e análise da fonte) usam a Anthropic. Sem `ANTHROPIC_API_KEY`,
+Por padrão, as etapas internas de cada pergunta do Conselho (extração das
+afirmações, juiz, editor e análise da fonte) usam a Anthropic; uma resposta
+direta não passa por elas. Sem `ANTHROPIC_API_KEY`,
 as respostas dos modelos escolhidos ainda são coletadas, mas as afirmações
 não são extraídas nem avaliadas. Para usar outro fornecedor nessas etapas,
 defina no mesmo `.env` `DEFAULT_CLAIM_PROCESSOR_PROVIDER`,
@@ -92,9 +99,10 @@ configuração local dos modelos que você escolhe.
 uvicorn app.api.app:create_app --factory
 ```
 
-**4. Abra <http://localhost:8000/app>**, escreva a pergunta, confira em
-“Modelos” quais vão responder e clique em **Perguntar** (ou Ctrl/⌘ + Enter).
-Uma resposta pode levar alguns minutos.
+**4. Abra <http://localhost:8000/app>**, escreva a pergunta, escolha em
+“Como responder” entre **Conselho de modelos** (padrão) e **Resposta direta**,
+confira quais modelos vão responder e clique em **Perguntar** (ou Ctrl/⌘ +
+Enter). Uma resposta do Conselho pode levar alguns minutos.
 
 ### O que a lista de modelos indica
 
@@ -137,9 +145,11 @@ servidor já carregou: não relê o `.env` nem testa os fornecedores.
 
 ### Custo
 
-Cada pergunta faz chamadas reais e pagas aos modelos escolhidos e ao
-fornecedor das etapas internas. `DEFAULT_MAX_COST_USD` (padrão 1,00 dólar) é
-um limite de interrupção **flexível**, baseado no custo já conhecido: ele é
+Cada pergunta faz chamadas reais e pagas aos modelos escolhidos e, no
+Conselho, ao fornecedor das etapas internas. Uma resposta direta é uma única
+chamada, limitada só pelo teto de saída por chamada
+(`DEFAULT_MAX_OUTPUT_TOKENS_PER_CALL`). No Conselho, `DEFAULT_MAX_COST_USD`
+(padrão 1,00 dólar) é um limite de interrupção **flexível**, baseado no custo já conhecido: ele é
 verificado entre chamadas, e uma pergunta pode terminar acima dele. Uso sem
 preço conhecido pelo Dialeon não entra nessa conta. Não é
 uma estimativa prévia, nem um teto garantido de cobrança. O custo mostrado
@@ -148,8 +158,8 @@ depois da resposta é uma estimativa calculada a partir do uso reportado. Ver
 
 ### Resposta direta ou Conselho
 
-Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
-v1.2.0 só tem o Conselho), cada pergunta pode ser feita de dois jeitos:
+A partir da v1.3.0 (a v1.2.0 só tem o Conselho), cada pergunta pode ser feita
+de dois jeitos:
 
 - **Conselho de modelos** (padrão, o comportamento de sempre): os modelos
   escolhidos respondem, e o Dialeon extrai as afirmações, as compara, avalia
@@ -247,10 +257,17 @@ Pela API: `POST /runs` com `"kind": "direct"` e exatamente um item em
     de request da operação + digest determinístico (SHA-256) do
     `CompletionRequest` provider-neutro finalizado — nunca o payload
     exato enviado ao provider, nunca prova de aceite remoto.
+- Resposta direta (opcional, a partir da v1.3.0): uma única chamada a um
+  provider escolhido, com o modelo configurado no deployment, sem nenhuma
+  etapa do Conselho; resultado ou falha registrados com a mesma
+  proveniência de modelo, uso, custo e request (ver
+  [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
 - CLI (`dialeon`), API HTTP (FastAPI) e frontend (React) para disparar
   execuções e inspecionar resultados.
 
 ## Como o pipeline funciona
+
+Pipeline do Conselho (uma resposta direta não passa por nenhuma destas etapas):
 
 ```
 Debate (rodadas + extração de claims)
