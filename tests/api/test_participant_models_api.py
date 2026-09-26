@@ -188,3 +188,40 @@ def test_invalid_override_errors_point_at_the_field():
 
     [error] = resp.json()["error"]["details"]["errors"]
     assert error["loc"][-1] == "participant_model_overrides"
+
+
+@pytest.mark.parametrize("value", ["gpt\u202e-x", "gpt\u200b-x", "gpt\x85-x", "gpt\x9b-x"])
+def test_invisible_or_control_characters_never_become_an_accepted_model(value):
+    """Regressão: U+202E (e outros invisíveis/C1) passavam pela validação e o
+    identificador era persistido exatamente como enviado (201)."""
+    providers = _providers()
+    with _client(providers) as client:
+        created = _create(client, participant_model_overrides={"openai": value})
+        preview = client.post(
+            "/runs/readiness",
+            json={"enabled_providers": ["openai", "gemini"], "participant_model_overrides": {"openai": value}},
+        )
+        runs = client.get("/runs").json()["runs"]
+
+    for resp in (created, preview):
+        assert resp.status_code == 422
+        error = resp.json()["error"]
+        assert error["code"] == "invalid_request"
+        assert error["details"]["errors"][0]["loc"][-1] == "participant_model_overrides"
+        # a mensagem nomeia o caractere por U+XXXX, nunca cru (o `input` do
+        # handler genérico de validação ecoa o que o próprio cliente mandou)
+        assert value not in error["details"]["errors"][0]["msg"]
+    assert runs == []
+    assert all(p.requests == [] for p in providers.values())
+
+
+def test_visible_non_ascii_identifiers_are_still_accepted_verbatim():
+    with _client(_providers()) as client:
+        created = _create(client, participant_model_overrides={"openai": "modèle-é"})
+
+    assert created.status_code == 201
+    assert created.json()["config"]["participant_models"][0] == {
+        "provider": "openai",
+        "requested_model": "modèle-é",
+        "origin": "run_override",
+    }

@@ -32,7 +32,7 @@ são dois pedidos distintos -- nenhuma equivalência entre providers.
 
 from __future__ import annotations
 
-import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Literal
 
@@ -52,18 +52,42 @@ MAX_MODEL_IDENTIFIER_CHARACTERS = 256
 # explicitamente pra esta run.
 ParticipantModelOrigin = Literal["configured_default", "run_override"]
 
-_WHITESPACE_OR_CONTROL = re.compile(r"[\s\x00-\x1f\x7f]")
+# Categorias Unicode proibidas num identificador escolhido: toda "Other"
+# (Cc controles C0/C1/DEL; Cf formato -- bidi como U+202E, largura zero,
+# soft hyphen, BOM; Cs surrogates; Co uso privado; Cn não atribuído) e todo
+# "Separator" (Zs espaço, Zl linha, Zp parágrafo). São exatamente os
+# caracteres invisíveis/não imprimíveis: um identificador aceito é sempre
+# visível como é. Letras, marcas, números, pontuação e símbolos de qualquer
+# escrita (L/M/N/P/S) continuam aceitos -- a regra não é "só ASCII".
+_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zs", "Zl", "Zp"})
+
+
+def _first_forbidden_character(value: str) -> str | None:
+    return next(
+        (
+            char
+            for char in value
+            if char.isspace() or unicodedata.category(char) in _FORBIDDEN_CATEGORIES
+        ),
+        None,
+    )
 
 
 def validate_model_override_identifier(value: str) -> str:
     """Forma de um identificador escolhido numa run: a mesma regra mínima do
     modelo padrão configurado (`validate_model_identifier_edges`), mais: sem
-    espaço em branco nem caractere de controle em lugar nenhum, e no máximo
-    `MAX_MODEL_IDENTIFIER_CHARACTERS`. Nunca reescreve."""
+    espaço em branco nem caractere de controle, de formato ou outro
+    invisível em lugar nenhum (ver `_FORBIDDEN_CATEGORIES`), e no máximo
+    `MAX_MODEL_IDENTIFIER_CHARACTERS`. Nunca reescreve nem normaliza: aceita
+    ou rejeita."""
     validate_model_identifier_edges(value, "o modelo escolhido")
-    if _WHITESPACE_OR_CONTROL.search(value):
+    forbidden = _first_forbidden_character(value)
+    if forbidden is not None:
+        # o caractere vai como U+XXXX: nunca ecoado cru (poderia ser invisível
+        # ou reordenar o texto da mensagem)
         raise ValueError(
-            f"o modelo escolhido não pode conter espaço em branco nem caractere de controle: {value!r}"
+            "o modelo escolhido não pode conter espaço em branco nem caractere de controle "
+            f"ou invisível (U+{ord(forbidden):04X}, {unicodedata.category(forbidden)})"
         )
     if len(value) > MAX_MODEL_IDENTIFIER_CHARACTERS:
         raise ValueError(

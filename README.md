@@ -247,8 +247,9 @@ um participante. Sem escolha, cada participante usa o modelo padrão
 configurado nesta instalação (`OPENAI_DEFAULT_MODEL` etc.), como sempre.
 
 - A escolha é um identificador do fornecedor, enviado exatamente como
-  digitado. O Dialeon só confere a forma (não vazio, sem espaços, até 256
-  caracteres) e que o provider é um participante selecionado: não tem
+  digitado. O Dialeon só confere a forma (não vazio, sem espaços nem
+  caracteres de controle ou invisíveis, até 256 caracteres) e que o provider
+  é um participante selecionado: não tem
   catálogo de modelos e não confere se o modelo existe, está disponível ou
   aceita a chamada. Um modelo recusado pelo fornecedor aparece como falha
   registrada daquela resposta, sem troca por outro modelo.

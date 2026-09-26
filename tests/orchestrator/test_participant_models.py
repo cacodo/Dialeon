@@ -82,7 +82,52 @@ def test_malformed_identifiers_are_rejected_never_rewritten(value):
 
 
 @pytest.mark.parametrize(
-    "value", ["gpt-5.5", "models/gemini-3.7-pro", "claude-sonnet-5@20260901", "g" * MAX_MODEL_IDENTIFIER_CHARACTERS]
+    "char, category",
+    [
+        ("\x80", "Cc"),  # C1
+        ("\x85", "Cc"),  # C1 (NEL)
+        ("\x9b", "Cc"),  # C1 (CSI)
+        ("\x9f", "Cc"),  # C1
+        ("\u202e", "Cf"),  # RIGHT-TO-LEFT OVERRIDE
+        ("\u2066", "Cf"),  # LEFT-TO-RIGHT ISOLATE
+        ("\u200b", "Cf"),  # ZERO WIDTH SPACE
+        ("\u200d", "Cf"),  # ZERO WIDTH JOINER
+        ("\u00ad", "Cf"),  # SOFT HYPHEN
+        ("\ufeff", "Cf"),  # BOM / ZERO WIDTH NO-BREAK SPACE
+        ("\u00a0", "Zs"),  # NO-BREAK SPACE
+        ("\u2028", "Zl"),  # LINE SEPARATOR
+        ("\u2029", "Zp"),  # PARAGRAPH SEPARATOR
+        ("\ue000", "Co"),  # uso privado
+        ("\u0378", "Cn"),  # não atribuído
+    ],
+)
+@pytest.mark.parametrize("position", ["middle", "end"])
+def test_invisible_control_and_format_characters_are_rejected(char, category, position):
+    value = f"gpt{char}x" if position == "middle" else f"gpt-x{char}"
+
+    with pytest.raises(ValueError) as caught:
+        validate_participant_model_overrides({"openai": value}, ["openai"])
+
+    message = str(caught.value)
+    assert char not in message  # nunca ecoado cru
+    if position == "middle":
+        assert f"U+{ord(char):04X}, {category}" in message
+    # no fim, um caractere de espaço (Zs/Zl/Zp, NEL) cai antes na regra comum
+    # de espaço líder/final -- rejeitado do mesmo jeito
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "gpt-5.5",
+        "models/gemini-3.7-pro",
+        "claude-sonnet-5@20260901",
+        "g" * MAX_MODEL_IDENTIFIER_CHARACTERS,
+        # não ASCII, mas visível: letras/marcas/números/símbolos de qualquer escrita
+        "modèle-é",
+        "模型-1",
+        "model_x:v2+beta~1",
+    ],
 )
 def test_well_formed_identifiers_are_accepted_verbatim(value):
     assert validate_participant_model_overrides({"openai": value}, ["openai"]) == {"openai": value}
