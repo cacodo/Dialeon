@@ -46,6 +46,7 @@ import type {
   ClaimAssessmentPublic,
   ClaimPublic,
   ClaimReconciliationOutcomePublic,
+  CouncilAdmission,
   ModelResponsePublic,
   ProviderExecutionPolicy,
   RoundAccountingPublic,
@@ -77,6 +78,7 @@ import { DeliberationOutcomes } from './DeliberationOutcomes'
 import { JudgmentView } from './JudgmentView'
 import { ParticipantsResponses } from './ParticipantsResponses'
 import { ProviderExecutionPolicyView } from './ProviderExecutionPolicyView'
+import { CouncilAdmissionView } from './CouncilAdmissionView'
 import { ReconciliationView } from './ReconciliationView'
 import { SourceAnalysisView } from './SourceAnalysisView'
 
@@ -114,6 +116,7 @@ type AuditState =
 function TechnicalAudit({
   accounting,
   policy,
+  admission,
   claims,
   assessmentsByClaimId,
   reconciliationOutcomes,
@@ -126,6 +129,7 @@ function TechnicalAudit({
 }: {
   accounting: AccountingSummary | RoundAccountingPublic
   policy: ProviderExecutionPolicy | null
+  admission: CouncilAdmission | null | undefined
   claims: ClaimPublic[] | null
   assessmentsByClaimId: Map<string, ClaimAssessmentPublic[]>
   reconciliationOutcomes: ClaimReconciliationOutcomePublic[] | null
@@ -161,6 +165,9 @@ function TechnicalAudit({
 
           <h4>Política de execução do provider</h4>
           <ProviderExecutionPolicyView policy={policy} />
+
+          <h4>Prontidão local no aceite</h4>
+          <CouncilAdmissionView admission={admission} />
 
           {participantResponses.length > 0 && (
             <>
@@ -566,6 +573,7 @@ function InspectionContent({ audit: anyAudit }: { audit: RunAuditResponse }) {
       <TechnicalAudit
         accounting={audit.status === 'completed' ? audit.accounting : audit.round_result.accounting}
         policy={audit.provider_execution_policy}
+        admission={audit.council_admission}
         claims={audit.status === 'completed' ? audit.claims : null}
         assessmentsByClaimId={assessmentsByClaimId}
         participantResponses={participantResponses}

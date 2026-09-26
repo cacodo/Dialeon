@@ -10,6 +10,11 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RunComposer } from '../RunComposer'
 
+// Council Local Execution Readiness & Admission V1 -- sem reconhecimento de
+// degradação, o envio do Conselho pede admissão estrita (o servidor recusa
+// se faltar configuração local conhecida). Nenhum `kind`.
+const STRICT_ADMISSION = { readiness_admission: 'strict' } as const
+
 function renderComposer() {
   return render(
     <RunComposer
@@ -136,7 +141,7 @@ describe('RunComposer -- seleção reconciliada a cada descoberta de modelos', (
 
     expect(screen.getByRole('button', { name: 'Modelos: GPT, Gemini' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
-    expect(onSubmit).toHaveBeenCalledWith('pergunta', ['openai', 'gemini'], null)
+    expect(onSubmit).toHaveBeenCalledWith('pergunta', ['openai', 'gemini'], null, undefined, STRICT_ADMISSION)
   })
 
   it('se nenhuma escolha continua existindo: "Modelos: nenhum" e envio bloqueado (inclusive por Ctrl+Enter)', async () => {
@@ -254,7 +259,7 @@ describe('RunComposer -- pré-requisitos locais dos modelos', () => {
     expect(screen.getByRole('button', { name: 'Modelos: GPT, Gemini' })).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'pergunta')
     await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
-    expect(onSubmit).toHaveBeenCalledWith('pergunta', ['openai', 'gemini'], null)
+    expect(onSubmit).toHaveBeenCalledWith('pergunta', ['openai', 'gemini'], null, undefined, STRICT_ADMISSION)
   })
 
   it('o reuso restaura só modelos "met": nunca um "missing", nem um "unknown" sem escolha explícita agora', async () => {
@@ -264,7 +269,7 @@ describe('RunComposer -- pré-requisitos locais dos modelos', () => {
 
     expect(screen.getByRole('button', { name: 'Modelos: GPT' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
-    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null)
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null, undefined, STRICT_ADMISSION)
   })
 
   it('reuso só com modelos sem configuração local cai pra pré-seleção padrão ("met")', () => {
@@ -424,7 +429,7 @@ describe('RunComposer -- transições de pré-requisito ao recarregar', () => {
     expect(screen.getByLabelText('Claude')).not.toBeChecked()
 
     await submit()
-    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null)
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null, undefined, STRICT_ADMISSION)
   })
 
   it('"met" → "unknown" e então escolha explícita: entra na seleção e no envio', async () => {
@@ -436,7 +441,7 @@ describe('RunComposer -- transições de pré-requisito ao recarregar', () => {
     expect(summary('Modelos: GPT, Claude')).toBeInTheDocument()
 
     await submit()
-    expect(onSubmit).toHaveBeenCalledWith('q', ['openai', 'anthropic'], null)
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai', 'anthropic'], null, undefined, STRICT_ADMISSION)
   })
 
   it('"unknown" no início não é selecionado automaticamente', () => {
@@ -454,7 +459,7 @@ describe('RunComposer -- transições de pré-requisito ao recarregar', () => {
 
     expect(summary('Modelos: GPT, Claude')).toBeInTheDocument()
     await submit()
-    expect(onSubmit).toHaveBeenCalledWith('q', ['openai', 'anthropic'], null)
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai', 'anthropic'], null, undefined, STRICT_ADMISSION)
   })
 
   it('"unknown" escolhido → "missing": sai da seleção e fica desabilitado', async () => {
@@ -468,7 +473,7 @@ describe('RunComposer -- transições de pré-requisito ao recarregar', () => {
     expect(screen.getByLabelText('Claude')).toBeDisabled()
     expect(screen.getByLabelText('Claude')).not.toBeChecked()
     await submit()
-    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null)
+    expect(onSubmit).toHaveBeenCalledWith('q', ['openai'], null, undefined, STRICT_ADMISSION)
   })
 
   it('"missing" → "unknown": fica escolhível, mas não é selecionado automaticamente', async () => {

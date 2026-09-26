@@ -3,6 +3,8 @@
 // parsing de erro HTTP e DTOs tipados.
 
 import type {
+  CouncilReadiness,
+  CouncilReadinessRequest,
   CreateRunRequest,
   ErrorResponse,
   ProvidersResponse,
@@ -65,6 +67,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const apiClient = {
   getProviders(): Promise<ProvidersResponse> {
     return request<ProvidersResponse>('/providers')
+  },
+
+  // Council Local Execution Readiness & Admission V1 -- prévia sem efeito
+  // (nenhuma execução, nenhuma chamada a modelo). Não é autorização: a
+  // criação reavalia no aceite.
+  previewCouncilReadiness(body: CouncilReadinessRequest): Promise<CouncilReadiness> {
+    return request<CouncilReadiness>('/runs/readiness', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
   },
 
   createRun(body: CreateRunRequest): Promise<RunResponse> {

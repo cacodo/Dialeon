@@ -255,6 +255,7 @@ async def test_run_json_keeps_the_public_schema_keys_and_order(capsys):
         "config",
         "provider_execution_policy",
         "default_model_authority_snapshot",
+        "council_admission",  # Council Local Execution Readiness & Admission V1 (aditivo)
     ]
 
 

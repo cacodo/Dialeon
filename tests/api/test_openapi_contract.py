@@ -70,7 +70,9 @@ def test_openapi_info_version_is_the_product_version(openapi):
 def test_no_published_response_object_is_closed(openapi):
     closed = [name for name, schema in _schemas(openapi).items() if schema.get("additionalProperties") is False]
 
-    assert closed == ["CreateRunRequest"]  # o ÚNICO objeto fechado é o request
+    # os ÚNICOS objetos fechados são os requests (Council Local Execution
+    # Readiness & Admission V1 acrescentou o da prévia de prontidão)
+    assert closed == ["CouncilReadinessRequest", "CreateRunRequest"]
 
 
 def test_representative_response_schemas_are_open_including_nested_and_embedded_models(openapi):
@@ -115,8 +117,16 @@ def test_request_schema_remains_closed_in_the_document(openapi):
     schema = _schemas(openapi)["CreateRunRequest"]
 
     assert schema["additionalProperties"] is False
-    assert set(schema["properties"]) == {"question", "enabled_providers", "source_text", "kind"}
-    assert set(schema["required"]) == {"question", "enabled_providers"}  # `kind` opcional: omitido = Conselho
+    assert set(schema["properties"]) == {
+        "question",
+        "enabled_providers",
+        "source_text",
+        "kind",
+        "readiness_admission",  # Council Local Execution Readiness & Admission V1
+        "acknowledge_known_degradation",
+    }
+    # `kind`/admissão opcionais: omitidos = Conselho com o aceite de sempre
+    assert set(schema["required"]) == {"question", "enabled_providers"}
     assert schema["properties"]["kind"]["enum"] == ["council", "direct"]
     assert schema["properties"]["kind"]["default"] == "council"
 
@@ -150,6 +160,7 @@ def test_error_response_is_a_documented_component(openapi):
         "run_not_found",
         "internal_error",
         "provider_prerequisites_missing",  # Direct Answer Execution V1
+        "council_prerequisites_missing",  # Council Local Execution Readiness & Admission V1
     }
 
 

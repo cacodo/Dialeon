@@ -29,6 +29,7 @@ COUNCIL_KEYS = {
     "config",
     "provider_execution_policy",
     "default_model_authority_snapshot",
+    "council_admission",  # Council Local Execution Readiness & Admission V1 (aditivo)
 }
 
 

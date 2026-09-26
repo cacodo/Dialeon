@@ -14,7 +14,11 @@ from __future__ import annotations
 import math
 from typing import Literal
 
+from app.council.readiness import CouncilAdmission, CouncilReadiness, strict_admission_blockers
 from app.presentation.schemas import (
+    CouncilAdmissionPublic,
+    CouncilDependencyReadinessPublic,
+    CouncilReadinessPublic,
     AccountingSummary,
     AnswerBlockPublic,
     AnswerClaimItemPublic,
@@ -469,11 +473,45 @@ def accounting_summary(result: CouncilRunResult) -> AccountingSummary:
     )
 
 
+def council_readiness_public(readiness: CouncilReadiness) -> CouncilReadinessPublic:
+    """Council Local Execution Readiness & Admission V1 -- `summary`/
+    `strict_admission` sempre derivados das dependências pela MESMA política
+    da admissão (`strict_admission_blockers`), nunca um fato à parte."""
+    return CouncilReadinessPublic(
+        contract_version=readiness.contract_version,
+        summary=readiness.summary,
+        strict_admission="blocked" if strict_admission_blockers(readiness) else "admissible",
+        dependencies=[
+            CouncilDependencyReadinessPublic(
+                role=d.role,
+                provider=d.provider,
+                configured_default_model=d.configured_default_model,
+                local_prerequisite=d.local_prerequisite,
+                applicability=d.applicability,
+            )
+            for d in readiness.dependencies
+        ],
+    )
+
+
+def council_admission_public(admission: CouncilAdmission | None) -> CouncilAdmissionPublic | None:
+    """`None` = fato não capturado (run anterior a este registro)."""
+    if admission is None:
+        return None
+    return CouncilAdmissionPublic(
+        contract_version=admission.contract_version,
+        mode=admission.mode,
+        known_degradation_acknowledged=admission.known_degradation_acknowledged,
+        readiness=council_readiness_public(admission.readiness),
+    )
+
+
 def completed_run_response(
     result: CouncilRunResult,
     *,
     provider_execution_policy: ProviderExecutionPolicy | None,
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None,
+    council_admission: CouncilAdmission | None = None,
 ) -> CompletedRunResponse:
     """`provider_execution_policy` (T02.2) é passado explicitamente pelo
     chamador -- `CouncilRunResult` NUNCA carrega isso (autoridade
@@ -516,6 +554,7 @@ def completed_run_response(
         config=run_config_public(result.run_config),
         provider_execution_policy=provider_execution_policy,
         default_model_authority_snapshot=default_model_authority_snapshot,
+        council_admission=council_admission_public(council_admission),
     )
 
 
@@ -531,6 +570,7 @@ def quorum_failure_run_response(record: QuorumFailureRecord) -> QuorumFailureRun
         config=run_config_public(record.run_config),
         provider_execution_policy=record.provider_execution_policy,
         default_model_authority_snapshot=record.default_model_authority_snapshot,
+        council_admission=council_admission_public(record.council_admission),
     )
 
 
@@ -654,6 +694,7 @@ def completed_run_audit(
     *,
     provider_execution_policy: ProviderExecutionPolicy | None,
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None,
+    council_admission: CouncilAdmission | None = None,
 ) -> CompletedRunAudit:
     """Ver docstring de `completed_run_response` -- mesma disciplina de
     passagem explícita de `provider_execution_policy`/
@@ -713,6 +754,7 @@ def completed_run_audit(
         accounting=accounting_summary(result),
         provider_execution_policy=provider_execution_policy,
         default_model_authority_snapshot=default_model_authority_snapshot,
+        council_admission=council_admission_public(council_admission),
         reconciliation=reconciliation_public(result.reconciliation),
     )
 
@@ -729,6 +771,7 @@ def quorum_failure_audit(record: QuorumFailureRecord) -> QuorumFailureAudit:
         round_result=round_audit(record.round_result),
         provider_execution_policy=record.provider_execution_policy,
         default_model_authority_snapshot=record.default_model_authority_snapshot,
+        council_admission=council_admission_public(record.council_admission),
     )
 
 
@@ -740,6 +783,7 @@ def running_run_response(record: AcceptedRunRecord) -> RunningRunResponse:
         config=run_config_public(record.run_config),
         provider_execution_policy=record.provider_execution_policy,
         default_model_authority_snapshot=record.default_model_authority_snapshot,
+        council_admission=council_admission_public(record.council_admission),
     )
 
 
@@ -758,6 +802,7 @@ def failed_run_response(record: AcceptedRunRecord) -> FailedRunResponse:
         config=run_config_public(record.run_config),
         provider_execution_policy=record.provider_execution_policy,
         default_model_authority_snapshot=record.default_model_authority_snapshot,
+        council_admission=council_admission_public(record.council_admission),
     )
 
 

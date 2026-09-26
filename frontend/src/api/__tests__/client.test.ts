@@ -26,6 +26,30 @@ describe('apiClient', () => {
     expect(fetch).toHaveBeenCalledWith('/providers', expect.any(Object))
   })
 
+  it('previewCouncilReadiness faz POST /runs/readiness só com a seleção e a presença de fonte', async () => {
+    const body = {
+      contract_version: 'council_local_readiness_v1',
+      summary: 'all_met',
+      strict_admission: 'admissible',
+      dependencies: [],
+    }
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(body))
+
+    const result = await apiClient.previewCouncilReadiness({
+      enabled_providers: ['openai'],
+      source_supplied: true,
+    })
+
+    expect(result).toEqual(body)
+    expect(fetch).toHaveBeenCalledWith(
+      '/runs/readiness',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ enabled_providers: ['openai'], source_supplied: true }),
+      }),
+    )
+  })
+
   it('createRun completed retorna CompletedRunResponse', async () => {
     const body = {
       status: 'completed',

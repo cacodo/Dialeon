@@ -31,6 +31,12 @@ abaixo):
          (Provider Default-Model Snapshot Provenance V1 --
          `build_default_model_authority_snapshot`, a partir dos
          objetos `LLMProvider` REALMENTE construídos, nunca de Settings)
+      -> avalia a prontidão LOCAL das dependências do Conselho (Council
+         Local Execution Readiness & Admission V1 --
+         `assess_council_readiness`, com os modelos do snapshot acima) e,
+         se admissão ESTRITA foi pedida, recusa com
+         `CouncilPrerequisitesMissingError` quando há ausência local
+         conhecida no caminho pedido -- nenhum registro é criado
       -> minta run_id + started_at (autoritativos a partir daqui)
       -> persiste o registro de aceite (repo.save_accepted) -- esta
          transação PRECISA completar antes de qualquer chamada ao runner
@@ -69,10 +75,19 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.application.errors import (
+    CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
     UnknownProviderError,
+)
+from app.council.readiness import (
+    CouncilAdmission,
+    CouncilAdmissionRequest,
+    CouncilExecutionDependencies,
+    CouncilReadiness,
+    evaluate_council_readiness,
+    strict_admission_blockers,
 )
 from app.council.result import CouncilRunResult
 from app.council.runner import CouncilRunner
@@ -138,15 +153,47 @@ def build_default_model_authority_snapshot(
     `.run()` (que já valida isso antes de chamar esta função), mas
     mantém esta função independentemente correta/testável -- nunca
     omite silenciosamente um provider autorizado ausente."""
-    missing = sorted(p for p in run_config.all_provider_authorities if p not in providers)
+    return _default_model_snapshot_for(run_config.all_provider_authorities, providers)
+
+
+def _default_model_snapshot_for(
+    provider_names: frozenset[str], providers: dict[str, LLMProvider]
+) -> DefaultModelAuthoritySnapshot:
+    """Lê `.default_model` UMA vez por provider nomeado. Usado pelo aceite
+    (via `build_default_model_authority_snapshot`) e pela prévia de
+    prontidão -- mesma leitura, mesmo fail-closed."""
+    missing = sorted(p for p in provider_names if p not in providers)
     if missing:
         raise UnknownProviderError(unknown_providers=missing, known_providers=sorted(providers))
 
     configured_default_models = {
-        name: providers[name].default_model
-        for name in sorted(run_config.all_provider_authorities)
+        name: providers[name].default_model for name in sorted(provider_names)
     }
     return DefaultModelAuthoritySnapshot(configured_default_models=configured_default_models)
+
+
+def assess_council_readiness(
+    dependencies: CouncilExecutionDependencies,
+    providers: dict[str, LLMProvider],
+    *,
+    configured_default_models: dict[str, str],
+) -> CouncilReadiness:
+    """Council Local Execution Readiness & Admission V1 -- lê o estado LOCAL
+    de pré-requisitos UMA vez por provider das dependências (dos objetos
+    `LLMProvider` resolvidos, a mesma decisão que bloqueia uma chamada local
+    em `LLMProvider.complete()`; nunca rede, nunca `Settings`) e entrega ao
+    avaliador único (`evaluate_council_readiness`). Os modelos configurados
+    vêm do snapshot já lido pelo chamador -- nunca uma segunda leitura de
+    `.default_model`."""
+    local_prerequisites = {
+        name: providers[name].local_prerequisite_state()
+        for name in sorted(dependencies.all_providers)
+    }
+    return evaluate_council_readiness(
+        dependencies,
+        local_prerequisites=local_prerequisites,
+        configured_default_models=configured_default_models,
+    )
 
 
 def _sanitize_unexpected_failure(exc: Exception) -> tuple[str, str]:
@@ -229,7 +276,34 @@ class CouncilExecutionService:
         self._known_providers = frozenset(providers)
         self._provider_execution_policy = provider_execution_policy
 
-    async def run(self, run_config: RunConfig) -> CouncilRunResult:
+    def _reject_unknown_providers(self, provider_names: frozenset[str]) -> None:
+        unknown = sorted(p for p in provider_names if p not in self._known_providers)
+        if unknown:
+            raise UnknownProviderError(
+                unknown_providers=unknown, known_providers=sorted(self._known_providers)
+            )
+
+    def preview_readiness(self, dependencies: CouncilExecutionDependencies) -> CouncilReadiness:
+        """Council Local Execution Readiness & Admission V1 -- prévia SEM
+        efeito: nenhum registro, nenhuma chamada. Mesma rejeição de provider
+        desconhecido, mesma leitura de modelo configurado e mesmo avaliador
+        que `run()` usa no aceite. Não é autorização nem garantia durável:
+        a configuração pode mudar (reinício) até a criação, e a admissão
+        reavalia no aceite."""
+        self._reject_unknown_providers(dependencies.all_providers)
+        snapshot = _default_model_snapshot_for(dependencies.all_providers, self._providers)
+        return assess_council_readiness(
+            dependencies,
+            self._providers,
+            configured_default_models=snapshot.configured_default_models,
+        )
+
+    async def run(
+        self,
+        run_config: RunConfig,
+        *,
+        admission: CouncilAdmissionRequest | None = None,
+    ) -> CouncilRunResult:
         """Valida, aceita (persiste ANTES de qualquer chamada ao runner),
         executa, e persiste o desfecho terminal.
 
@@ -283,6 +357,15 @@ class CouncilExecutionService:
         `validate_execution_limits_for_new_execution` -- nunca
         reimplementada aqui.
 
+        `CouncilPrerequisitesMissingError` (Council Local Execution
+        Readiness & Admission V1): só com `admission.mode="strict"`, e só
+        quando `strict_admission_blockers` da avaliação feita AQUI não é
+        vazio -- levantada ANTES de mintar run_id/`save_accepted`/chamar o
+        runner. `unknown` nunca bloqueia. Sem `admission` (ou `standard`),
+        o aceite é exatamente o de antes deste slice; a avaliação e o modo
+        pedido são persistidos com o aceite (`council_admission`) em toda
+        run nova.
+
         `InsufficientQuorumError`: persiste o registro de falha de
         quórum sob a MESMA identidade aceita, anexa o id em
         `exc.persisted_failure_id` (campo formal, Etapa 11 — não um
@@ -318,13 +401,7 @@ class CouncilExecutionService:
         except ValueError as exc:
             raise InvalidQuestionError(str(exc)) from exc
 
-        unknown = sorted(
-            p for p in run_config.all_provider_authorities if p not in self._known_providers
-        )
-        if unknown:
-            raise UnknownProviderError(
-                unknown_providers=unknown, known_providers=sorted(self._known_providers)
-            )
+        self._reject_unknown_providers(run_config.all_provider_authorities)
 
         try:
             validate_quorum_feasibility(run_config)
@@ -349,6 +426,24 @@ class CouncilExecutionService:
             run_config, self._providers
         )
 
+        # Council Local Execution Readiness & Admission V1 -- a MESMA
+        # avaliação da prévia, feita AGORA (a configuração pode ter mudado
+        # desde a prévia), ainda antes de mintar run_id/aceite durável.
+        # Sem `admission`, o aceite é o de sempre (`standard`).
+        admission = admission or CouncilAdmissionRequest()
+        readiness = assess_council_readiness(
+            CouncilExecutionDependencies.from_run_config(run_config),
+            self._providers,
+            configured_default_models=default_model_authority_snapshot.configured_default_models,
+        )
+        if admission.mode == "strict" and strict_admission_blockers(readiness):
+            raise CouncilPrerequisitesMissingError(readiness)
+        council_admission = CouncilAdmission(
+            mode=admission.mode,
+            known_degradation_acknowledged=admission.acknowledge_known_degradation,
+            readiness=readiness,
+        )
+
         run_id = _new_id()
         started_at = _now()
         await self._repository.save_accepted(
@@ -357,6 +452,7 @@ class CouncilExecutionService:
             started_at=started_at,
             provider_execution_policy=self._provider_execution_policy,
             default_model_authority_snapshot=default_model_authority_snapshot,
+            council_admission=council_admission,
         )
 
         try:

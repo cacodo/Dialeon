@@ -18,6 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.council.readiness import CouncilAdmission
 from app.council.result import CouncilRunResult
 from app.direct.models import DirectRunConfig, DirectRunStatus
 from app.models.domain import ModelResponse
@@ -54,6 +55,9 @@ class CompletedRunRecord(BaseModel):
     # `provider_execution_policy` acima, mesma disciplina exata: `None`
     # só pra runs persistidos antes desta coluna existir.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None
+    # Council Local Execution Readiness & Admission V1 -- `None` só pra runs
+    # anteriores a este fato (não capturado), nunca reconstruído.
+    council_admission: CouncilAdmission | None = None
 
 
 class QuorumFailureRecord(BaseModel):
@@ -78,6 +82,9 @@ class QuorumFailureRecord(BaseModel):
     # `provider_execution_policy` acima, mesma disciplina exata: `None`
     # só pra runs persistidos antes desta coluna existir.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None
+    # Council Local Execution Readiness & Admission V1 -- `None` só pra runs
+    # anteriores a este fato (não capturado), nunca reconstruído.
+    council_admission: CouncilAdmission | None = None
 
 
 class AcceptedRunRecord(BaseModel):
@@ -116,6 +123,9 @@ class AcceptedRunRecord(BaseModel):
     # `provider_execution_policy` acima, mesma disciplina exata: `None`
     # só pra runs persistidos antes desta coluna existir.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None
+    # Council Local Execution Readiness & Admission V1 -- `None` só pra runs
+    # anteriores a este fato (não capturado), nunca reconstruído.
+    council_admission: CouncilAdmission | None = None
 
 
 class DirectAcceptedRunRecord(BaseModel):

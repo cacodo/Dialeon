@@ -28,10 +28,26 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    StrictBool,
+    Tag,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import TypeAliasType
 
 from app.audit_fragment import AuditFragmentOmittedReason
+from app.council.readiness import (
+    CouncilAdmissionMode,
+    CouncilAdmissionRequest,
+    CouncilDependencyRole,
+    CouncilReadinessSummary,
+    DependencyApplicability,
+)
 from app.editor.answer_blocks import AnswerSectionHeading, AnswerVerdictLabel
 from app.models.provider_models import (
     DefaultModelAuthoritySnapshot,
@@ -102,6 +118,15 @@ class CreateRunRequest(BaseModel):
     # do Conselho, exatamente como antes. "direct": uma pergunta, exatamente
     # um provider, sem fonte (ver `_direct_run_shape`).
     kind: Literal["council", "direct"] = "council"
+    # Council Local Execution Readiness & Admission V1 -- os dois opcionais,
+    # só pro Conselho. Omitidos = aceite de sempre (v1.3.0). "strict" recusa
+    # a run (422 `council_prerequisites_missing`, nada criado) quando alguma
+    # dependência do caminho pedido tem ausência local CONHECIDA.
+    # `acknowledge_known_degradation` só registra que o cliente decidiu seguir
+    # sabendo da degradação -- nunca muda o aceite.
+    readiness_admission: Literal["standard", "strict"] | None = None
+    # `StrictBool`: um reconhecimento é sempre deliberado -- "yes"/1 nunca viram True.
+    acknowledge_known_degradation: StrictBool | None = None
 
     @model_validator(mode="after")
     def _direct_run_shape(self) -> "CreateRunRequest":
@@ -113,7 +138,24 @@ class CreateRunRequest(BaseModel):
                     "fonte não é suportada numa run direta (a resposta direta não é "
                     "comparada com nenhum texto)"
                 )
+            if self.readiness_admission is not None or self.acknowledge_known_degradation is not None:
+                raise ValueError(
+                    "readiness_admission e acknowledge_known_degradation só se aplicam ao "
+                    "Conselho (a resposta direta já recusa um provider sem a configuração "
+                    "local necessária)"
+                )
+        elif self.readiness_admission == "strict" and self.acknowledge_known_degradation:
+            raise ValueError(
+                "admissão estrita não aceita reconhecimento de degradação: escolha uma das duas"
+            )
         return self
+
+    def council_admission(self) -> CouncilAdmissionRequest:
+        """O pedido de admissão do Conselho, com os defaults de sempre."""
+        return CouncilAdmissionRequest(
+            mode=self.readiness_admission or "standard",
+            acknowledge_known_degradation=bool(self.acknowledge_known_degradation),
+        )
 
     @field_validator("source_text")
     @classmethod
@@ -124,6 +166,26 @@ class CreateRunRequest(BaseModel):
     @classmethod
     def _question_bounded_and_not_blank(cls, value: str) -> str:
         return validate_question(value)
+
+    @field_validator("enabled_providers")
+    @classmethod
+    def _enabled_providers_has_no_duplicates(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("enabled_providers não pode conter duplicatas")
+        return value
+
+
+class CouncilReadinessRequest(BaseModel):
+    """`POST /runs/readiness` -- prévia de prontidão LOCAL de uma run do
+    Conselho, sem pergunta e sem texto de fonte: só o que decide as
+    dependências. `source_supplied` diz se a run teria uma fonte não vazia
+    (o que torna a análise de fonte aplicável). Mesma regra de
+    `enabled_providers` de `CreateRunRequest`."""
+
+    model_config = _CONFIG
+
+    enabled_providers: list[str] = Field(min_length=1)
+    source_supplied: StrictBool = False
 
     @field_validator("enabled_providers")
     @classmethod
@@ -786,6 +848,57 @@ class ProviderIdsResponse(BaseModel):
     providers: list[str]
 
 
+class CouncilDependencyReadinessPublic(BaseModel):
+    """Uma dependência de provider do Conselho. `configured_default_model` é
+    o modelo padrão configurado no deployment pro provider -- fato de
+    configuração local, nunca modelo solicitado, reportado ou disponível
+    remotamente. `applicability`: `selected` (participante escolhido),
+    `potential` (papel interno que o caminho pedido PODE alcançar -- nunca
+    garantia de execução) ou `not_applicable` (configurado, fora do caminho
+    pedido: hoje só `source_analysis` sem fonte)."""
+
+    model_config = _CONFIG
+
+    role: CouncilDependencyRole
+    provider: str
+    configured_default_model: str
+    local_prerequisite: LocalPrerequisiteState
+    applicability: DependencyApplicability
+
+
+class CouncilReadinessPublic(BaseModel):
+    """Prontidão LOCAL de uma run do Conselho: estado dos pré-requisitos
+    locais (`met`/`missing`/`unknown`) pro provider de cada dependência.
+    Nunca validação remota de credencial, nunca disponibilidade de modelo,
+    nunca previsão de que uma etapa vai rodar ou funcionar, nunca
+    autorização. `summary` e `strict_admission` são derivados só das
+    dependências aplicáveis: `some_missing` = alguma ausência local
+    CONHECIDA (a admissão estrita recusaria -- `blocked`); `some_unknown` =
+    nada ausente, mas algo não pôde ser verificado localmente (a admissão
+    estrita admite)."""
+
+    model_config = _CONFIG
+
+    contract_version: Literal["council_local_readiness_v1"]
+    summary: CouncilReadinessSummary
+    strict_admission: Literal["admissible", "blocked"]
+    dependencies: list[CouncilDependencyReadinessPublic]
+
+
+class CouncilAdmissionPublic(BaseModel):
+    """Fatos de ACEITE de uma run do Conselho: a prontidão local avaliada no
+    aceite, o modo de admissão pedido e se o cliente reconheceu seguir com
+    degradação local conhecida. `null` na resposta = run anterior a este
+    registro (fato não capturado -- nunca `met` nem `missing`)."""
+
+    model_config = _CONFIG
+
+    contract_version: Literal["council_admission_v1"]
+    mode: CouncilAdmissionMode
+    known_degradation_acknowledged: bool
+    readiness: CouncilReadinessPublic
+
+
 class RunListResponse(BaseModel):
     model_config = _CONFIG
 
@@ -817,6 +930,9 @@ class CompletedRunResponse(BaseModel):
     # `None` só pra runs persistidos antes desta coluna existir --
     # nunca inferido do registry de provider atual.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
+    # Council Local Execution Readiness & Admission V1 -- ver
+    # CouncilAdmissionPublic. `None` só pra runs anteriores a este fato.
+    council_admission: CouncilAdmissionPublic | None = None
 
 
 class QuorumFailureRunResponse(BaseModel):
@@ -839,6 +955,9 @@ class QuorumFailureRunResponse(BaseModel):
     # `None` só pra runs persistidos antes desta coluna existir --
     # nunca inferido do registry de provider atual.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
+    # Council Local Execution Readiness & Admission V1 -- ver
+    # CouncilAdmissionPublic. `None` só pra runs anteriores a este fato.
+    council_admission: CouncilAdmissionPublic | None = None
 
 
 class RunningRunResponse(BaseModel):
@@ -866,6 +985,9 @@ class RunningRunResponse(BaseModel):
     # `None` só pra runs persistidos antes desta coluna existir --
     # nunca inferido do registry de provider atual.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
+    # Council Local Execution Readiness & Admission V1 -- ver
+    # CouncilAdmissionPublic. `None` só pra runs anteriores a este fato.
+    council_admission: CouncilAdmissionPublic | None = None
 
 
 class FailedRunResponse(BaseModel):
@@ -898,6 +1020,9 @@ class FailedRunResponse(BaseModel):
     # `None` só pra runs persistidos antes desta coluna existir --
     # nunca inferido do registry de provider atual.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
+    # Council Local Execution Readiness & Admission V1 -- ver
+    # CouncilAdmissionPublic. `None` só pra runs anteriores a este fato.
+    council_admission: CouncilAdmissionPublic | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1192,6 +1317,9 @@ class CompletedRunAudit(BaseModel):
     # `None` só pra runs persistidos antes desta coluna existir --
     # nunca inferido do registry de provider atual.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
+    # Council Local Execution Readiness & Admission V1 -- ver
+    # CouncilAdmissionPublic. `None` só pra runs anteriores a este fato.
+    council_admission: CouncilAdmissionPublic | None = None
     # Cross-Channel Reconciliation V1 -- ver docstring de
     # SourceJudgeReconciliationResultPublic pros 3 estados distintos.
     reconciliation: SourceJudgeReconciliationResultPublic | None
@@ -1217,6 +1345,9 @@ class QuorumFailureAudit(BaseModel):
     # `None` só pra runs persistidos antes desta coluna existir --
     # nunca inferido do registry de provider atual.
     default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None
+    # Council Local Execution Readiness & Admission V1 -- ver
+    # CouncilAdmissionPublic. `None` só pra runs anteriores a este fato.
+    council_admission: CouncilAdmissionPublic | None = None
 
 
 # T02.4: um run "running"/"failed" nunca tem detalhe de auditoria pra
@@ -1264,6 +1395,10 @@ class ErrorBody(BaseModel):
         # Direct Answer Execution V1: o provider de uma run direta não tem a
         # configuração local necessária -- rejeitada antes do aceite.
         "provider_prerequisites_missing",
+        # Council Local Execution Readiness & Admission V1: admissão estrita
+        # do Conselho recusada (ausência local conhecida no caminho pedido)
+        # -- rejeitada antes do aceite.
+        "council_prerequisites_missing",
     ]
     message: str
     details: dict | None = None

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { apiClient, ApiError } from '../api/client'
-import { isDirectRun, type LocalPrerequisiteState } from '../api/types'
+import { isDirectRun, type CouncilReadiness, type LocalPrerequisiteState } from '../api/types'
 import { formatErrorCode, formatInvalidRequest } from '../api/formatting'
 import { parseReuseInput } from '../lib/reuseInput'
 import { completedRunState } from '../lib/completedRunState'
-import { RunComposer } from '../components/RunComposer'
+import { RunComposer, type CouncilAdmissionChoice } from '../components/RunComposer'
 import { PendingInvestigation } from '../components/PendingInvestigation'
 
 // Depois do envio, uma pergunta com desfecho persistido tem UMA superfície de
@@ -24,6 +24,22 @@ type SubmissionState =
   | { phase: 'unknown_provider'; message: string }
   | { phase: 'outcome_uncertain' }
   | { phase: 'insufficient_without_record'; message: string }
+  // Council Local Execution Readiness & Admission V1 -- admissão estrita
+  // recusada ANTES de qualquer registro ou chamada: nada foi enviado.
+  | { phase: 'readiness_blocked' }
+
+// A avaliação que acompanha uma recusa (`details.readiness`) só é usada se
+// tiver a forma esperada -- nunca inventada a partir de outra coisa.
+function readinessFromDetails(details: Record<string, unknown> | null): CouncilReadiness | null {
+  const candidate = details?.readiness as Partial<CouncilReadiness> | undefined
+  return candidate !== undefined &&
+    candidate !== null &&
+    candidate.contract_version === 'council_local_readiness_v1' &&
+    Array.isArray(candidate.dependencies) &&
+    typeof candidate.summary === 'string'
+    ? (candidate as CouncilReadiness)
+    : null
+}
 
 export function Home() {
   const location = useLocation()
@@ -35,6 +51,7 @@ export function Home() {
   const [providersError, setProvidersError] = useState<string | null>(null)
   const [providersAttempt, setProvidersAttempt] = useState(0)
   const [submission, setSubmission] = useState<SubmissionState>({ phase: 'idle' })
+  const [rejectedReadiness, setRejectedReadiness] = useState<CouncilReadiness | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -72,14 +89,17 @@ export function Home() {
     enabledProviders: string[],
     sourceText: string | null,
     kind?: 'direct',
+    admission?: CouncilAdmissionChoice,
   ) {
     setSubmission({ phase: 'submitting' })
     try {
       const result = await apiClient.createRun(
-        // Conselho: exatamente o envio de sempre. Direta: opt-in explícito.
+        // Direta: opt-in explícito, sem admissão do Conselho. Conselho: o envio
+        // de sempre + a admissão escolhida no composer (estrita, ou padrão com
+        // reconhecimento deliberado da degradação local conhecida).
         kind === 'direct'
           ? { question, enabled_providers: enabledProviders, source_text: null, kind: 'direct' }
-          : { question, enabled_providers: enabledProviders, source_text: sourceText },
+          : { question, enabled_providers: enabledProviders, source_text: sourceText, ...admission },
       )
       if (isDirectRun(result)) {
         // Run direta criada (resposta ou falha do provider registrada): a
@@ -96,6 +116,9 @@ export function Home() {
         } else {
           setSubmission({ phase: 'insufficient_without_record', message: error.message })
         }
+      } else if (error instanceof ApiError && error.code === 'council_prerequisites_missing') {
+        setRejectedReadiness(readinessFromDetails(error.details))
+        setSubmission({ phase: 'readiness_blocked' })
       } else if (error instanceof ApiError && error.code === 'invalid_request') {
         setSubmission({ phase: 'invalid', message: formatInvalidRequest(error.details) })
       } else if (
@@ -120,6 +143,8 @@ export function Home() {
         initialInput={initialInput}
         onSubmit={handleSubmit}
         onRetryProviders={retryProviders}
+        previewReadiness={apiClient.previewCouncilReadiness}
+        rejectedReadiness={rejectedReadiness}
       />
 
       <div aria-live="polite" className="home__result">
@@ -138,6 +163,13 @@ export function Home() {
               Recarregar lista de modelos
             </button>
           </div>
+        )}
+
+        {submission.phase === 'readiness_blocked' && (
+          <p role="alert" className="notice notice--validation">
+            {formatErrorCode('council_prerequisites_missing')} Veja o aviso acima para decidir se quer
+            perguntar mesmo assim.
+          </p>
         )}
 
         {submission.phase === 'insufficient_without_record' && (

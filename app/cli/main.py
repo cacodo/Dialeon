@@ -94,7 +94,38 @@ def _build_parser() -> argparse.ArgumentParser:
         "sem as etapas do conselho e sem fonte. A resposta é a desse provider -- não é "
         "consenso nem verificação.",
     )
+    run_parser.add_argument(
+        "--strict-readiness",
+        action="store_true",
+        help="Admissão estrita do Conselho: recusa a pergunta, antes de criar a execução e de "
+        "chamar qualquer provider, se faltar configuração local em alguma dependência do caminho "
+        "pedido (participantes ou etapas internas). Configuração não verificável não bloqueia. "
+        "Veja antes com `dialeon readiness`.",
+    )
     run_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    readiness_parser = subparsers.add_parser(
+        "readiness",
+        help="Mostra a prontidão local do Conselho para uma pergunta, sem executá-la.",
+        description="Prévia da configuração LOCAL de cada dependência de uma pergunta do "
+        "Conselho (participantes e etapas internas). Não chama nenhum provider, não testa "
+        "credenciais nem modelos e não cria execução.",
+    )
+    readiness_parser.add_argument(
+        "--providers",
+        default=None,
+        metavar="p1,p2,...",
+        help="Os mesmos participantes de `dialeon run --providers`. "
+        "Se omitido, usa todos os providers disponíveis (o mesmo default de `run`).",
+    )
+    readiness_parser.add_argument(
+        "--source",
+        default=None,
+        metavar="TEXTO",
+        help="A mesma fonte de `dialeon run --source`: só a presença dela importa aqui "
+        "(ela torna a análise de fonte aplicável).",
+    )
+    readiness_parser.add_argument("--json", action="store_true", dest="as_json")
 
     list_parser = subparsers.add_parser("list", help="Lista execuções recentes.")
     list_parser.add_argument("--limit", type=_limit_type, default=50)
@@ -134,11 +165,20 @@ async def _dispatch(args: argparse.Namespace, components) -> int:
             providers=_parse_providers(args.providers),
             source_text=args.source,
             as_json=args.as_json,
+            strict_readiness=args.strict_readiness,
         )
     if args.command == "run":
         return await commands.cmd_run(
             components,
             question=args.question,
+            providers=_parse_providers(args.providers),
+            source_text=args.source,
+            as_json=args.as_json,
+            strict_readiness=args.strict_readiness,
+        )
+    if args.command == "readiness":
+        return await commands.cmd_readiness(
+            components,
             providers=_parse_providers(args.providers),
             source_text=args.source,
             as_json=args.as_json,

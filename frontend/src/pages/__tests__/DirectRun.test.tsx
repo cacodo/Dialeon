@@ -183,6 +183,7 @@ describe('Home -- envio de uma resposta direta', () => {
       question: 'q',
       enabled_providers: ['anthropic', 'openai'],
       source_text: null,
+      readiness_admission: 'strict', // Council Local Execution Readiness & Admission V1
     })
   })
 

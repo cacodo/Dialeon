@@ -90,6 +90,54 @@ export interface DefaultModelAuthoritySnapshot {
 // model === requested_model).
 export type ModelIdentitySource = 'provider_reported' | 'requested_fallback'
 
+// Council Local Execution Readiness & Admission V1 -- prontidão LOCAL das
+// dependências de uma run do Conselho (ver app/council/readiness.py). Só o
+// estado dos pré-requisitos locais que o servidor conhece: nunca credencial
+// válida, serviço/modelo disponível ou garantia de que a etapa vai rodar.
+// `configured_default_model` é configuração local, nunca modelo solicitado
+// ou reportado.
+export type CouncilDependencyRole =
+  | 'participant'
+  | 'claim_extraction'
+  | 'source_analysis'
+  | 'judge'
+  | 'editor'
+  | 'semantic_review'
+
+// 'selected': participante escolhido; 'potential': etapa interna que a
+// pergunta PODE alcançar (não é garantia); 'not_applicable': configurada, mas
+// fora do caminho pedido (análise da fonte sem fonte).
+export type DependencyApplicability = 'selected' | 'potential' | 'not_applicable'
+
+export interface CouncilDependencyReadiness {
+  role: CouncilDependencyRole
+  provider: string
+  configured_default_model: string
+  local_prerequisite: LocalPrerequisiteState
+  applicability: DependencyApplicability
+}
+
+export interface CouncilReadiness {
+  contract_version: 'council_local_readiness_v1'
+  // Só dependências aplicáveis: 'some_missing' = ausência local CONHECIDA;
+  // 'some_unknown' = nada ausente, algo não verificável.
+  summary: 'all_met' | 'some_unknown' | 'some_missing'
+  strict_admission: 'admissible' | 'blocked'
+  dependencies: CouncilDependencyReadiness[]
+}
+
+export interface CouncilReadinessRequest {
+  enabled_providers: string[]
+  source_supplied: boolean
+}
+
+export interface CouncilAdmission {
+  contract_version: 'council_admission_v1'
+  mode: 'standard' | 'strict'
+  known_degradation_acknowledged: boolean
+  readiness: CouncilReadiness
+}
+
 export interface ModelResponsePublic {
   id: string
   provider: string
@@ -513,6 +561,9 @@ export interface CompletedRunResponse {
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
+  // Council Local Execution Readiness & Admission V1 -- ausente em servidores
+  // anteriores; null = fato não capturado (run anterior), nunca met/missing.
+  council_admission?: CouncilAdmission | null
 }
 
 export interface QuorumFailureRunResponse {
@@ -527,6 +578,9 @@ export interface QuorumFailureRunResponse {
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
+  // Council Local Execution Readiness & Admission V1 -- ausente em servidores
+  // anteriores; null = fato não capturado (run anterior), nunca met/missing.
+  council_admission?: CouncilAdmission | null
 }
 
 // T02.4 -- run aceito ainda sem desfecho terminal: em andamento, ou o
@@ -540,6 +594,9 @@ export interface RunningRunResponse {
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
+  // Council Local Execution Readiness & Admission V1 -- ausente em servidores
+  // anteriores; null = fato não capturado (run anterior), nunca met/missing.
+  council_admission?: CouncilAdmission | null
 }
 
 // T02.4 -- exceção inesperada durante a execução (nem validação de
@@ -562,6 +619,9 @@ export interface FailedRunResponse {
   config: RunConfigPublic
   provider_execution_policy: ProviderExecutionPolicy | null
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
+  // Council Local Execution Readiness & Admission V1 -- ausente em servidores
+  // anteriores; null = fato não capturado (run anterior), nunca met/missing.
+  council_admission?: CouncilAdmission | null
 }
 
 export type CouncilRunResponse =
@@ -716,6 +776,9 @@ export interface CompletedRunAudit {
   accounting: AccountingSummary
   provider_execution_policy: ProviderExecutionPolicy | null
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
+  // Council Local Execution Readiness & Admission V1 -- ausente em servidores
+  // anteriores; null = fato não capturado (run anterior), nunca met/missing.
+  council_admission?: CouncilAdmission | null
   // Cross-Channel Reconciliation V1 -- null SÓ em execuções persistidas
   // antes deste recurso existir; nunca reinterpretado como
   // status="judge_unavailable" nem como nenhum channel_relationship.
@@ -734,6 +797,9 @@ export interface QuorumFailureAudit {
   round_result: RoundAudit
   provider_execution_policy: ProviderExecutionPolicy | null
   default_model_authority_snapshot: DefaultModelAuthoritySnapshot | null
+  // Council Local Execution Readiness & Admission V1 -- ausente em servidores
+  // anteriores; null = fato não capturado (run anterior), nunca met/missing.
+  council_admission?: CouncilAdmission | null
 }
 
 // T02.4 -- um run "running"/"failed" nunca tem detalhe de auditoria
@@ -766,6 +832,12 @@ export interface CreateRunRequest {
   // continua sem este campo); 'direct' exige exatamente um provider e
   // nenhuma fonte.
   kind?: RunKind
+  // Council Local Execution Readiness & Admission V1 -- só pro Conselho.
+  // 'strict' recusa (422 council_prerequisites_missing, nada criado) com
+  // ausência local conhecida; acknowledge_known_degradation só registra que
+  // o envio foi deliberado sabendo da degradação (com 'standard').
+  readiness_admission?: 'standard' | 'strict'
+  acknowledge_known_degradation?: boolean
 }
 
 // Etapa 16 -- audit-only. Só tipagem pra consistência; nenhum componente
@@ -874,6 +946,9 @@ export type ErrorCode =
   // Direct Answer Execution V1: o provider de uma resposta direta não tem a
   // configuração local necessária (rejeitada antes de qualquer registro).
   | 'provider_prerequisites_missing'
+  // Council Local Execution Readiness & Admission V1: admissão estrita do
+  // Conselho recusada (details.readiness traz a avaliação usada).
+  | 'council_prerequisites_missing'
 
 export interface ErrorBody {
   code: ErrorCode

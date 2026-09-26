@@ -382,7 +382,17 @@ def test_no_public_or_configuration_knob_exposes_the_reasoning_policy():
             "reasoning" in name or "thinking" in name for name in model.model_fields
         ), model.__name__
     # `kind` (Direct Answer Execution V1) escolhe o tipo de run -- não é knob de raciocínio.
-    assert set(CreateRunRequest.model_fields) == {"question", "enabled_providers", "source_text", "kind"}
+    assert set(CreateRunRequest.model_fields) == {
+        "question",
+        "enabled_providers",
+        "source_text",
+        "kind",
+        # Council Local Execution Readiness & Admission V1 -- escolha de
+        # ADMISSÃO do Conselho (opt-in, Literal fechado / bool), não knob de
+        # transporte nem de raciocínio.
+        "readiness_admission",
+        "acknowledge_known_degradation",
+    }
 
     for rel in ("app/api", "app/cli", "app/presentation", "frontend/src/api/types.ts"):
         target = REPO_ROOT / rel

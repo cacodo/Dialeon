@@ -16,8 +16,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.exceptions import RunNotFoundError
+from app.presentation.mappers import council_readiness_public
 from app.presentation.schemas import ErrorBody, ErrorResponse
 from app.application.errors import (
+    CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
@@ -83,6 +85,32 @@ def register_exception_handlers(app: FastAPI) -> None:
                     code="provider_prerequisites_missing",
                     message="O provider escolhido não tem a configuração local necessária.",
                     details={"provider": exc.provider},
+                )
+            ),
+        )
+
+    @app.exception_handler(CouncilPrerequisitesMissingError)
+    async def _handle_council_prerequisites_missing(
+        request: Request, exc: CouncilPrerequisitesMissingError
+    ) -> JSONResponse:
+        # Council Local Execution Readiness & Admission V1 -- admissão estrita
+        # recusada antes de qualquer registro/chamada. `details.readiness` é a
+        # avaliação usada na decisão (identificadores, estados e modelos
+        # configurados -- nunca credencial).
+        return _error_json(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="council_prerequisites_missing",
+                    message=(
+                        "Admissão estrita recusada: uma ou mais dependências do Conselho não "
+                        "têm a configuração local necessária."
+                    ),
+                    details={
+                        "readiness": council_readiness_public(exc.readiness).model_dump(
+                            mode="json"
+                        )
+                    },
                 )
             ),
         )

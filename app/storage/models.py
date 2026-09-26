@@ -130,6 +130,14 @@ class CouncilRunRow(Base):
     # reconstrução, NULL só pra linhas persistidas antes desta coluna
     # existir -- nunca backfillado.
     default_model_authority_snapshot_json: Mapped[dict | None] = mapped_column(JSON)
+    # Council Local Execution Readiness & Admission V1 -- fatos de ACEITE
+    # (`CouncilAdmission`, app/council/readiness.py): avaliação de prontidão
+    # local usada no aceite, modo de admissão pedido e reconhecimento de
+    # degradação. Gravado em `accepted_runs` antes de qualquer chamada e
+    # COPIADO verbatim pro registro terminal na mesma transação. NULL = run
+    # anterior a esta coluna (fato não capturado) -- nunca backfillado, nunca
+    # reconstruído da configuração atual.
+    council_admission_json: Mapped[dict | None] = mapped_column(JSON)
 
 
 class AcceptedRunRow(Base):
@@ -199,6 +207,14 @@ class AcceptedRunRow(Base):
     # reconstrução, NULL só pra linhas persistidas antes desta coluna
     # existir -- nunca backfillado.
     default_model_authority_snapshot_json: Mapped[dict | None] = mapped_column(JSON)
+    # Council Local Execution Readiness & Admission V1 -- fatos de ACEITE
+    # (`CouncilAdmission`, app/council/readiness.py): avaliação de prontidão
+    # local usada no aceite, modo de admissão pedido e reconhecimento de
+    # degradação. Gravado em `accepted_runs` antes de qualquer chamada e
+    # COPIADO verbatim pro registro terminal na mesma transação. NULL = run
+    # anterior a esta coluna (fato não capturado) -- nunca backfillado, nunca
+    # reconstruído da configuração atual.
+    council_admission_json: Mapped[dict | None] = mapped_column(JSON)
     # Direct Answer Execution V1 -- que tipo de run foi ACEITA: "direct", ou
     # NULL pra uma run do Conselho (toda linha anterior a esta coluna, e toda
     # run do Conselho nova, que continua sendo gravada exatamente como antes).
@@ -848,3 +864,11 @@ class QuorumFailureRow(Base):
     # reconstrução, NULL só pra linhas persistidas antes desta coluna
     # existir -- nunca backfillado.
     default_model_authority_snapshot_json: Mapped[dict | None] = mapped_column(JSON)
+    # Council Local Execution Readiness & Admission V1 -- fatos de ACEITE
+    # (`CouncilAdmission`, app/council/readiness.py): avaliação de prontidão
+    # local usada no aceite, modo de admissão pedido e reconhecimento de
+    # degradação. Gravado em `accepted_runs` antes de qualquer chamada e
+    # COPIADO verbatim pro registro terminal na mesma transação. NULL = run
+    # anterior a esta coluna (fato não capturado) -- nunca backfillado, nunca
+    # reconstruído da configuração atual.
+    council_admission_json: Mapped[dict | None] = mapped_column(JSON)

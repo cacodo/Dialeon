@@ -159,6 +159,7 @@ describe('Home', () => {
       question: 'pergunta',
       enabled_providers: ['openai', 'anthropic', 'gemini'],
       source_text: null,
+      readiness_admission: 'strict', // Council Local Execution Readiness & Admission V1
     })
   })
 
@@ -179,6 +180,7 @@ describe('Home', () => {
       question: '  pergunta válida  ',
       enabled_providers: ['openai'],
       source_text: null,
+      readiness_admission: 'strict', // Council Local Execution Readiness & Admission V1
     })
   })
 
@@ -213,6 +215,7 @@ describe('Home', () => {
       question: 'pergunta',
       enabled_providers: ['openai'],
       source_text: null,
+      readiness_admission: 'strict', // Council Local Execution Readiness & Admission V1
     })
   })
 
@@ -536,6 +539,7 @@ describe('Home', () => {
         question: 'Pergunta reutilizada',
         enabled_providers: ['anthropic', 'openai'],
         source_text: 'Fonte reutilizada',
+        readiness_admission: 'strict', // Council Local Execution Readiness & Admission V1
       })
     })
 

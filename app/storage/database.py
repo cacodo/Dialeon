@@ -89,6 +89,10 @@ async def init_db(engine: AsyncEngine) -> None:
     também sem backfill, ver docstring de
     `_upgrade_legacy_unevaluated_claims`.
 
+    Council Local Execution Readiness & Admission V1: mesmo tratamento pra
+    `council_admission_json` nas mesmas 3 tabelas -- também sem backfill,
+    ver docstring de `_upgrade_legacy_council_admission`.
+
     Repair M2: mesmo tratamento pra `raw_proposal_omitted_reason`/
     `raw_entry_omitted_reason`/`failure_stage` -- também sem backfill,
     ver docstring de `_upgrade_legacy_audit_fragment_bounds`."""
@@ -108,6 +112,7 @@ async def init_db(engine: AsyncEngine) -> None:
         await conn.run_sync(_upgrade_legacy_linguistic_realization)
         await conn.run_sync(_upgrade_legacy_audit_fragment_bounds)
         await conn.run_sync(_upgrade_legacy_run_kind)
+        await conn.run_sync(_upgrade_legacy_council_admission)
 
 
 _HAD_UNCERTAIN_PRIOR_ATTEMPTS_TABLES = (
@@ -546,6 +551,22 @@ def _upgrade_legacy_run_kind(sync_conn) -> None:  # noqa: ANN001
     existing = {col["name"] for col in inspector.get_columns("accepted_runs")}
     if "run_kind" not in existing:
         sync_conn.execute(text("ALTER TABLE accepted_runs ADD COLUMN run_kind TEXT"))
+
+
+def _upgrade_legacy_council_admission(sync_conn) -> None:  # noqa: ANN001
+    """Council Local Execution Readiness & Admission V1:
+    `council_admission_json` nas mesmas 3 tabelas de envelope de aceite de
+    `_upgrade_legacy_provider_execution_policy`. Só `ALTER TABLE` quando a
+    coluna não existe; sem backfill: NULL é o valor honesto pra toda linha
+    anterior (a prontidão local no aceite dessas runs não foi capturada e
+    nunca é reconstruída da configuração atual)."""
+    inspector = sa_inspect(sync_conn)
+    for table_name in _PROVIDER_EXECUTION_POLICY_TABLES:
+        if table_name not in inspector.get_table_names():
+            continue
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        if "council_admission_json" not in existing_columns:
+            sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN council_admission_json TEXT"))
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

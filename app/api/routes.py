@@ -23,6 +23,7 @@ from app.api.openapi import (
 from app.presentation.mappers import (
     completed_run_audit,
     completed_run_response,
+    council_readiness_public,
     direct_accepted_run_response,
     direct_run_response,
     failed_run_response,
@@ -32,12 +33,15 @@ from app.presentation.mappers import (
     run_summary_response,
 )
 from app.presentation.schemas import (
+    CouncilReadinessPublic,
+    CouncilReadinessRequest,
     CreateRunRequest,
     ProvidersResponse,
     RunAuditResponse,
     RunListResponse,
     RunResponse,
 )
+from app.council.readiness import CouncilExecutionDependencies
 from app.orchestrator.config import RunConfig
 from app.storage.records import (
     AcceptedRunRecord,
@@ -153,7 +157,7 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
         source_text=body.source_text,
     )
 
-    result = await components.service.run(run_config)
+    result = await components.service.run(run_config, admission=body.council_admission())
     # Provider Default-Model Snapshot Provenance V1 (F1 repair,
     # review de independência) -- NUNCA recomputar o snapshot a partir
     # do registry de provider AO VIVO aqui: o fato de provenance
@@ -169,7 +173,33 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
         record.council_run_result,
         provider_execution_policy=record.provider_execution_policy,
         default_model_authority_snapshot=record.default_model_authority_snapshot,
+        council_admission=record.council_admission,
     )
+
+
+@run_creation_router.post(
+    "/runs/readiness",
+    response_model=CouncilReadinessPublic,
+    responses={422: INVALID_REQUEST_RESPONSE},
+)
+async def preview_council_readiness(
+    body: CouncilReadinessRequest, request: Request
+) -> CouncilReadinessPublic:
+    """Council Local Execution Readiness & Admission V1 -- prévia OPCIONAL,
+    sem efeito (nenhum registro, nenhuma chamada a provider) da prontidão
+    LOCAL de uma run do Conselho com esta seleção. Resolve os mesmos papéis
+    internos configurados que `POST /runs` resolveria e usa o mesmo
+    avaliador da admissão (`CouncilExecutionService.preview_readiness`).
+    Nunca autorização nem garantia: `POST /runs` reavalia no aceite.
+    Mesmo 422 `invalid_provider` de `POST /runs` pra provider desconhecido.
+    No mesmo router da criação (exige `Content-Type` JSON)."""
+    components = _components(request)
+    dependencies = CouncilExecutionDependencies(
+        enabled_providers=tuple(body.enabled_providers),
+        **RunConfig.internal_role_providers_from_settings(components.settings),
+        source_supplied=body.source_supplied,
+    )
+    return council_readiness_public(components.service.preview_readiness(dependencies))
 
 
 @router.get("/runs", response_model=RunListResponse, responses={422: INVALID_REQUEST_RESPONSE})
@@ -197,6 +227,7 @@ async def get_run(run_id: str, request: Request) -> RunResponse:
             record.council_run_result,
             provider_execution_policy=record.provider_execution_policy,
             default_model_authority_snapshot=record.default_model_authority_snapshot,
+            council_admission=record.council_admission,
         )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_run_response(record)
@@ -226,6 +257,7 @@ async def get_run_audit(run_id: str, request: Request) -> RunAuditResponse:
             record.council_run_result,
             provider_execution_policy=record.provider_execution_policy,
             default_model_authority_snapshot=record.default_model_authority_snapshot,
+            council_admission=record.council_admission,
         )
     if isinstance(record, QuorumFailureRecord):
         return quorum_failure_audit(record)

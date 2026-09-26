@@ -186,6 +186,52 @@ provider; sai com código 5 se a chamada terminar sem resposta registrada).
 Pela API: `POST /runs` com `"kind": "direct"` e exatamente um item em
 `enabled_providers`; sem `kind`, a run é do Conselho, como sempre.
 
+### Configuração local das etapas do Conselho
+
+Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
+v1.3.0 não tem), o Dialeon confere, antes de uma pergunta do Conselho, a
+configuração **local** de cada dependência dela: os modelos escolhidos e as
+etapas internas (extração de afirmações, análise da fonte, juiz, editor e
+revisão da redação, que hoje usa o fornecedor do juiz). Isso resolve um caso
+concreto: com OpenAI e Gemini configurados e sem `ANTHROPIC_API_KEY`, os
+modelos escolhidos respondem (e cobram), mas as etapas internas, que usam a
+Anthropic por padrão, falham em seguida.
+
+- **O que é**: o mesmo estado local da lista de modelos (`met` presente,
+  `missing` ausente, `unknown` não verificável), agora por etapa, com o
+  fornecedor e o modelo configurados para ela.
+- **O que não é**: não testa credenciais, serviços nem modelos (nenhuma
+  chamada de rede), não é autorização e não garante que uma etapa vá rodar.
+  As etapas internas só **podem** ser alcançadas: quórum, afirmações
+  extraídas, veredito, orçamento e falhas anteriores decidem isso. A análise
+  da fonte só entra quando há fonte. O modelo mostrado é o configurado nesta
+  instalação, não prova de que exista no fornecedor.
+- **`unknown` não é `missing`**: não verificável é incerteza, nunca falha.
+
+Na interface, o caminho normal não muda. Se faltar configuração local em
+alguma etapa, um aviso diz qual etapa e qual modelo, e perguntar exige marcar
+“Perguntar mesmo assim” (a resposta pode sair incompleta: uma etapa sem
+configuração falha sem chamar o fornecedor, e o Dialeon não troca de modelo).
+Sem essa escolha, a interface envia a pergunta com **admissão estrita**: se a
+configuração tiver mudado desde o aviso, o servidor recusa sem criar nada.
+
+Pela CLI: `dialeon readiness --providers openai,gemini` mostra a avaliação
+sem executar nada (`--source` e o default de `--providers` são os mesmos de
+`dialeon run`); `dialeon run "..." --strict-readiness` recusa a pergunta
+(código 2, nada criado, nenhuma chamada) se faltar configuração local em
+alguma etapa do caminho pedido. Sem a opção, `dialeon run` aceita como
+sempre, e a saída mostra a situação registrada no aceite.
+
+Pela API: `POST /runs/readiness` (opcional, sem efeito) com
+`enabled_providers` e `source_supplied`; em `POST /runs`,
+`"readiness_admission": "strict"` recusa com `422`
+`council_prerequisites_missing` (a avaliação vai em `error.details.readiness`)
+e `"acknowledge_known_degradation": true` registra que o envio foi deliberado.
+Sem esses campos, o aceite é o da v1.3.0. Toda run nova do Conselho guarda a
+avaliação feita no aceite, o modo de admissão e o reconhecimento em
+`council_admission` (detalhe e auditoria); runs anteriores têm `null` (não
+registrado), nunca reconstruído da configuração atual.
+
 ## O que já está implementado
 
 - Execução concorrente de uma pergunta contra múltiplos providers/modelos
@@ -262,6 +308,10 @@ Pela API: `POST /runs` com `"kind": "direct"` e exatamente um item em
   etapa do Conselho; resultado ou falha registrados com a mesma
   proveniência de modelo, uso, custo e request (ver
   [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
+- Configuração local das etapas do Conselho (em desenvolvimento nesta
+  árvore): prévia sem efeito, admissão estrita opcional e registro, no
+  aceite, da configuração local de cada etapa (ver
+  [Configuração local das etapas do Conselho](#configuração-local-das-etapas-do-conselho)).
 - CLI (`dialeon`), API HTTP (FastAPI) e frontend (React) para disparar
   execuções e inspecionar resultados.
 
@@ -331,6 +381,14 @@ só existem quando pedidas com `"kind": "direct"`. Os detalhes delas sempre
 trazem `"kind": "direct"` e têm forma própria (`answer`, `response`, sem
 `final_answer`); respostas sem `kind` continuam sendo do Conselho, com a forma
 de sempre. A listagem ganhou `kind` (`council`/`direct`) em cada item.
+
+Na versão em desenvolvimento desta árvore (ver
+[Configuração local das etapas do Conselho](#configuração-local-das-etapas-do-conselho)):
+`POST /runs/readiness` é novo e opcional; `readiness_admission` e
+`acknowledge_known_degradation` são campos opcionais de `POST /runs` (só do
+Conselho); as respostas do Conselho ganharam `council_admission`; o código
+`council_prerequisites_missing` só aparece com `"readiness_admission":
+"strict"`.
 
 **Não fazem parte da API estável:** o texto exato de mensagens da CLI e de
 erros; o schema SQLite bruto e as classes ORM; os módulos internos `app.*`,
@@ -416,6 +474,8 @@ dialeon providers                       # lista os identificadores de provider d
 dialeon run "sua pergunta aqui"         # executa e imprime a resposta (detalhes logo abaixo)
 dialeon run "..." --providers openai,anthropic --source "texto de referência opcional"
 dialeon run "..." --direct --providers openai   # resposta direta de um único provider
+dialeon readiness --providers openai,gemini     # configuração local de cada etapa do Conselho, sem executar
+dialeon run "..." --strict-readiness            # recusa se faltar configuração local em alguma etapa
 dialeon list                             # lista execuções recentes
 dialeon get <run_id>                     # resposta e detalhes de uma execução
 dialeon audit <run_id>                   # resumo legível da auditoria

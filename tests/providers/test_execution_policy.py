@@ -455,7 +455,17 @@ def test_create_run_request_contract_is_unchanged_and_exposes_no_transport_knobs
 
     # `kind` (Direct Answer Execution V1) só escolhe o tipo de run (Conselho x
     # direta); não é knob de transporte e é um Literal fechado.
-    assert set(CreateRunRequest.model_fields) == {"question", "enabled_providers", "source_text", "kind"}
+    assert set(CreateRunRequest.model_fields) == {
+        "question",
+        "enabled_providers",
+        "source_text",
+        "kind",
+        # Council Local Execution Readiness & Admission V1 -- escolha de
+        # ADMISSÃO do Conselho (opt-in, Literal fechado / bool), não knob de
+        # transporte nem de raciocínio.
+        "readiness_admission",
+        "acknowledge_known_degradation",
+    }
 
     # cliente NÃO consegue enviar knob de transporte (extra="forbid")
     for forged in ("judge_provider_timeout_seconds", "judge_override", "attempt_timeout_seconds"):

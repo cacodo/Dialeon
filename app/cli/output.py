@@ -30,6 +30,8 @@ from pydantic import BaseModel
 from app.models.provider_models import ModelIdentitySource, ProviderExecutionPolicy
 from app.presentation.schemas import (
     CompletedRunResponse,
+    CouncilAdmissionPublic,
+    CouncilReadinessPublic,
     DirectCompletedRunResponse,
     DirectFailedRunResponse,
     DirectRunningRunResponse,
@@ -106,6 +108,97 @@ def _human_provider_execution_policy_line(policy: ProviderExecutionPolicy | None
             f"{policy.judge_override.max_transport_attempts_per_completion}"
         )
     return line
+
+
+# Council Local Execution Readiness & Admission V1 -- rótulos humanos. Só o
+# fato LOCAL: nenhum rótulo diz que a credencial vale, que o serviço/modelo
+# está disponível ou que a etapa vai rodar.
+_READINESS_ROLE_LABELS: dict[str, str] = {
+    "participant": "participante",
+    "claim_extraction": "extração de afirmações",
+    "source_analysis": "análise de fonte",
+    "judge": "juiz",
+    "editor": "editor",
+    "semantic_review": "revisão semântica da redação",
+}
+_READINESS_STATE_LABELS: dict[str, str] = {
+    "met": "configuração local presente",
+    "missing": "falta a configuração local",
+    "unknown": "configuração local não verificável (não quer dizer que falte)",
+}
+_READINESS_SUMMARY_LABELS: dict[str, str] = {
+    "all_met": "configuração local presente em todas as dependências do caminho pedido",
+    "some_unknown": "nenhuma ausência conhecida; alguma configuração local não pôde ser verificada",
+    "some_missing": "falta configuração local em dependência(s) do caminho pedido",
+}
+_ADMISSION_MODE_LABELS: dict[str, str] = {"standard": "padrão", "strict": "estrita"}
+
+
+def _readiness_dependency_line(dep: Any) -> str:
+    provider = terminal_safe_text(dep.provider)
+    model = terminal_safe_text(dep.configured_default_model)
+    if dep.applicability == "not_applicable":
+        status = "não se aplica a esta pergunta (sem fonte)"
+    else:
+        status = _READINESS_STATE_LABELS.get(dep.local_prerequisite, dep.local_prerequisite)
+    label = _READINESS_ROLE_LABELS.get(dep.role, dep.role)
+    return f"  - {label}: {provider} (modelo configurado: {model}) -- {status}"
+
+
+def human_council_readiness(readiness: CouncilReadinessPublic) -> str:
+    """`dialeon readiness` -- prévia da prontidão LOCAL de uma run do
+    Conselho. Separa participantes escolhidos de etapas internas, e diz que
+    as etapas internas PODEM ser alcançadas (nunca que vão rodar)."""
+    participants = [d for d in readiness.dependencies if d.role == "participant"]
+    internal = [d for d in readiness.dependencies if d.role != "participant"]
+    lines = [
+        f"prontidão local do Conselho: {_READINESS_SUMMARY_LABELS[readiness.summary]}",
+        "Só a configuração local deste servidor: não testa credenciais, serviços nem modelos, "
+        "e não garante que cada etapa vá rodar ou funcionar.",
+        "",
+        "participantes escolhidos:",
+        *(_readiness_dependency_line(d) for d in participants),
+        "",
+        "etapas internas (podem ser alcançadas, conforme o andamento da pergunta):",
+        *(_readiness_dependency_line(d) for d in internal),
+    ]
+    if readiness.summary == "some_missing":
+        lines.append("")
+        lines.append(
+            "Uma etapa alcançada sem a configuração local necessária falha sem chamar o "
+            "fornecedor, e a resposta sai degradada (por exemplo, sem afirmações extraídas "
+            "ou avaliadas). O Dialeon não troca de provider nem de modelo."
+        )
+    lines.append("")
+    lines.append(
+        "admissão estrita (dialeon run --strict-readiness): "
+        + ("recusaria esta pergunta" if readiness.strict_admission == "blocked" else "admitiria esta pergunta")
+    )
+    return "\n".join(lines)
+
+
+def _human_council_admission_lines(admission: CouncilAdmissionPublic | None) -> list[str]:
+    """Fatos de ACEITE persistidos. `None` = execução anterior a este
+    registro -- nunca apresentado como presente nem como ausente."""
+    if admission is None:
+        return ["prontidão_local_no_aceite: não registrada (execução anterior a este registro)"]
+    readiness = admission.readiness
+    mode = _ADMISSION_MODE_LABELS.get(admission.mode, admission.mode)
+    line = (
+        f"prontidão_local_no_aceite: {_READINESS_SUMMARY_LABELS[readiness.summary]} "
+        f"(admissão {mode}"
+        + (", degradação reconhecida no envio" if admission.known_degradation_acknowledged else "")
+        + ")"
+    )
+    lines = [line]
+    affected = [
+        d
+        for d in readiness.dependencies
+        if d.applicability != "not_applicable" and d.local_prerequisite != "met"
+    ]
+    for dep in affected:
+        lines.append(_readiness_dependency_line(dep))
+    return lines
 
 
 # Status cujo `answer_text` já termina com as limitações registradas (ver o
@@ -236,6 +329,7 @@ def human_run_result(run: CompletedRunResponse) -> str:
     )
     lines.append(f"confiança_do_juiz: {_fmt(final_answer.judge_confidence)}")
     lines.append(_human_provider_execution_policy_line(run.provider_execution_policy))
+    lines.extend(_human_council_admission_lines(run.council_admission))
     if (shows_realization or shows_natural) and final_answer.primary_answer is not None:
         lines.append("")
         lines.append("resposta principal (estruturada):")
@@ -263,6 +357,7 @@ def human_quorum_failure(run: QuorumFailureRunResponse) -> str:
             "detalhes:",
             f"run_id: {run.id}",
             _human_provider_execution_policy_line(run.provider_execution_policy),
+            *_human_council_admission_lines(run.council_admission),
             "",
             *_audit_pointer_lines(run.id, json_detail="status e erro de cada resposta"),
         ]
@@ -486,6 +581,7 @@ def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
                 "estar ativa, ou o processo pode ter sido interrompido antes "
                 "de terminar; os dois casos são indistinguíveis a partir deste registro.",
                 _human_provider_execution_policy_line(run.provider_execution_policy),
+                *_human_council_admission_lines(run.council_admission),
             ]
         )
     return "\n".join(
@@ -497,6 +593,7 @@ def human_accepted_run(run: RunningRunResponse | FailedRunResponse) -> str:
             f"classificação: {terminal_safe_text(run.failure_reason)}",
             terminal_safe_text(run.message),
             _human_provider_execution_policy_line(run.provider_execution_policy),
+            *_human_council_admission_lines(run.council_admission),
         ]
     )
 
@@ -688,6 +785,7 @@ def human_run_audit(audit: Any) -> str:
         lines.extend(_human_source_analysis_lines(audit.source_analysis))
         lines.extend(_human_reconciliation_lines(audit.reconciliation))
         lines.append(_human_provider_execution_policy_line(audit.provider_execution_policy))
+        lines.extend(_human_council_admission_lines(audit.council_admission))
         return "\n".join(lines)
 
     return "\n".join(
@@ -697,5 +795,6 @@ def human_run_audit(audit: Any) -> str:
             f"respostas bem-sucedidas: {audit.successful_count}/{audit.total_providers} "
             f"(mínimo pra retornar: {audit.min_to_return})",
             _human_provider_execution_policy_line(audit.provider_execution_policy),
+            *_human_council_admission_lines(audit.council_admission),
         ]
     )

@@ -587,6 +587,51 @@ main {
   margin-bottom: var(--space-2);
 }
 
+/* Council Local Execution Readiness & Admission V1 -- aviso compacto de
+   configuração local ausente em etapas do Conselho, logo abaixo da moldura
+   (perto do envio). Só aparece quando há algo a decidir; texto longo (nomes
+   de modelo configurado) quebra sem estourar a largura. */
+.composer__readiness,
+.composer__readiness-note {
+  margin: var(--space-3) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.composer__readiness h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-md);
+}
+
+.composer__readiness p {
+  margin: 0 0 var(--space-2);
+}
+
+.composer__readiness-list {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-4);
+}
+
+.composer__readiness-model {
+  color: var(--color-fg-muted);
+}
+
+.composer__readiness-ack {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  font-weight: 600;
+}
+
+.composer__readiness-ack input {
+  margin-top: 0.2em;
+}
+
+.council-admission ul {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
 /* Seleção de modelos -- lista simples de opções (uma por linha em telas
    estreitas, fluindo em linha quando há espaço). */
 .model-selection legend {

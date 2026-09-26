@@ -841,7 +841,7 @@ async def test_cmd_audit_running_run_never_invents_detail(capsys):
     assert body["status"] == "running"
     assert set(body.keys()) == {
         "status", "id", "started_at", "config", "provider_execution_policy",
-        "default_model_authority_snapshot",
+        "default_model_authority_snapshot", "council_admission",  # Council Local Execution Readiness & Admission V1 (aditivo)
     }
 
 

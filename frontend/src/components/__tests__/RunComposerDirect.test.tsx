@@ -11,6 +11,11 @@ import userEvent from '@testing-library/user-event'
 import { RunComposer } from '../RunComposer'
 import type { ReuseInput } from '../../lib/reuseInput'
 
+// Council Local Execution Readiness & Admission V1 -- sem reconhecimento de
+// degradação, o envio do Conselho pede admissão estrita (o servidor recusa
+// se faltar configuração local conhecida). Nenhum `kind`.
+const STRICT_ADMISSION = { readiness_admission: 'strict' } as const
+
 type State = 'met' | 'missing' | 'unknown'
 
 function setup(states: Record<string, State>, initialInput: ReuseInput | null = null) {
@@ -39,7 +44,7 @@ const chooseDirect = () => userEvent.click(screen.getByRole('radio', { name: 'Re
 const chooseCouncil = () => userEvent.click(screen.getByRole('radio', { name: 'Conselho de modelos' }))
 
 describe('RunComposer -- modo de resposta', () => {
-  it('o Conselho é o padrão e o envio do Conselho continua exatamente o de sempre', async () => {
+  it('o Conselho é o padrão e o envio do Conselho não leva `kind` (só a admissão estrita)', async () => {
     const { onSubmit } = setup({ openai: 'met', anthropic: 'met' })
 
     expect(screen.getByRole('group', { name: 'Como responder' })).toBeInTheDocument()
@@ -48,8 +53,8 @@ describe('RunComposer -- modo de resposta', () => {
 
     await ask()
     await submit()
-    expect(onSubmit).toHaveBeenCalledWith('Qual a capital?', ['openai', 'anthropic'], null)
-    expect(onSubmit.mock.calls[0]).toHaveLength(3) // nenhum `kind` no envio do Conselho
+    expect(onSubmit).toHaveBeenCalledWith('Qual a capital?', ['openai', 'anthropic'], null, undefined, STRICT_ADMISSION)
+    expect(onSubmit.mock.calls[0][3]).toBeUndefined() // nenhum `kind` no envio do Conselho
   })
 
   it('resposta direta: um modelo "met" (o primeiro escolhido no Conselho), sem fonte, enviada como direta', async () => {
@@ -111,7 +116,7 @@ describe('RunComposer -- modo de resposta', () => {
     expect(summary('Modelos: GPT, Claude')).toBeInTheDocument() // seleção do Conselho intacta
     expect(screen.getByLabelText(/fonte de texto/i)).toHaveValue('um texto de referência')
     await submit()
-    expect(onSubmit).toHaveBeenLastCalledWith('Qual a capital?', ['openai', 'anthropic'], 'um texto de referência')
+    expect(onSubmit).toHaveBeenLastCalledWith('Qual a capital?', ['openai', 'anthropic'], 'um texto de referência', undefined, STRICT_ADMISSION)
   })
 
   it('a escolha da direta não altera a seleção do Conselho, e vice-versa', async () => {

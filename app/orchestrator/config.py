@@ -314,6 +314,20 @@ class RunConfig(BaseModel):
             self.source_analyzer_provider,
         }
 
+    @staticmethod
+    def internal_role_providers_from_settings(settings: Settings) -> dict[str, str]:
+        """Os 4 papéis internos configurados no deployment, pelos nomes de
+        campo de `RunConfig`. Único mapeamento Settings -> papel interno:
+        `from_settings` (criação de run) e a prévia de prontidão do Conselho
+        (`CouncilExecutionDependencies`, app/council/readiness.py) usam os
+        dois este método, então nunca resolvem papéis diferentes."""
+        return {
+            "claim_processor_provider": settings.default_claim_processor_provider,
+            "judge_provider": settings.default_judge_provider,
+            "editor_provider": settings.default_editor_provider,
+            "source_analyzer_provider": settings.default_source_analyzer_provider,
+        }
+
     @classmethod
     def from_settings(
         cls,
@@ -334,10 +348,7 @@ class RunConfig(BaseModel):
             max_output_tokens_judge=settings.default_max_output_tokens_judge,
             quorum=QuorumPolicy.from_settings(settings),
             round_dispatch_timeout_seconds=settings.orchestrator_round_dispatch_timeout_seconds,
-            claim_processor_provider=settings.default_claim_processor_provider,
-            judge_provider=settings.default_judge_provider,
-            editor_provider=settings.default_editor_provider,
-            source_analyzer_provider=settings.default_source_analyzer_provider,
+            **cls.internal_role_providers_from_settings(settings),
             source_text=source_text,
         )
 

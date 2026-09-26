@@ -27,6 +27,7 @@ from pydantic import TypeAdapter
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.council.readiness import CouncilAdmission
 from app.council.result import CouncilRunResult
 from app.direct.models import DirectRunConfig, DirectRunResult
 from app.debate.claims import get_current_claims
@@ -147,6 +148,15 @@ def _default_model_authority_snapshot_from_json(
     app/storage/database.py) -- NUNCA substituído por um snapshot atual
     reconstruído do registry de provider vigente agora."""
     return DefaultModelAuthoritySnapshot(**data) if data is not None else None
+
+
+def _council_admission_from_json(data: dict | None) -> CouncilAdmission | None:
+    """Council Local Execution Readiness & Admission V1 -- `None` é o valor
+    HONESTO pra runs persistidas antes desta coluna (fato não capturado;
+    nunca `met` nem `missing`, nunca reconstruído do registry atual). Um
+    blob presente e malformado FALHA na reconstrução (`ValidationError`),
+    nunca é normalizado."""
+    return CouncilAdmission.model_validate(data) if data is not None else None
 
 
 def _run_config_from_json(data: dict) -> RunConfig:
@@ -300,6 +310,7 @@ class CouncilRepository:
         started_at: datetime,
         provider_execution_policy: ProviderExecutionPolicy,
         default_model_authority_snapshot: DefaultModelAuthoritySnapshot | None = None,
+        council_admission: CouncilAdmission | None = None,
     ) -> None:
         """T02.4 -- grava o registro mínimo de aceite ANTES de qualquer
         chamada ao `CouncilRunner` (contrato de `CouncilExecutionService`).
@@ -338,6 +349,15 @@ class CouncilRepository:
                     default_model_authority_snapshot_json=(
                         default_model_authority_snapshot.model_dump(mode="json")
                         if default_model_authority_snapshot is not None
+                        else None
+                    ),
+                    # Council Local Execution Readiness & Admission V1 --
+                    # mesma disciplina opcional de
+                    # `default_model_authority_snapshot` neste nível: o
+                    # service SEMPRE passa um valor pra toda run nova.
+                    council_admission_json=(
+                        council_admission.model_dump(mode="json")
+                        if council_admission is not None
                         else None
                     ),
                 )
@@ -505,6 +525,9 @@ class CouncilRepository:
                 if accepted_row is not None
                 else None
             )
+            council_admission_json = (
+                accepted_row.council_admission_json if accepted_row is not None else None
+            )
             session.add(
                 CouncilRunRow(
                     id=result.id,
@@ -514,6 +537,7 @@ class CouncilRepository:
                     run_config_json=result.run_config.model_dump(mode="json"),
                     provider_execution_policy_json=provider_execution_policy_json,
                     default_model_authority_snapshot_json=default_model_authority_snapshot_json,
+                    council_admission_json=council_admission_json,
                     claim_processor_provider=debate.claim_processor_provider,
                     debate_skipped_reason=debate.debate_skipped_reason,
                     debate_cumulative_budget_exceeded=debate.cumulative_budget_exceeded,
@@ -715,6 +739,9 @@ class CouncilRepository:
                 if accepted_row is not None
                 else None
             )
+            council_admission_json = (
+                accepted_row.council_admission_json if accepted_row is not None else None
+            )
             session.add(
                 QuorumFailureRow(
                     id=failure_id,
@@ -728,6 +755,7 @@ class CouncilRepository:
                     round_number=round_result.round_number,
                     provider_execution_policy_json=provider_execution_policy_json,
                     default_model_authority_snapshot_json=default_model_authority_snapshot_json,
+                    council_admission_json=council_admission_json,
                 )
             )
             await session.flush()
@@ -1237,6 +1265,7 @@ class CouncilRepository:
             default_model_authority_snapshot=_default_model_authority_snapshot_from_json(
                 row.default_model_authority_snapshot_json
             ),
+            council_admission=_council_admission_from_json(row.council_admission_json),
         )
 
     async def _reconstruct_quorum_failure(
@@ -1269,6 +1298,7 @@ class CouncilRepository:
             default_model_authority_snapshot=_default_model_authority_snapshot_from_json(
                 row.default_model_authority_snapshot_json
             ),
+            council_admission=_council_admission_from_json(row.council_admission_json),
         )
 
 
@@ -1326,6 +1356,7 @@ def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord | DirectAcce
         default_model_authority_snapshot=_default_model_authority_snapshot_from_json(
             row.default_model_authority_snapshot_json
         ),
+        council_admission=_council_admission_from_json(row.council_admission_json),
     )
 
 

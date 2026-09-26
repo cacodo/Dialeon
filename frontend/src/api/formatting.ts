@@ -10,12 +10,15 @@ import type {
   AnswerVerdictLabel,
   AuditFragmentOmittedReason,
   ChannelRelationship,
+  CouncilDependencyRole,
+  CouncilReadiness,
   ClaimVerdict,
   DebateOutcome,
   EditorOutcome,
   ErrorCode,
   FinalAnswerStatus,
   JudgeOutcome,
+  LocalPrerequisiteState,
   ModelIdentitySource,
   SourceChannelState,
   TokenUsage,
@@ -248,6 +251,8 @@ const ERROR_CODE_LABELS: Record<ErrorCode | 'unknown', string> = {
   internal_error: 'Algo deu errado do nosso lado. Tente novamente.',
   provider_prerequisites_missing:
     'O modelo escolhido não tem a configuração local necessária nesta instalação.',
+  council_prerequisites_missing:
+    'Falta configuração local nesta instalação para etapas do Conselho. Nada foi enviado aos modelos.',
   unknown: 'Não foi possível completar a solicitação.',
 }
 
@@ -475,6 +480,54 @@ const MODEL_LIST_FORMAT = new Intl.ListFormat('pt-BR', { style: 'long', type: 'c
 
 export function formatModelList(providerIds: readonly string[]): string {
   return MODEL_LIST_FORMAT.format(providerIds.map(formatProviderName))
+}
+
+// Council Local Execution Readiness & Admission V1 -- nomes humanos dos
+// papéis. Só identificam a etapa; nunca dizem que ela vai rodar.
+const READINESS_ROLE_LABELS: Record<CouncilDependencyRole, string> = {
+  participant: 'participante',
+  claim_extraction: 'extração de afirmações',
+  source_analysis: 'análise da fonte',
+  judge: 'juiz',
+  editor: 'editor',
+  semantic_review: 'revisão da redação',
+}
+
+export function formatReadinessRole(role: CouncilDependencyRole): string {
+  return READINESS_ROLE_LABELS[role] ?? role
+}
+
+export interface ReadinessProviderGroup {
+  provider: string
+  configuredModel: string
+  roles: CouncilDependencyRole[]
+}
+
+// Agrupa dependências por provider (um provider pode servir vários papéis),
+// na ordem em que aparecem. Só dependências do caminho pedido (nunca
+// `not_applicable`) com o estado pedido.
+export function groupReadinessByProvider(
+  readiness: CouncilReadiness,
+  state: LocalPrerequisiteState,
+  { includeParticipants }: { includeParticipants: boolean },
+): ReadinessProviderGroup[] {
+  const groups: ReadinessProviderGroup[] = []
+  for (const dep of readiness.dependencies) {
+    if (dep.applicability === 'not_applicable' || dep.local_prerequisite !== state) continue
+    if (!includeParticipants && dep.role === 'participant') continue
+    const group = groups.find((g) => g.provider === dep.provider)
+    if (group === undefined) {
+      groups.push({ provider: dep.provider, configuredModel: dep.configured_default_model, roles: [dep.role] })
+    } else if (!group.roles.includes(dep.role)) {
+      group.roles.push(dep.role)
+    }
+  }
+  return groups
+}
+
+export function formatReadinessRoles(roles: readonly CouncilDependencyRole[]): string {
+  const text = MODEL_LIST_FORMAT.format(roles.map(formatReadinessRole))
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 // Duração registrada de uma execução (início -> fim, relógio do servidor).

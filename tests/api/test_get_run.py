@@ -88,6 +88,7 @@ def test_get_run_completed():
     assert set(body.keys()) == {
         "status", "id", "started_at", "completed_at", "final_answer", "accounting", "config",
         "provider_execution_policy", "default_model_authority_snapshot",
+        "council_admission",  # Council Local Execution Readiness & Admission V1 (aditivo)
     }
     # T02.2 -- sem accepted_runs prévio (_seed_success isolado), o valor
     # honesto é None, nunca um default inventado.
@@ -316,7 +317,7 @@ def test_get_run_running():
     assert "accounting" not in body
     assert set(body.keys()) == {
         "status", "id", "started_at", "config", "provider_execution_policy",
-        "default_model_authority_snapshot",
+        "default_model_authority_snapshot", "council_admission",  # Council Local Execution Readiness & Admission V1 (aditivo)
     }
 
 
@@ -344,6 +345,7 @@ def test_get_run_failed():
     assert set(body.keys()) == {
         "status", "id", "started_at", "failed_at", "failure_reason", "message", "failure_stage",
         "config", "provider_execution_policy", "default_model_authority_snapshot",
+        "council_admission",  # Council Local Execution Readiness & Admission V1 (aditivo)
     }
 
 

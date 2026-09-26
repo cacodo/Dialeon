@@ -28,6 +28,7 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from app.application.errors import (
+    CouncilPrerequisitesMissingError,
     InvalidExecutionLimitsError,
     InvalidQuestionError,
     InvalidQuorumConfigurationError,
@@ -36,11 +37,13 @@ from app.application.errors import (
 )
 from app.bootstrap import AppComponents
 from app.cli import output
-from app.orchestrator.config import RunConfig
+from app.council.readiness import CouncilExecutionDependencies
+from app.orchestrator.config import RunConfig, _normalize_and_validate_source_text
 from app.orchestrator.errors import InsufficientQuorumError
 from app.presentation.mappers import (
     completed_run_audit,
     completed_run_response,
+    council_readiness_public,
     direct_accepted_run_response,
     direct_run_response,
     failed_run_response,
@@ -49,7 +52,12 @@ from app.presentation.mappers import (
     running_run_response,
     run_summary_response,
 )
-from app.presentation.schemas import CreateRunRequest, ProviderIdsResponse, RunListResponse
+from app.presentation.schemas import (
+    CouncilReadinessRequest,
+    CreateRunRequest,
+    ProviderIdsResponse,
+    RunListResponse,
+)
 from app.storage.records import (
     AcceptedRunRecord,
     CompletedRunRecord,
@@ -86,6 +94,7 @@ async def cmd_run(
     providers: list[str] | None,
     source_text: str | None,
     as_json: bool,
+    strict_readiness: bool = False,
 ) -> int:
     """Etapa 14, seção 4: superfície de input idêntica à API --
     `question` + `enabled_providers` (`--providers`) + `source_text`
@@ -99,7 +108,12 @@ async def cmd_run(
 
     try:
         body = CreateRunRequest(
-            question=question, enabled_providers=enabled_providers, source_text=source_text
+            question=question,
+            enabled_providers=enabled_providers,
+            source_text=source_text,
+            # Council Local Execution Readiness & Admission V1 -- opt-in;
+            # sem a flag, o request é exatamente o de antes.
+            readiness_admission="strict" if strict_readiness else None,
         )
     except ValidationError as exc:
         message = "Request inválido."
@@ -121,7 +135,25 @@ async def cmd_run(
     )
 
     try:
-        result = await components.service.run(run_config)
+        result = await components.service.run(run_config, admission=body.council_admission())
+    except CouncilPrerequisitesMissingError as exc:
+        # Admissão estrita recusada antes de qualquer registro/chamada --
+        # mesmo código da API, mesma classe de problema de entrada (exit 2).
+        readiness = council_readiness_public(exc.readiness)
+        message = (
+            "Admissão estrita recusada: uma ou mais dependências do Conselho não têm a "
+            "configuração local necessária. Nenhuma execução foi criada."
+        )
+        if as_json:
+            output.emit_json_error(
+                "council_prerequisites_missing",
+                message,
+                details={"readiness": readiness.model_dump(mode="json")},
+            )
+        else:
+            output.print_error(message)
+            output.print_error(output.human_council_readiness(readiness))
+        return EXIT_INVALID_INPUT
     except InvalidQuestionError as exc:
         # Accepted Question Size Boundary V1 -- mesmo code="invalid_request"
         # que a validação de forma de CreateRunRequest já usa acima
@@ -213,6 +245,7 @@ async def cmd_run(
         record.council_run_result,
         provider_execution_policy=record.provider_execution_policy,
         default_model_authority_snapshot=record.default_model_authority_snapshot,
+        council_admission=record.council_admission,
     )
     if as_json:
         output.emit_json(response)
@@ -228,6 +261,7 @@ async def cmd_run_direct(
     providers: list[str] | None,
     source_text: str | None,
     as_json: bool,
+    strict_readiness: bool = False,
 ) -> int:
     """Direct Answer Execution V1 (`dialeon run --direct`): uma pergunta,
     EXATAMENTE um provider (`--providers` obrigatório, com um id), sem fonte.
@@ -237,7 +271,35 @@ async def cmd_run_direct(
     `source_text` é o valor CRU de `--source` (`None` = opção ausente). A
     CLI recusa a PRESENÇA da opção -- inclusive `--source ""` ou só espaços,
     que o schema compartilhado normalizaria pra "sem fonte" -- antes de
-    qualquer normalização."""
+    qualquer normalização.
+
+    `strict_readiness` (Council Local Execution Readiness & Admission V1):
+    `--strict-readiness` é só do Conselho -- a resposta direta já recusa um
+    provider sem a configuração local necessária. Recusado como `--source`."""
+    if strict_readiness:
+        message = "Request inválido."
+        reason = (
+            "--strict-readiness não é aceito com --direct: a resposta direta já recusa um "
+            "provider sem a configuração local necessária."
+        )
+        if as_json:
+            output.emit_json_error(
+                "invalid_request",
+                message,
+                details={
+                    "errors": [
+                        {
+                            "loc": ["readiness_admission"],
+                            "msg": reason,
+                            "type": "direct_readiness_admission_not_supported",
+                        }
+                    ]
+                },
+            )
+        else:
+            output.print_error(message)
+            output.print_error(f"  - {reason}")
+        return EXIT_INVALID_INPUT
     if source_text is not None:
         message = "Request inválido."
         reason = "--source não é aceito com --direct: a resposta direta não usa fonte."
@@ -324,6 +386,82 @@ async def cmd_run_direct(
     return EXIT_OK if record.status == "completed" else EXIT_PROVIDER_FAILED
 
 
+async def cmd_readiness(
+    components: AppComponents,
+    *,
+    providers: list[str] | None,
+    source_text: str | None,
+    as_json: bool,
+) -> int:
+    """Council Local Execution Readiness & Admission V1 (`dialeon
+    readiness`): prévia SEM efeito da prontidão local de uma run do Conselho
+    -- nenhum registro, nenhuma chamada. Aceita as MESMAS `--providers`/
+    `--source` de `dialeon run` (mesmo default: sem `--providers`, todos os
+    providers construídos) e usa o mesmo avaliador da admissão
+    (`CouncilExecutionService.preview_readiness`). Sai com 0 sempre que a
+    avaliação é produzida, inclusive com ausência local: o relatório é o
+    resultado."""
+    enabled_providers = providers if providers is not None else sorted(components.providers)
+    try:
+        # Mesma normalização de fonte da criação: vazio/só espaço = sem fonte.
+        normalized_source = _normalize_and_validate_source_text(source_text)
+        body = CouncilReadinessRequest(
+            enabled_providers=enabled_providers, source_supplied=normalized_source is not None
+        )
+    except ValidationError as exc:
+        message = "Request inválido."
+        if as_json:
+            output.emit_json_error(
+                "invalid_request", message, details={"errors": _pydantic_errors(exc)}
+            )
+        else:
+            output.print_error(message)
+            for err in exc.errors():
+                output.print_error(f"  - {'.'.join(str(p) for p in err['loc'])}: {err['msg']}")
+        return EXIT_INVALID_INPUT
+    except ValueError as exc:
+        message = "Request inválido."
+        if as_json:
+            output.emit_json_error(
+                "invalid_request",
+                message,
+                details={"errors": [{"loc": ["source_text"], "msg": str(exc), "type": "value_error"}]},
+            )
+        else:
+            output.print_error(message)
+            output.print_error(f"  - source_text: {exc}")
+        return EXIT_INVALID_INPUT
+
+    dependencies = CouncilExecutionDependencies(
+        enabled_providers=tuple(body.enabled_providers),
+        **RunConfig.internal_role_providers_from_settings(components.settings),
+        source_supplied=body.source_supplied,
+    )
+    try:
+        readiness = components.service.preview_readiness(dependencies)
+    except UnknownProviderError as exc:
+        message = "Um ou mais providers solicitados não existem."
+        if as_json:
+            output.emit_json_error(
+                "invalid_provider",
+                message,
+                details={
+                    "unknown_providers": exc.unknown_providers,
+                    "known_providers": exc.known_providers,
+                },
+            )
+        else:
+            output.print_error(message)
+        return EXIT_INVALID_INPUT
+
+    response = council_readiness_public(readiness)
+    if as_json:
+        output.emit_json(response)
+    else:
+        print(output.human_council_readiness(response))
+    return EXIT_OK
+
+
 async def cmd_list(components: AppComponents, *, limit: int, offset: int, as_json: bool) -> int:
     summaries = await components.repository.list_runs(limit=limit, offset=offset)
     runs = [run_summary_response(s) for s in summaries]
@@ -362,6 +500,7 @@ async def cmd_get(components: AppComponents, *, run_id: str, as_json: bool) -> i
             record.council_run_result,
             provider_execution_policy=record.provider_execution_policy,
             default_model_authority_snapshot=record.default_model_authority_snapshot,
+            council_admission=record.council_admission,
         )
         if as_json:
             output.emit_json(response)
@@ -410,6 +549,7 @@ async def cmd_audit(components: AppComponents, *, run_id: str, as_json: bool) ->
             record.council_run_result,
             provider_execution_policy=record.provider_execution_policy,
             default_model_authority_snapshot=record.default_model_authority_snapshot,
+            council_admission=record.council_admission,
         )
     elif isinstance(record, QuorumFailureRecord):
         audit = quorum_failure_audit(record)

@@ -829,6 +829,7 @@ async def test_service_mints_and_persists_accepted_run_before_calling_runner(rep
         started_at,
         provider_execution_policy,
         default_model_authority_snapshot=None,
+        council_admission=None,
     ):
         await original_save_accepted(
             run_id,
@@ -836,6 +837,7 @@ async def test_service_mints_and_persists_accepted_run_before_calling_runner(rep
             started_at=started_at,
             provider_execution_policy=provider_execution_policy,
             default_model_authority_snapshot=default_model_authority_snapshot,
+            council_admission=council_admission,
         )
         events.append("accepted_persisted")
 

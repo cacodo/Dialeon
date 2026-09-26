@@ -17,14 +17,33 @@
 // de modelo são estados separados: trocar de modo nunca fabrica nem apaga a
 // escolha do outro, e o envio só leva o que vale no modo atual.
 //
+// Council Local Execution Readiness & Admission V1 -- no Conselho, a seleção
+// atual (e se há fonte) é conferida por uma prévia SEM efeito
+// (`previewReadiness`). O caminho feliz não muda: sem ausência conhecida,
+// nada aparece e o envio pede admissão estrita (o servidor reavalia e recusa
+// se a configuração tiver mudado). Com ausência local CONHECIDA em alguma
+// etapa, um aviso compacto diz qual etapa e qual modelo, e perguntar exige a
+// escolha deliberada de seguir mesmo assim (envio padrão com reconhecimento).
+// "Não verificável" (unknown) é incerteza, nunca falha: só uma nota neutra.
+// A resposta direta não usa nada disso.
+//
 // Enter continua inserindo nova linha (a pergunta pode ser longa e
 // multi-linha); Ctrl/⌘+Enter envia. O atalho é anunciado por
 // `aria-keyshortcuts` e por uma dica discreta ligada ao campo por
 // `aria-describedby` -- nunca só visual.
 
-import { useState, type FormEvent, type KeyboardEvent } from 'react'
-import { formatModelList, formatProviderName } from '../api/formatting'
-import type { LocalPrerequisiteState } from '../api/types'
+import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
+import {
+  formatModelList,
+  formatProviderName,
+  formatReadinessRoles,
+  groupReadinessByProvider,
+} from '../api/formatting'
+import type {
+  CouncilReadiness,
+  CouncilReadinessRequest,
+  LocalPrerequisiteState,
+} from '../api/types'
 import { ModelSelectionPanel, ModelSummaryButton, type ModelOption } from './ProviderSelector'
 import {
   MAX_QUESTION_CHARACTERS,
@@ -44,16 +63,33 @@ interface RunComposerProps {
   providersError: string | null
   submitting: boolean
   initialInput?: ReuseInput | null
-  // `kind` só é passado pra resposta direta (o envio do Conselho continua
-  // exatamente como era).
+  // `kind` só é passado pra resposta direta; `admission` só pro Conselho.
   onSubmit: (
     question: string,
     enabledProviders: string[],
     sourceText: string | null,
     kind?: 'direct',
+    admission?: CouncilAdmissionChoice,
   ) => void
   onRetryProviders?: () => void
+  // Prévia de prontidão local do Conselho (sem efeito). Ausente = nenhuma
+  // prévia: o envio continua pedindo admissão estrita.
+  previewReadiness?: (request: CouncilReadinessRequest) => Promise<CouncilReadiness>
+  // Avaliação devolvida por uma recusa de admissão estrita -- mais recente
+  // que qualquer prévia; mostrada no aviso da seleção atual.
+  rejectedReadiness?: CouncilReadiness | null
 }
+
+// Como o Conselho é enviado: estrito (o servidor recusa com ausência local
+// conhecida) ou padrão COM reconhecimento explícito da degradação.
+export type CouncilAdmissionChoice =
+  | { readiness_admission: 'strict' }
+  | { readiness_admission: 'standard'; acknowledge_known_degradation: true }
+
+// Sem resultado pra chave atual = prévia em andamento (ou indisponível).
+type ReadinessState =
+  | { key: string; status: 'error' }
+  | { key: string; status: 'ready'; readiness: CouncilReadiness }
 
 export type RunMode = 'council' | 'direct'
 
@@ -174,6 +210,8 @@ export function RunComposer({
   initialInput = null,
   onSubmit,
   onRetryProviders,
+  previewReadiness,
+  rejectedReadiness = null,
 }: RunComposerProps) {
   const [question, setQuestion] = useState(initialInput?.question ?? '')
   const reusedDirectProvider = initialInput?.kind === 'direct' ? initialInput.enabledProviders[0] : null
@@ -308,6 +346,57 @@ export function RunComposer({
   const questionTooLong = questionCount > MAX_QUESTION_CHARACTERS
   const sourceTooLong = !sourceBlank && sourceCount > MAX_SOURCE_TEXT_CHARACTERS
 
+  // Prévia de prontidão da seleção ATUAL do Conselho. A chave identifica o
+  // que decide as dependências (participantes e presença de fonte); uma
+  // resposta de outra chave nunca é mostrada.
+  const readinessKey =
+    isDirect || validSelected.length === 0 ? null : JSON.stringify([validSelected, !sourceBlank])
+  const [readinessState, setReadinessState] = useState<ReadinessState | null>(null)
+  useEffect(() => {
+    if (readinessKey === null || previewReadiness === undefined) return
+    const [enabledProviders, sourceSupplied] = JSON.parse(readinessKey) as [string[], boolean]
+    let cancelled = false
+    previewReadiness({ enabled_providers: enabledProviders, source_supplied: sourceSupplied })
+      .then((readiness) => {
+        if (!cancelled) setReadinessState({ key: readinessKey, status: 'ready', readiness })
+      })
+      .catch(() => {
+        // Sem prévia, nada é afirmado: o envio segue estrito e o servidor decide.
+        if (!cancelled) setReadinessState({ key: readinessKey, status: 'error' })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [readinessKey, previewReadiness])
+  // Uma recusa de admissão estrita traz a avaliação feita no aceite: ela
+  // passa a valer pra seleção atual (a seleção não mudou desde o envio).
+  const [seenRejection, setSeenRejection] = useState<CouncilReadiness | null>(null)
+  if (rejectedReadiness !== seenRejection) {
+    setSeenRejection(rejectedReadiness)
+    if (rejectedReadiness !== null && readinessKey !== null) {
+      setReadinessState({ key: readinessKey, status: 'ready', readiness: rejectedReadiness })
+    }
+  }
+  const readiness =
+    readinessState !== null && readinessState.status === 'ready' && readinessState.key === readinessKey
+      ? readinessState.readiness
+      : null
+  const missingGroups =
+    readiness === null ? [] : groupReadinessByProvider(readiness, 'missing', { includeParticipants: true })
+  // Só etapas internas: um participante "não verificável" já foi escolhido
+  // explicitamente nesse estado (ver ModelSelectionPanel).
+  const unknownGroups =
+    readiness === null ? [] : groupReadinessByProvider(readiness, 'unknown', { includeParticipants: false })
+  const knownDegradation = readiness !== null && readiness.summary === 'some_missing'
+  // O reconhecimento vale só pra degradação que foi mostrada: qualquer
+  // mudança na avaliação (seleção, fonte, configuração) o desfaz.
+  const degradationSignature = knownDegradation
+    ? JSON.stringify([readinessKey, missingGroups])
+    : null
+  const [acknowledgedSignature, setAcknowledgedSignature] = useState<string | null>(null)
+  const degradationAcknowledged =
+    degradationSignature !== null && acknowledgedSignature === degradationSignature
+
   const canSubmit =
     question.trim().length > 0 &&
     (isDirect ? validDirect.length === 1 : validSelected.length > 0) &&
@@ -315,7 +404,9 @@ export function RunComposer({
     // a fonte nunca é enviada na resposta direta
     (isDirect || !sourceTooLong) &&
     !submitting &&
-    !providersLoading
+    !providersLoading &&
+    // degradação local conhecida: só com a escolha deliberada de seguir
+    (isDirect || !knownDegradation || degradationAcknowledged)
 
   function submit() {
     if (!canSubmit) return
@@ -329,7 +420,15 @@ export function RunComposer({
       onSubmit(question, validDirect, null, 'direct')
       return
     }
-    onSubmit(question, validSelected, sourceBlank ? null : sourceText)
+    onSubmit(
+      question,
+      validSelected,
+      sourceBlank ? null : sourceText,
+      undefined,
+      degradationAcknowledged
+        ? { readiness_admission: 'standard', acknowledge_known_degradation: true }
+        : { readiness_admission: 'strict' },
+    )
   }
 
   function handleSubmit(event: FormEvent) {
@@ -552,6 +651,52 @@ export function RunComposer({
           />
         )}
       </div>
+
+      {!isDirect && knownDegradation && (
+        <section
+          aria-labelledby="readiness-heading"
+          className="notice notice--warning composer__readiness"
+        >
+          <h2 id="readiness-heading">Falta configuração local para parte do Conselho</h2>
+          <ul className="composer__readiness-list">
+            {missingGroups.map((group) => (
+              <li key={group.provider}>
+                {formatReadinessRoles(group.roles)}: {formatProviderName(group.provider)}{' '}
+                <span className="composer__readiness-model">
+                  (modelo configurado: {group.configuredModel})
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p>
+            Nesta instalação, essas etapas não conseguem chamar o modelo: se forem alcançadas, falham
+            e a resposta sai incompleta (por exemplo, sem afirmações extraídas ou avaliadas). O
+            Dialeon não troca de modelo por conta própria. Depois de ajustar a configuração, reinicie
+            o servidor.
+          </p>
+          <label className="composer__readiness-ack">
+            <input
+              type="checkbox"
+              checked={degradationAcknowledged}
+              disabled={submitting}
+              onChange={(event) =>
+                setAcknowledgedSignature(event.target.checked ? degradationSignature : null)
+              }
+            />
+            <span>Perguntar mesmo assim, sabendo que a resposta pode sair incompleta</span>
+          </label>
+        </section>
+      )}
+
+      {!isDirect && !knownDegradation && unknownGroups.length > 0 && (
+        <p className="notice notice--neutral composer__readiness-note">
+          Não dá para verificar daqui a configuração local de{' '}
+          {unknownGroups
+            .map((group) => `${formatReadinessRoles(group.roles).toLowerCase()} (${formatProviderName(group.provider)})`)
+            .join('; ')}
+          . Isso não quer dizer que falte: a pergunta pode ser feita normalmente.
+        </p>
+      )}
 
       <div className="composer__meta">
         <p id="question-shortcut" className="composer__hint">

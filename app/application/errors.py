@@ -15,6 +15,11 @@ Evidence Pack de T19A.1).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.council.readiness import CouncilReadiness
+
 
 class UnknownProviderError(Exception):
     """Alguma autoridade de provider do `RunConfig`
@@ -115,3 +120,18 @@ class LocalPrerequisitesMissingError(Exception):
     def __init__(self, provider: str):
         self.provider = provider
         super().__init__(f"o provider {provider!r} não tem a configuração local necessária")
+
+
+class CouncilPrerequisitesMissingError(Exception):
+    """Council Local Execution Readiness & Admission V1 -- admissão ESTRITA
+    pedida e alguma dependência do caminho pedido do Conselho (participante
+    selecionado ou papel interno que o caminho pode alcançar) tem ausência
+    local CONHECIDA (`strict_admission_blockers`). Levantada ANTES do aceite
+    durável -- nenhum registro é criado, nenhuma chamada é tentada. Carrega a
+    avaliação usada na decisão (só identificadores, estados e modelos
+    configurados -- nunca valor, tamanho ou nome de credencial)."""
+
+    def __init__(self, readiness: CouncilReadiness):
+        self.readiness = readiness
+        blockers = ", ".join(f"{d.role}={d.provider}" for d in readiness.known_missing)
+        super().__init__(f"dependências do Conselho sem configuração local necessária: {blockers}")
