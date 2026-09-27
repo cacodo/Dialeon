@@ -15,7 +15,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.exceptions import RunNotFoundError
+from app.api.exceptions import RunNotExportableError, RunNotFoundError
 from app.presentation.mappers import council_readiness_public
 from app.presentation.schemas import ErrorBody, ErrorResponse
 from app.application.errors import (
@@ -300,6 +300,24 @@ def register_exception_handlers(app: FastAPI) -> None:
                     code="run_not_found",
                     message=f"Run não encontrada: {exc.run_id}",
                     details=None,
+                )
+            ),
+        )
+
+    @app.exception_handler(RunNotExportableError)
+    async def _handle_run_not_exportable(
+        request: Request, exc: RunNotExportableError
+    ) -> JSONResponse:
+        # Provenance-Preserving Human-Readable Run Export -- só uma run
+        # CONCLUÍDA tem resposta pra exportar; as outras continuam no
+        # detalhe/auditoria.
+        return _error_json(
+            status.HTTP_409_CONFLICT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="run_not_exportable",
+                    message="Só uma pergunta concluída, com resposta, pode ser exportada.",
+                    details={"status": exc.status},
                 )
             ),
         )

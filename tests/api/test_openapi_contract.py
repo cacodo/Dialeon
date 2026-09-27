@@ -165,6 +165,7 @@ def test_error_response_is_a_documented_component(openapi):
         "provider_prerequisites_missing",  # Direct Answer Execution V1
         "council_prerequisites_missing",  # Council Local Execution Readiness & Admission V1
         "council_readiness_changed",  # idem: reconhecimento de outra degradação
+        "run_not_exportable",  # Provenance-Preserving Human-Readable Run Export
     }
 
 

@@ -99,3 +99,11 @@ export const apiClient = {
     return request<RunAuditResponse>(`/runs/${encodeURIComponent(runId)}/audit`)
   },
 }
+
+// Provenance-Preserving Human-Readable Run Export -- endereço do documento de
+// texto gerado pelo SERVIDOR (a partir do registro, não dos dados desta tela);
+// baixado pelo navegador como anexo, sem fetch() aqui. Só existe pra runs
+// concluídas.
+export function runExportUrl(runId: string): string {
+  return `${BASE_PATH}/runs/${encodeURIComponent(runId)}/export`
+}

@@ -28,6 +28,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.models.provider_models import ModelIdentitySource, ProviderExecutionPolicy
+from app.presentation.answer_presentation import select_answer_presentation
 from app.presentation.schemas import (
     CompletedRunResponse,
     CouncilAdmissionPublic,
@@ -251,12 +252,6 @@ def _human_council_admission_lines(admission: CouncilAdmissionPublic | None) -> 
     return lines
 
 
-# Status cujo `answer_text` já termina com as limitações registradas (ver o
-# fechamento em app/editor/compose.py::_compose_answer) -- a mesma lista que
-# a interface web usa (FinalAnswerView).
-_STATUSES_WHOSE_TEXT_INCLUDES_LIMITATIONS = frozenset({"llm_planned", "deterministic_from_verdict"})
-
-
 def _audit_pointer_lines(run_id: str, *, json_detail: str) -> list[str]:
     """Onde aprofundar -- descrevendo só o que cada destino realmente
     mostra: a saída humana de `audit` é um resumo; o `--json` traz a
@@ -289,35 +284,14 @@ def human_run_result(run: CompletedRunResponse) -> str:
     ponto que de fato escreve num terminal real nesta função -- é aqui,
     e só aqui, que a neutralização acontece."""
     final_answer = run.final_answer
-    shows_realization = (
-        final_answer.linguistic_realization is not None
-        and final_answer.linguistic_realization_presentation_eligible
-    )
-    shows_natural = not shows_realization and (
-        final_answer.natural_answer is not None and final_answer.natural_answer_presentation_eligible
-    )
-    shows_primary = (
-        not shows_realization and not shows_natural and final_answer.primary_answer is not None
-    )
-    # A seção separada de limitações só aparece quando o texto mostrado como
-    # resposta NÃO as traz (mesma distinção da interface web), decidida pelos
-    # campos estruturados -- nunca procurando o texto dentro da resposta:
-    # - realização linguística: não traz -> mostra;
-    # - resposta natural/principal: renderizadas da resposta principal, que
-    #   carrega as próprias limitações; se forem as mesmas da resposta final
-    #   (o contrato de coerência exige), já estão no texto -> omite;
-    # - avaliação completa: `llm_planned`/`deterministic_from_verdict` sempre
-    #   ecoam as limitações em `answer_text` (app/editor/compose.py) -> omite;
-    #   os demais status (sem veredito, histórico) não -> mostra.
-    if shows_realization:
-        answer_carries_limitations = False
-    elif shows_natural or shows_primary:
-        answer_carries_limitations = (
-            final_answer.primary_answer is not None
-            and list(final_answer.primary_answer.limitations) == list(final_answer.limitations)
-        )
-    else:
-        answer_carries_limitations = final_answer.status in _STATUSES_WHOSE_TEXT_INCLUDES_LIMITATIONS
+    # Qual forma é "a resposta" e se o texto dela já traz as limitações: a
+    # regra ÚNICA de app/presentation/answer_presentation.py (a mesma da
+    # exportação e, conferida pela mesma tabela de casos, da interface web).
+    presentation = select_answer_presentation(final_answer)
+    shows_realization = presentation.kind == "linguistic_realization"
+    shows_natural = presentation.kind == "natural_answer"
+    shows_primary = presentation.kind == "primary_answer"
+    answer_carries_limitations = presentation.text_carries_limitations
 
     # ANSWER FIRST (mesma hierarquia da interface web): 1) a resposta, 2) as
     # limitações registradas, quando o texto da resposta ainda não as traz,

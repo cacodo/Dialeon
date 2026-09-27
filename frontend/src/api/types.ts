@@ -998,6 +998,8 @@ export type ErrorCode =
   // Idem: o reconhecimento enviado é de outra degradação (a configuração local
   // mudou); details.readiness traz a avaliação nova.
   | 'council_readiness_changed'
+  // Exportação legível: a run existe, mas não tem resposta concluída.
+  | 'run_not_exportable'
 
 export interface ErrorBody {
   code: ErrorCode

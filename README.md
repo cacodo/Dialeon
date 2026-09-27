@@ -310,6 +310,26 @@ em `POST /runs/readiness`; a resposta direta recusa esse campo (o modelo dela
 vai em `requested_model`, ver
 [Modelo específico da resposta direta](#modelo-específico-da-resposta-direta-avançado)).
 
+### Exportar a resposta
+
+Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
+v1.6.0 não tem), a página de uma pergunta **concluída** (Conselho ou resposta
+direta) tem “Exportar resposta (.txt)”: um arquivo de texto para ler fora do
+Dialeon, com a pergunta, a resposta (no Conselho, a mesma forma que a
+interface escolhe hoje para apresentar, com as limitações registradas) e como
+ela foi produzida -- tipo de execução, modelos pedidos e a origem deles quando
+registrada, modelos reportados pelos providers, juiz e editor quando a
+execução os registra, e etapas não realizadas. A resposta vai inteira, sem
+reescrita (na resposta direta, ela é a própria resposta do provider; no
+Conselho, pode conter trechos da fonte). Não entram como partes separadas: o
+texto completo da fonte (só que ela foi fornecida e o status da análise), as
+respostas individuais e as tentativas dos modelos, erros dos providers, uso
+nem custo. O arquivo é gerado na hora a partir do registro da execução, sem
+chamar nenhum modelo e sem gravar nada. É um documento para leitura, não um
+formato de dados: não serve para importar nem reproduzir a execução e o layout
+pode mudar. Pela API: `GET /runs/{id}/export` (texto, anexo `.txt`); uma run
+sem resposta concluída devolve `409 run_not_exportable`.
+
 ## O que já está implementado
 
 - Execução concorrente de uma pergunta contra múltiplos providers/modelos

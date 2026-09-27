@@ -1520,6 +1520,9 @@ class ErrorBody(BaseModel):
         # Council Local Execution Readiness & Admission V1: a degradação local
         # reconhecida não é a avaliada no aceite -- rejeitada antes do aceite.
         "council_readiness_changed",
+        # Provenance-Preserving Human-Readable Run Export: a run existe, mas
+        # não tem resposta concluída pra exportar.
+        "run_not_exportable",
     ]
     message: str
     details: dict | None = None

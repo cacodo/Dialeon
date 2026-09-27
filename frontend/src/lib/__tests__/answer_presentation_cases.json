@@ -1,0 +1,261 @@
+{
+  "_comment": "Tabela de casos da escolha da forma apresentada da resposta final do Conselho. Conferida pela interface web (answerPresentation.test.ts, ao lado) e pelo backend (tests/presentation/test_answer_presentation.py). Mudar a regra exige mudar esta tabela e as duas implementações.",
+  "cases": [
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "natural_answer"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": false,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "natural_answer"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "primary_answer"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": false,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "natural_answer"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "linguistic_realization"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": false,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "linguistic_realization"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": false,
+      "has_primary_answer": true,
+      "expected": "linguistic_realization"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": false,
+      "expected": "complete_assessment"
+    },
+    {
+      "has_linguistic_realization": true,
+      "linguistic_realization_presentation_eligible": true,
+      "has_natural_answer": true,
+      "natural_answer_presentation_eligible": true,
+      "has_primary_answer": true,
+      "expected": "linguistic_realization"
+    }
+  ]
+}

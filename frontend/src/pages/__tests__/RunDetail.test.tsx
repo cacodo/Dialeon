@@ -969,3 +969,37 @@ describe('RunDetail — o id da URL é a autoridade (navegação rápida e respo
     expectNoForeignContent()
   })
 })
+
+// Provenance-Preserving Human-Readable Run Export -- ação secundária só de
+// uma pergunta CONCLUÍDA; o arquivo é gerado pelo servidor (GET
+// /runs/{id}/export), nunca montado com os dados desta tela.
+describe('RunDetail — exportar resposta', () => {
+  const exportLink = () => screen.queryByRole('link', { name: 'Exportar resposta (.txt)' })
+
+  it('pergunta concluída: link de download pro documento gerado pelo servidor', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(completedRun as never)
+    renderDetail(completedRun.id)
+
+    const link = await screen.findByRole('link', { name: 'Exportar resposta (.txt)' })
+    expect(link).toHaveAttribute('href', `/runs/${encodeURIComponent(completedRun.id)}/export`)
+    expect(link).toHaveAttribute('download')
+    expect(link).toHaveAccessibleDescription(
+      /a resposta inteira.*Não inclui, como partes separadas, o texto completo da fonte, as respostas individuais dos modelos nem o custo/,
+    )
+    // secundária: depois da resposta, junto das próximas ações
+    expect(link.closest('.run-actions')).not.toBeNull()
+    expect(apiClient.getRunAudit).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['quórum insuficiente', quorumRun],
+    ['sem desfecho', runningRun],
+    ['falhou', failedRun],
+  ])('%s: nenhuma exportação é oferecida', async (_label, run) => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(run as never)
+    renderDetail(run.id)
+
+    expect(await screen.findByRole('link', { name: 'Perguntar de novo' })).toBeInTheDocument()
+    expect(exportLink()).toBeNull()
+  })
+})

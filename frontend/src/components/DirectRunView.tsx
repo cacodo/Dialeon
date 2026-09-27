@@ -27,6 +27,7 @@ import {
 } from '../api/formatting'
 import { buildDirectReuseState } from '../lib/reuseInput'
 import { CopyAnswerButton } from './CopyAnswerButton'
+import { ExportAnswerLink } from './ExportAnswerLink'
 import { ProviderExecutionPolicyView } from './ProviderExecutionPolicyView'
 
 // Direct Accepted Effective Model Choice V1 -- de onde veio o modelo pedido,
@@ -45,13 +46,15 @@ function directCost(response: ModelResponsePublic): string {
   return formatEstimatedCost(response.cost_usd, response.had_uncertain_prior_attempts)
 }
 
-function DirectNextActions({ config }: { config: DirectRunConfigPublic }) {
+// `exportRunId`: só uma resposta direta CONCLUÍDA tem resposta pra exportar.
+function DirectNextActions({ config, exportRunId }: { config: DirectRunConfigPublic; exportRunId?: string }) {
   return (
     <div className="run-actions">
       <Link to="/" state={buildDirectReuseState(config)} aria-describedby="reuse-description">
         Perguntar de novo
       </Link>
       <Link to="/">Nova pergunta</Link>
+      {exportRunId !== undefined && <ExportAnswerLink runId={exportRunId} />}
       <p id="reuse-description" className="sr-only">
         {config.requested_model_origin === 'run_override'
           ? 'Perguntar de novo abre uma nova resposta direta com a mesma pergunta, o mesmo provider e o mesmo modelo escolhido. Nada do resultado anterior é enviado.'
@@ -187,7 +190,7 @@ function CompletedDirectAnswer({ run }: { run: DirectCompletedRunResponse }) {
         </li>
       </ul>
 
-      <DirectNextActions config={run.config} />
+      <DirectNextActions config={run.config} exportRunId={run.id} />
       <CallDetails
         title="Como esta resposta foi produzida"
         config={run.config}

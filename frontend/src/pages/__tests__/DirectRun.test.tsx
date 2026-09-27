@@ -484,3 +484,25 @@ describe('Resposta direta -- modelo escolhido', () => {
     expect(screen.queryByRole('button', { name: /Modelo específico/ })).not.toBeInTheDocument()
   })
 })
+
+describe('Resposta direta -- exportar resposta', () => {
+  it('concluída: link de download pro documento gerado pelo servidor', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(completed)
+    renderApp('/runs/direct-1')
+
+    const link = await screen.findByRole('link', { name: 'Exportar resposta (.txt)' })
+    expect(link).toHaveAttribute('href', '/runs/direct-1/export')
+    expect(link).toHaveAttribute('download')
+  })
+
+  it.each([
+    ['sem resposta', failed, '/runs/direct-2'],
+    ['sem desfecho', running, '/runs/direct-3'],
+  ])('%s: nenhuma exportação é oferecida', async (_label, run, path) => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(run)
+    renderApp(path)
+
+    expect(await screen.findByRole('link', { name: 'Perguntar de novo' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Exportar resposta (.txt)' })).toBeNull()
+  })
+})

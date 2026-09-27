@@ -33,6 +33,7 @@ import {
   summarizeUnevaluatedClaims,
 } from '../api/formatting'
 import { CopyAnswerButton } from './CopyAnswerButton'
+import { selectAnswerPresentationKind } from '../lib/answerPresentation'
 
 interface FinalAnswerViewProps {
   finalAnswer: FinalAnswerPublic
@@ -74,11 +75,14 @@ type Presentation =
   | { kind: 'primary'; primary: PrimaryAnswerPublic }
   | { kind: 'complete' }
 
+// A ESCOLHA vem da regra compartilhada (lib/answerPresentation.ts, conferida
+// contra a mesma tabela de casos do backend); aqui só se junta o conteúdo.
 function selectPresentation(finalAnswer: FinalAnswerPublic): Presentation {
+  const kind = selectAnswerPresentationKind(finalAnswer)
   if (
+    kind === 'linguistic_realization' &&
     finalAnswer.linguistic_realization != null &&
-    finalAnswer.primary_answer != null &&
-    finalAnswer.linguistic_realization_presentation_eligible === true
+    finalAnswer.primary_answer != null
   ) {
     return {
       kind: 'realization',
@@ -86,14 +90,10 @@ function selectPresentation(finalAnswer: FinalAnswerPublic): Presentation {
       primary: finalAnswer.primary_answer,
     }
   }
-  if (
-    finalAnswer.natural_answer != null &&
-    finalAnswer.primary_answer != null &&
-    finalAnswer.natural_answer_presentation_eligible === true
-  ) {
+  if (kind === 'natural_answer' && finalAnswer.natural_answer != null && finalAnswer.primary_answer != null) {
     return { kind: 'natural', natural: finalAnswer.natural_answer, primary: finalAnswer.primary_answer }
   }
-  if (finalAnswer.primary_answer != null) {
+  if (kind === 'primary_answer' && finalAnswer.primary_answer != null) {
     return { kind: 'primary', primary: finalAnswer.primary_answer }
   }
   return { kind: 'complete' }

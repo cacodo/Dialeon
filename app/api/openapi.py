@@ -44,6 +44,10 @@ INVALID_REQUEST_RESPONSE = error_response(
     "não tem a configuração local necessária)."
 )
 RUN_NOT_FOUND_RESPONSE = error_response("Run não encontrada (`error.code` = `run_not_found`).")
+RUN_NOT_EXPORTABLE_RESPONSE = error_response(
+    "A run existe, mas não tem resposta concluída pra exportar -- em andamento, falhou ou "
+    "quórum insuficiente (`error.code` = `run_not_exportable`; `error.details.status`)."
+)
 INSUFFICIENT_QUORUM_RESPONSE = error_response(
     "Execução despachada, mas com respostas abaixo do quórum mínimo "
     "(`error.code` = `insufficient_quorum`; `error.details.run_id` é a falha persistida), "

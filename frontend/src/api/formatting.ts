@@ -255,6 +255,7 @@ const ERROR_CODE_LABELS: Record<ErrorCode | 'unknown', string> = {
     'Falta configuração local nesta instalação para etapas do Conselho. Nada foi enviado aos modelos.',
   council_readiness_changed:
     'A configuração local das etapas do Conselho mudou desde o aviso. Nada foi enviado aos modelos.',
+  run_not_exportable: 'Só uma pergunta concluída, com resposta, pode ser exportada.',
   unknown: 'Não foi possível completar a solicitação.',
 }
 

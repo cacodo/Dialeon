@@ -8,16 +8,19 @@ service/repository já montados, e mapeamento pra schema HTTP.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.routing import APIRoute
 
 from app.bootstrap import AppComponents
-from app.api.exceptions import RunNotFoundError
+from app.api.exceptions import RunNotExportableError, RunNotFoundError
 from app.api.openapi import (
     INSUFFICIENT_QUORUM_RESPONSE,
     INTERNAL_ERROR_RESPONSE,
     INVALID_REQUEST_RESPONSE,
+    RUN_NOT_EXPORTABLE_RESPONSE,
     RUN_NOT_FOUND_RESPONSE,
 )
 from app.presentation.mappers import (
@@ -36,6 +39,7 @@ from app.presentation.schemas import (
     CouncilReadinessPublic,
     CouncilReadinessRequest,
     CreateRunRequest,
+    DirectCompletedRunResponse,
     ProvidersResponse,
     RunAuditResponse,
     RunListResponse,
@@ -43,6 +47,12 @@ from app.presentation.schemas import (
 )
 from app.council.readiness import CouncilExecutionDependencies
 from app.orchestrator.config import RunConfig
+from app.presentation.run_export import (
+    export_filename,
+    render_council_run_export,
+    render_direct_run_export,
+)
+from app.version import get_product_version
 from app.storage.records import (
     AcceptedRunRecord,
     CompletedRunRecord,
@@ -279,3 +289,66 @@ async def get_run_audit(run_id: str, request: Request) -> RunAuditResponse:
     if record.status == "running":
         return running_run_response(record)
     return failed_run_response(record)
+
+
+@router.get(
+    "/runs/{run_id}/export",
+    response_class=PlainTextResponse,
+    responses={
+        200: {
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+            "description": (
+                "Documento de TEXTO para leitura humana (anexo `.txt`, UTF-8) com a resposta "
+                "de uma run concluída e a proveniência mínima para interpretá-la. Não é formato "
+                "de dados: títulos e layout podem mudar; não serve para importar nem reproduzir."
+            ),
+        },
+        404: RUN_NOT_FOUND_RESPONSE,
+        409: RUN_NOT_EXPORTABLE_RESPONSE,
+    },
+)
+async def export_run(run_id: str, request: Request) -> PlainTextResponse:
+    """Provenance-Preserving Human-Readable Run Export -- gerado sob demanda a
+    partir do MESMO registro e dos MESMOS mapeamentos públicos de
+    `GET /runs/{id}` e `/audit` (nunca de dados do navegador). Só leitura:
+    nada é persistido e nenhum modelo é chamado. Só runs CONCLUÍDAS (direta
+    ou do Conselho) têm resposta pra exportar."""
+    components = _components(request)
+    record = await components.repository.get_run(run_id)
+    if record is None:
+        raise RunNotFoundError(run_id)
+
+    generated_at = datetime.now(timezone.utc)
+    product_version = get_product_version()
+    if isinstance(record, CompletedRunRecord):
+        audit = completed_run_audit(
+            record.council_run_result,
+            provider_execution_policy=record.provider_execution_policy,
+            default_model_authority_snapshot=record.default_model_authority_snapshot,
+            council_admission=record.council_admission,
+        )
+        text = render_council_run_export(
+            audit, generated_at=generated_at, product_version=product_version
+        )
+        filename = export_filename(record.council_run_result.id, kind="conselho")
+    elif isinstance(record, DirectRunRecord) and record.status == "completed":
+        direct = direct_run_response(record)
+        assert isinstance(direct, DirectCompletedRunResponse)
+        text = render_direct_run_export(
+            direct, generated_at=generated_at, product_version=product_version
+        )
+        filename = export_filename(record.id, kind="direta")
+    else:
+        raise RunNotExportableError(run_id, record.status)
+
+    return PlainTextResponse(
+        text,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # o conteúdo é texto de usuário/modelo: nunca interpretado como
+            # outro tipo pelo navegador, nunca guardado em cache compartilhado
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )

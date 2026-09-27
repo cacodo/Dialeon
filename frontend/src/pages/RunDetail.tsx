@@ -12,6 +12,7 @@ import {
 } from '../api/formatting'
 import { AnswerAssessmentDetails, FinalAnswerView } from '../components/FinalAnswerView'
 import { DirectRunView } from '../components/DirectRunView'
+import { ExportAnswerLink } from '../components/ExportAnswerLink'
 import { InspectionPanel } from '../components/InspectionPanel'
 import { ProviderExecutionPolicyView } from '../components/ProviderExecutionPolicyView'
 import { isValidPage } from '../lib/safePage'
@@ -59,13 +60,15 @@ interface ForRun<T> {
   value: T
 }
 
-function NextActions({ config }: { config: RunConfigPublic }) {
+// `exportRunId`: só uma pergunta CONCLUÍDA tem resposta pra exportar.
+function NextActions({ config, exportRunId }: { config: RunConfigPublic; exportRunId?: string }) {
   return (
     <div className="run-actions">
       <Link to="/" state={buildReuseState(config)} aria-describedby="reuse-description">
         Perguntar de novo
       </Link>
       <Link to="/">Nova pergunta</Link>
+      {exportRunId !== undefined && <ExportAnswerLink runId={exportRunId} />}
       <p id="reuse-description" className="sr-only">
         Perguntar de novo abre uma nova pergunta com a pergunta, a fonte e os modelos desta
         execução. Nada do resultado anterior é enviado.
@@ -262,7 +265,7 @@ export function RunDetail() {
             </li>
           </ul>
 
-          <NextActions config={run.config} />
+          <NextActions config={run.config} exportRunId={run.id} />
 
           <InspectionPanel runId={run.id} returnTargetId="final-answer-heading">
             <AnswerAssessmentDetails finalAnswer={run.final_answer} />

@@ -22,3 +22,14 @@ class RunNotFoundError(Exception):
     def __init__(self, run_id: str):
         self.run_id = run_id
         super().__init__(f"run não encontrada: {run_id!r}")
+
+
+class RunNotExportableError(Exception):
+    """Provenance-Preserving Human-Readable Run Export -- a run existe, mas
+    não tem uma resposta concluída pra exportar (em andamento, falhou, quórum
+    insuficiente). Continua disponível pelo detalhe/auditoria."""
+
+    def __init__(self, run_id: str, status: str):
+        self.run_id = run_id
+        self.status = status
+        super().__init__(f"run sem resposta concluída pra exportar: {run_id!r} ({status})")
