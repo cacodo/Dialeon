@@ -11,9 +11,11 @@ nunca o pipeline do Conselho):
       -> pré-requisitos locais: `missing` rejeita ANTES do aceite
          (`LocalPrerequisitesMissingError`) -- a chamada nunca sairia do
          processo; `met`/`unknown` seguem (nenhuma verificação remota)
-      -> congela a autoridade aceita: `DirectRunConfig` com o modelo padrão
-         CONFIGURADO do provider construído (`LLMProvider.default_model`),
-         nunca vindo do cliente
+      -> congela a autoridade aceita: `DirectRunConfig` com o modelo pedido
+         e a origem dele -- sem escolha, o padrão CONFIGURADO do provider
+         construído (`LLMProvider.default_model`, `configured_default`); com
+         escolha explícita, o identificador validado (só forma,
+         `InvalidDirectModelError`), verbatim (`run_override`)
       -> constrói o `CompletionRequest` direto (modelo explícito) e sua
          `RequestProvenance`
       -> minta run_id/started_at e persiste o aceite (`run_kind="direct"`)
@@ -25,7 +27,9 @@ nunca o pipeline do Conselho):
 
 Nunca chama extração de afirmações, análise de fonte, crítica, Judge,
 reconciliação, Editor nem realização linguística; nunca troca de provider
-ou de modelo; nunca cai no Conselho; nunca repete a run inteira.
+ou de modelo (um modelo escolhido que o fornecedor recusar é uma falha
+registrada da chamada, nunca substituído pelo padrão); nunca cai no
+Conselho; nunca repete a run inteira.
 
 Exceção inesperada durante a chamada: aceite vira `failed`
 (`failure_stage="execution"`, informação sanitizada) e a exceção ORIGINAL é
@@ -42,12 +46,14 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.application.errors import (
+    InvalidDirectModelError,
     InvalidQuestionError,
     LocalPrerequisitesMissingError,
     UnknownProviderError,
 )
 from app.direct.models import (
     DIRECT_ANSWER_CONTRACT_VERSION,
+    DirectModelOrigin,
     DirectRunConfig,
     DirectRunResult,
     build_direct_request,
@@ -62,6 +68,7 @@ from app.models.provider_models import (
 )
 from app.models.request_provenance import RequestProvenance, build_request_provenance
 from app.orchestrator.config import validate_question
+from app.orchestrator.participant_models import validate_model_override_identifier
 from app.providers.base import LLMProvider
 from app.storage.repository import CouncilRepository
 
@@ -145,11 +152,25 @@ class DirectExecutionService:
         self._providers = providers
         self._provider_execution_policy = provider_execution_policy
 
-    async def run(self, *, question: str, provider: str, max_output_tokens: int) -> DirectRunResult:
+    async def run(
+        self,
+        *,
+        question: str,
+        provider: str,
+        max_output_tokens: int,
+        requested_model: str | None = None,
+    ) -> DirectRunResult:
+        """`requested_model`: escolha EXPLÍCITA opcional do modelo pra esta
+        run; `None` = o padrão configurado do provider."""
         try:
             validate_question(question)
         except ValueError as exc:
             raise InvalidQuestionError(str(exc)) from exc
+        if requested_model is not None:
+            try:
+                validate_model_override_identifier(requested_model)
+            except ValueError as exc:
+                raise InvalidDirectModelError(str(exc)) from None
 
         llm = self._providers.get(provider)
         if llm is None:
@@ -159,10 +180,16 @@ class DirectExecutionService:
         if llm.local_prerequisite_state() == "missing":
             raise LocalPrerequisitesMissingError(provider)
 
+        origin: DirectModelOrigin
+        if requested_model is None:
+            effective_model, origin = llm.default_model, "configured_default"
+        else:
+            effective_model, origin = requested_model, "run_override"
         config = DirectRunConfig(
             question=question,
             provider=provider,
-            requested_model=llm.default_model,
+            requested_model=effective_model,
+            requested_model_origin=origin,
             max_output_tokens=max_output_tokens,
         )
         request = build_direct_request(config)

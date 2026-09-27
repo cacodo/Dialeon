@@ -115,6 +115,7 @@ export function Home() {
     kind?: 'direct',
     admission?: CouncilAdmissionChoice,
     participantModelOverrides?: Record<string, string>,
+    directRequestedModel?: string,
   ) {
     setSubmission({ phase: 'submitting' })
     try {
@@ -123,7 +124,15 @@ export function Home() {
         // de sempre + a admissão escolhida no composer (estrita, ou padrão com
         // reconhecimento deliberado da degradação local conhecida).
         kind === 'direct'
-          ? { question, enabled_providers: enabledProviders, source_text: null, kind: 'direct' }
+          ? {
+              question,
+              enabled_providers: enabledProviders,
+              source_text: null,
+              kind: 'direct',
+              // Direct Accepted Effective Model Choice V1 -- só quando há
+              // escolha explícita (sem ela, o envio de sempre).
+              ...(directRequestedModel !== undefined ? { requested_model: directRequestedModel } : {}),
+            }
           : {
               question,
               enabled_providers: enabledProviders,

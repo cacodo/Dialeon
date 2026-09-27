@@ -102,7 +102,10 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="models",
         help="Modelo específico para um participante do Conselho nesta pergunta (repetível, "
         "ex.: --model openai=gpt-x). Participante sem --model usa o modelo padrão configurado. "
-        "O identificador é passado ao fornecedor como está: o Dialeon não confere se ele existe.",
+        "Com --direct: no máximo um --model, nomeando o provider de --providers (ex.: "
+        "--direct --providers openai --model openai=gpt-x); sem ele, o modelo padrão "
+        "configurado. O identificador é passado ao fornecedor como está: o Dialeon não confere "
+        "se ele existe.",
     )
     run_parser.add_argument(
         "--strict-readiness",

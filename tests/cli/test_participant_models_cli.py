@@ -158,20 +158,6 @@ async def test_readiness_json_carries_planned_models(capsys):
 
 
 @pytest.mark.asyncio
-async def test_direct_rejects_the_model_option(capsys):
-    components = await _components()
-
-    code = await commands.cmd_run_direct(
-        components, question="q", providers=["openai"], source_text=None, as_json=True, model_overrides=["openai=x"]
-    )
-    error = json.loads(capsys.readouterr().err)["error"]
-
-    assert code == commands.EXIT_INVALID_INPUT
-    assert error["details"]["errors"][0]["type"] == "direct_participant_model_not_supported"
-    assert await components.repository.list_runs() == []
-
-
-@pytest.mark.asyncio
 async def test_a_legacy_run_shows_participant_models_as_not_recorded(capsys):
     components = await _components()
     await components.repository.save_accepted(

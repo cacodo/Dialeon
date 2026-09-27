@@ -50,6 +50,7 @@ from app.council.readiness import (
     CouncilReadinessSummary,
     DependencyApplicability,
 )
+from app.direct.models import DirectModelOrigin
 from app.editor.answer_blocks import AnswerSectionHeading, AnswerVerdictLabel
 from app.models.provider_models import (
     DefaultModelAuthoritySnapshot,
@@ -63,6 +64,7 @@ from app.models.provider_models import (
 from app.models.request_provenance import RequestProvenance
 from app.orchestrator.participant_models import (
     ParticipantModelOrigin,
+    validate_model_override_identifier,
     validate_participant_model_overrides,
 )
 from app.orchestrator.config import _normalize_and_validate_source_text, validate_question
@@ -147,6 +149,12 @@ class CreateRunRequest(BaseModel):
     # fornecedor". Vale só pro participante (resposta inicial e crítica);
     # os papéis internos seguem com o padrão deles.
     participant_model_overrides: dict[str, str] | None = None
+    # Direct Accepted Effective Model Choice V1 -- opcional, só da resposta
+    # direta: o identificador de modelo específico do provider escolhido,
+    # pedido explicitamente nesta run. Omitido (ou `null`) = o modelo padrão
+    # configurado do provider. Só forma é validada (a mesma regra da escolha
+    # dos participantes do Conselho): nunca "o modelo existe no fornecedor".
+    requested_model: str | None = None
 
     @model_validator(mode="after")
     def _direct_run_shape(self) -> "CreateRunRequest":
@@ -171,9 +179,14 @@ class CreateRunRequest(BaseModel):
             if self.participant_model_overrides is not None:
                 raise ValueError(
                     "participant_model_overrides só se aplica aos participantes do Conselho "
-                    "(a resposta direta usa o modelo padrão configurado do provider)"
+                    "(na resposta direta, o modelo escolhido vai em requested_model)"
                 )
         else:
+            if self.requested_model is not None:
+                raise ValueError(
+                    "requested_model só se aplica à resposta direta (no Conselho, o modelo "
+                    "de cada participante vai em participant_model_overrides)"
+                )
             # mesmas regras de combinação da boundary de domínio -- nunca
             # reimplementadas aqui (strict x reconhecimento, reconhecimento
             # sempre com a identidade da degradação e vice-versa)
@@ -191,6 +204,17 @@ class CreateRunRequest(BaseModel):
         if value is None or info.data.get("kind") == "direct" or "enabled_providers" not in info.data:
             return value
         return validate_participant_model_overrides(value, info.data["enabled_providers"])
+
+    @field_validator("requested_model")
+    @classmethod
+    def _requested_model_well_formed(
+        cls, value: str | None, info: ValidationInfo
+    ) -> str | None:
+        # a MESMA regra de forma do aceite direto, com o erro apontando pro
+        # campo; no Conselho, o model_validator recusa o campo inteiro
+        if value is None or info.data.get("kind") != "direct":
+            return value
+        return validate_model_override_identifier(value)
 
     def council_admission(self) -> CouncilAdmissionRequest:
         """O pedido de admissão do Conselho, com os defaults de sempre."""
@@ -1124,15 +1148,20 @@ class FailedRunResponse(BaseModel):
 
 
 class DirectRunConfigPublic(BaseModel):
-    """Autoridade aceita da run direta: pergunta, provider escolhido e o
-    modelo solicitado (o padrão configurado no deployment NO ACEITE, nunca
-    reinterpretado por configuração posterior)."""
+    """Autoridade aceita da run direta: pergunta, provider escolhido, o
+    modelo solicitado e de onde ele veio (`requested_model_origin`:
+    `configured_default` = o padrão configurado no deployment NO ACEITE;
+    `run_override` = escolhido explicitamente nesta run). Congelado no
+    aceite, nunca reinterpretado por configuração posterior. Runs anteriores
+    a este registro mostram `configured_default`: a run direta não aceitava
+    modelo do cliente, então o modelo era sempre o padrão configurado."""
 
     model_config = _CONFIG
 
     question: str
     provider: str
     requested_model: str
+    requested_model_origin: DirectModelOrigin
     max_output_tokens: int
 
 

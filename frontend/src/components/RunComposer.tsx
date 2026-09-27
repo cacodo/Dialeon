@@ -30,6 +30,13 @@
 // "Não verificável" (unknown) é incerteza, nunca falha: só uma nota neutra.
 // A resposta direta não usa nada disso.
 //
+// Direct Accepted Effective Model Choice V1 -- na resposta direta, um
+// controle OPCIONAL/avançado ("Modelo específico") pede um identificador de
+// modelo para o provider escolhido. Em branco = o padrão configurado (o envio
+// de sempre). Estado próprio, por provider, separado das escolhas dos
+// participantes do Conselho: nada passa de um modo para o outro nem de um
+// provider para outro.
+//
 // Enter continua inserindo nova linha (a pergunta pode ser longa e
 // multi-linha); Ctrl/⌘+Enter envia. O atalho é anunciado por
 // `aria-keyshortcuts` e por uma dica discreta ligada ao campo por
@@ -77,6 +84,9 @@ interface RunComposerProps {
     // Council Accepted Effective Participant Model Choice V1 -- só pro
     // Conselho e só quando há escolha explícita (senão, omitido).
     participantModelOverrides?: Record<string, string>,
+    // Direct Accepted Effective Model Choice V1 -- só pra resposta direta e
+    // só quando há escolha explícita (senão, omitido).
+    directRequestedModel?: string,
   ) => void
   onRetryProviders?: () => void
   // Prévia de prontidão local do Conselho (sem efeito). Ausente = nenhuma
@@ -107,6 +117,7 @@ export type RunMode = 'council' | 'direct'
 const SOURCE_PANEL_ID = 'run-composer-source-panel'
 const MODELS_PANEL_ID = 'provider-selector-panel'
 const MODEL_OVERRIDES_PANEL_ID = 'model-overrides-panel'
+const DIRECT_MODEL_PANEL_ID = 'direct-model-panel'
 
 type PrerequisiteStates = Readonly<Record<string, LocalPrerequisiteState>> | undefined
 
@@ -279,9 +290,23 @@ export function RunComposer({
   const [modelOverridesExpanded, setModelOverridesExpanded] = useState(
     initialInput?.kind !== 'direct' && Object.keys(initialInput?.participantModelOverrides ?? {}).length > 0,
   )
+  // Direct Accepted Effective Model Choice V1 -- o texto do modelo escolhido
+  // na resposta direta, POR provider (vazio = padrão configurado). Só vale o
+  // do provider escolhido agora. O reuso só traz uma escolha EXPLÍCITA da run
+  // anterior, presa ao provider dela: se ele não puder ser marcado de novo, a
+  // escolha não vai para outro.
+  const reusedDirectModel =
+    initialInput?.kind === 'direct' && initialInput.directRequestedModel !== undefined
+      ? initialInput.directRequestedModel
+      : null
+  const [directModels, setDirectModels] = useState<Record<string, string>>(() =>
+    reusedDirectProvider !== null && reusedDirectModel !== null ? { [reusedDirectProvider]: reusedDirectModel } : {},
+  )
+  const [directModelExpanded, setDirectModelExpanded] = useState(reusedDirectModel !== null)
   const [sourceExpanded, setSourceExpanded] = useState(initialInput?.sourceText != null)
   const [sourceText, setSourceText] = useState(initialInput?.sourceText ?? '')
-  const [modelsExpanded, setModelsExpanded] = useState(false)
+  // Uma escolha explícita reusada fica à vista (nunca enviada escondida).
+  const [modelsExpanded, setModelsExpanded] = useState(reusedDirectModel !== null)
 
   // Escolha do usuário no painel: cada modelo marcado fica com a base do
   // estado em que está AGORA -- marcar um "unknown" é a escolha explícita
@@ -377,6 +402,12 @@ export function RunComposer({
     if (value !== undefined && value.trim() !== '') activeModelOverrides[id] = value
   }
   const hasModelOverrides = Object.keys(activeModelOverrides).length > 0
+
+  // Resposta direta: a escolha que vale AGORA -- só a do provider escolhido,
+  // só não vazia, VERBATIM (o servidor valida a forma).
+  const directProvider = validDirect.length === 1 ? validDirect[0] : null
+  const directModelText = directProvider !== null ? (directModels[directProvider] ?? '') : ''
+  const activeDirectModel = directModelText.trim() !== '' ? directModelText : null
 
   // Prévia de prontidão da seleção ATUAL do Conselho. A chave identifica o
   // que decide as dependências (participantes, presença de fonte e modelos
@@ -507,7 +538,11 @@ export function RunComposer({
     // decide se ela está vazia; conteúdo não vazio segue VERBATIM, igual à
     // API e à CLI.
     if (isDirect) {
-      onSubmit(question, validDirect, null, 'direct')
+      if (activeDirectModel !== null) {
+        onSubmit(question, validDirect, null, 'direct', undefined, undefined, activeDirectModel)
+      } else {
+        onSubmit(question, validDirect, null, 'direct')
+      }
       return
     }
     onSubmit(
@@ -744,6 +779,51 @@ export function RunComposer({
             panelId={MODELS_PANEL_ID}
             single={isDirect}
           />
+        )}
+
+        {isDirect && modelsExpanded && !providersLoading && !providersError && directProvider !== null && (
+          // Direct Accepted Effective Model Choice V1 -- controle OPCIONAL/
+          // avançado: o caminho normal não muda (padrão configurado). Não é
+          // catálogo: nenhuma lista de modelos "disponíveis" é mostrada,
+          // porque o Dialeon não tem essa informação.
+          <div className="composer__panel composer__model-overrides">
+            <button
+              type="button"
+              className="composer__control"
+              onClick={() => setDirectModelExpanded((expanded) => !expanded)}
+              aria-expanded={directModelExpanded}
+              aria-controls={DIRECT_MODEL_PANEL_ID}
+              disabled={submitting}
+            >
+              Modelo específico (avançado)
+            </button>
+            {directModelExpanded && (
+              <div id={DIRECT_MODEL_PANEL_ID}>
+                <p id="direct-model-hint" className="composer__hint">
+                  Em branco, usa o modelo padrão configurado nesta instalação. Um identificador escolhido
+                  vai ao fornecedor exatamente como digitado: o Dialeon não confere se o modelo existe
+                  nem se está disponível.
+                </p>
+                <label className="composer__model-override">
+                  <span>{formatProviderName(directProvider)}</span>
+                  <input
+                    type="text"
+                    value={directModelText}
+                    onChange={(event) => {
+                      const value = event.target.value
+                      setDirectModels((current) => ({ ...current, [directProvider]: value }))
+                    }}
+                    placeholder="modelo padrão configurado"
+                    aria-label={`Modelo para ${formatProviderName(directProvider)}`}
+                    aria-describedby="direct-model-hint"
+                    disabled={submitting}
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
         )}
 
         {!isDirect && modelsExpanded && !providersLoading && !providersError && validSelected.length > 0 && (

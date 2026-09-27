@@ -84,7 +84,11 @@ async def test_direct_success_is_one_logical_request_with_the_configured_model_a
 
     assert result.status == "completed"
     assert result.config == DirectRunConfig(
-        question="Qual a capital do Brasil?", provider="openai", requested_model="gpt-conf", max_output_tokens=321
+        question="Qual a capital do Brasil?",
+        provider="openai",
+        requested_model="gpt-conf",
+        requested_model_origin="configured_default",
+        max_output_tokens=321,
     )
     record = await components.repository.get_run(result.id)
     assert isinstance(record, DirectRunRecord)
@@ -432,7 +436,7 @@ async def test_accepted_but_unconfirmed_direct_run_stays_running_after_restart(t
     engine = create_engine(db_url)
     await init_db(engine)
     repository = CouncilRepository(make_session_factory(engine))
-    config = DirectRunConfig(question="q", provider="openai", requested_model="gpt-conf", max_output_tokens=10)
+    config = DirectRunConfig(question="q", provider="openai", requested_model="gpt-conf", requested_model_origin="configured_default", max_output_tokens=10)
     await repository.save_direct_accepted("run-interrompida", config=config, started_at=now(), provider_execution_policy=POLICY)
     await engine.dispose()  # "o processo morreu" antes do desfecho
 
@@ -508,7 +512,7 @@ async def test_legacy_database_without_run_kind_is_upgraded_and_reads_as_council
 # ---------------------------------------------------------------------------
 
 _DIRECT_CONFIG = DirectRunConfig(
-    question="q", provider="openai", requested_model="gpt-conf", max_output_tokens=10
+    question="q", provider="openai", requested_model="gpt-conf", requested_model_origin="configured_default", max_output_tokens=10
 )
 
 

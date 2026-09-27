@@ -77,7 +77,7 @@ async def test_direct_human_output_is_answer_first_and_says_what_it_is(capsys):
     assert "não é consenso, veredito do juiz nem verificação" in lines[3]
     assert lines.index("detalhes:") > 1
     assert "tipo: resposta direta" in lines
-    assert "modelo solicitado: gpt-conf" in lines
+    assert "modelo solicitado: gpt-conf (padrão configurado)" in lines
     assert sum(1 for line in lines if line.startswith("status:")) == 1
     assert not any(line.startswith(("resposta:", "resposta principal", "limitações:", "avaliação completa")) for line in lines)
     assert lines[-1].endswith("--json")
@@ -199,7 +199,8 @@ def test_direct_human_output_is_terminal_safe():
             "id": "r",
             "started_at": "2026-09-01T00:00:00Z",
             "completed_at": "2026-09-01T00:00:01Z",
-            "config": {"question": "q", "provider": "p\x1b[2J", "requested_model": "m", "max_output_tokens": 1},
+            "config": {"question": "q", "provider": "p\x1b[2J", "requested_model": "m\x1b[1m",
+                       "requested_model_origin": "run_override", "max_output_tokens": 1},
             "answer": evil,
             "response": {
                 "id": "x", "provider": "p", "requested_model": "m", "model": "m\x1b[0m",
@@ -375,7 +376,7 @@ async def test_accepted_direct_failures_never_claim_that_no_answer_was_produced(
     from tests.storage.fixtures import now
 
     components = await _components(openai=ScriptedApiProvider("openai", []))
-    config = DirectRunConfig(question="q", provider="openai", requested_model="m", max_output_tokens=10)
+    config = DirectRunConfig(question="q", provider="openai", requested_model="m", requested_model_origin="configured_default", max_output_tokens=10)
     await components.repository.save_direct_accepted("direta", config=config, started_at=now(), provider_execution_policy=POLICY)
     await components.repository.save_unexpected_failure(
         "direta", failed_at=now(), failure_classification="RuntimeError", failure_message="Falha.", failure_stage=stage

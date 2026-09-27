@@ -18,6 +18,11 @@ export interface ReuseInput {
   // participante que usou o padrão usa o padrão ATUAL na pergunta nova. Só
   // vale para quem continuar selecionado agora.
   participantModelOverrides?: Record<string, string>
+  // Direct Accepted Effective Model Choice V1 -- só pra reuso de uma run
+  // direta cujo modelo foi escolhido EXPLICITAMENTE (origem `run_override`).
+  // Um modelo que era o padrão configurado nunca vira escolha: a pergunta
+  // nova usa o padrão ATUAL. Preso ao provider da run anterior.
+  directRequestedModel?: string
 }
 
 export const REUSE_STATE_KEY = 'reuseInput'
@@ -45,12 +50,15 @@ export function buildReuseState(config: {
 // reloads e pode ser manufaturado) -- valida a forma estritamente e ignora
 // qualquer outra chave.
 // Direct Answer Execution V1 -- "Perguntar de novo" de uma run direta: a
-// mesma pergunta e o mesmo provider, como ENTRADA pra uma run nova. Nunca
-// leva o modelo solicitado historicamente (a run nova usa o padrão atual do
-// deployment) nem nada do resultado.
+// mesma pergunta e o mesmo provider, como ENTRADA pra uma run nova, nada do
+// resultado. Direct Accepted Effective Model Choice V1 -- o modelo só viaja
+// se foi escolhido explicitamente (`run_override`); o padrão configurado da
+// run anterior nunca (a run nova usa o padrão atual do deployment).
 export function buildDirectReuseState(config: {
   question: string
   provider: string
+  requested_model: string
+  requested_model_origin: string
 }): { [REUSE_STATE_KEY]: ReuseInput } {
   return {
     [REUSE_STATE_KEY]: {
@@ -58,6 +66,7 @@ export function buildDirectReuseState(config: {
       sourceText: null,
       enabledProviders: [config.provider],
       kind: 'direct',
+      ...(config.requested_model_origin === 'run_override' ? { directRequestedModel: config.requested_model } : {}),
     },
   }
 }
@@ -66,10 +75,8 @@ export function parseReuseInput(state: unknown): ReuseInput | null {
   if (typeof state !== 'object' || state === null || !(REUSE_STATE_KEY in state)) return null
   const raw = (state as Record<string, unknown>)[REUSE_STATE_KEY]
   if (typeof raw !== 'object' || raw === null) return null
-  const { question, sourceText, enabledProviders, kind, participantModelOverrides } = raw as Record<
-    string,
-    unknown
-  >
+  const { question, sourceText, enabledProviders, kind, participantModelOverrides, directRequestedModel } =
+    raw as Record<string, unknown>
   if (typeof question !== 'string') return null
   if (sourceText !== null && typeof sourceText !== 'string') return null
   if (!Array.isArray(enabledProviders) || !enabledProviders.every((p) => typeof p === 'string')) {
@@ -78,7 +85,15 @@ export function parseReuseInput(state: unknown): ReuseInput | null {
   if (kind === 'direct') {
     // Direta: exatamente um provider e nenhuma fonte, ou nada é reusado.
     if (enabledProviders.length !== 1 || sourceText !== null) return null
-    return { question, sourceText: null, enabledProviders, kind: 'direct' }
+    return {
+      question,
+      sourceText: null,
+      enabledProviders,
+      kind: 'direct',
+      ...(typeof directRequestedModel === 'string' && directRequestedModel.trim() !== ''
+        ? { directRequestedModel }
+        : {}),
+    }
   }
   const overrides =
     typeof participantModelOverrides === 'object' &&

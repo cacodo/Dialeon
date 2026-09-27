@@ -29,6 +29,16 @@ import { buildDirectReuseState } from '../lib/reuseInput'
 import { CopyAnswerButton } from './CopyAnswerButton'
 import { ProviderExecutionPolicyView } from './ProviderExecutionPolicyView'
 
+// Direct Accepted Effective Model Choice V1 -- de onde veio o modelo pedido,
+// lido da origem congelada no aceite (runs anteriores a este registro vêm do
+// servidor como padrão configurado: a run direta não aceitava modelo do
+// cliente). Com escolha explícita, o padrão configurado da época não foi
+// registrado e não é mostrado.
+const REQUESTED_MODEL_ORIGIN_NOTES: Record<DirectRunConfigPublic['requested_model_origin'], string> = {
+  configured_default: 'padrão configurado quando a pergunta foi aceita',
+  run_override: 'escolhido nesta pergunta',
+}
+
 // Custo da ÚNICA chamada: desconhecido é desconhecido (nunca "0,00"); uma
 // tentativa anterior incerta torna o valor conhecido parcial.
 function directCost(response: ModelResponsePublic): string {
@@ -43,8 +53,9 @@ function DirectNextActions({ config }: { config: DirectRunConfigPublic }) {
       </Link>
       <Link to="/">Nova pergunta</Link>
       <p id="reuse-description" className="sr-only">
-        Perguntar de novo abre uma nova resposta direta com a mesma pergunta e o mesmo modelo, usando
-        o modelo configurado agora. Nada do resultado anterior é enviado.
+        {config.requested_model_origin === 'run_override'
+          ? 'Perguntar de novo abre uma nova resposta direta com a mesma pergunta, o mesmo provider e o mesmo modelo escolhido. Nada do resultado anterior é enviado.'
+          : 'Perguntar de novo abre uma nova resposta direta com a mesma pergunta e o mesmo provider, usando o modelo configurado agora. Nada do resultado anterior é enviado.'}
       </p>
     </div>
   )
@@ -76,7 +87,9 @@ function CallDetails({
           <dt>Modelo solicitado</dt>
           <dd>
             {config.requested_model}{' '}
-            <span className="direct-details__note">(padrão configurado quando a pergunta foi aceita)</span>
+            <span className="direct-details__note">
+              ({REQUESTED_MODEL_ORIGIN_NOTES[config.requested_model_origin] ?? config.requested_model_origin})
+            </span>
           </dd>
           {response !== null && (
             <>

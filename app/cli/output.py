@@ -458,9 +458,25 @@ def _yes_no(value: bool) -> str:
     return "sim" if value else "não"
 
 
-def _direct_identity_lines(response) -> list[str]:
+# Direct Accepted Effective Model Choice V1 -- de onde veio o modelo
+# solicitado (`config.requested_model_origin`, o fato congelado no aceite).
+_DIRECT_MODEL_ORIGIN_LABELS: dict[str, str] = {
+    "configured_default": "padrão configurado",
+    "run_override": "escolhido nesta pergunta",
+}
+
+
+def _direct_requested_model_line(config, label: str = "modelo solicitado") -> str:
+    origin = config.requested_model_origin
+    return (
+        f"{label}: {terminal_safe_text(config.requested_model)} "
+        f"({_DIRECT_MODEL_ORIGIN_LABELS.get(origin, origin)})"
+    )
+
+
+def _direct_identity_lines(config, response) -> list[str]:
     return [
-        f"modelo solicitado: {terminal_safe_text(response.requested_model)}",
+        _direct_requested_model_line(config),
         f"modelo reportado: {terminal_safe_text(response.model)} "
         f"({_fmt_model_identity_source(response.model_identity_source)})",
     ]
@@ -513,7 +529,7 @@ def human_direct_run(
             "status: concluída",
             f"run_id: {run.id}",
             f"provider: {provider}",
-            *_direct_identity_lines(run.response),
+            *_direct_identity_lines(run.config, run.response),
             _direct_cost_line(run.response),
             f"concluída em: {run.completed_at.isoformat()}",
             "",
@@ -533,7 +549,7 @@ def human_direct_run(
             "tipo: resposta direta",
             f"run_id: {run.id}",
             f"provider: {provider}",
-            f"modelo solicitado: {terminal_safe_text(run.config.requested_model)}",
+            _direct_requested_model_line(run.config),
             f"estágio da falha: {_fmt(run.failure_stage)}",
         ]
         if run.response is not None:
@@ -559,7 +575,7 @@ def human_direct_run(
             "tipo: resposta direta",
             f"run_id: {run.id}",
             f"provider: {provider}",
-            f"modelo solicitado: {terminal_safe_text(run.config.requested_model)}",
+            _direct_requested_model_line(run.config),
             f"iniciada em: {run.started_at.isoformat()}",
         ]
     )
@@ -576,7 +592,7 @@ def human_direct_audit(
         f"run_id: {run.id}",
         "tipo: resposta direta",
         f"provider: {terminal_safe_text(run.config.provider)}",
-        f"modelo solicitado (aceite): {terminal_safe_text(run.config.requested_model)}",
+        _direct_requested_model_line(run.config, "modelo solicitado (aceite)"),
         f"max_output_tokens: {run.config.max_output_tokens}",
     ]
     response = getattr(run, "response", None)

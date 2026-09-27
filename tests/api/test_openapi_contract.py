@@ -126,6 +126,7 @@ def test_request_schema_remains_closed_in_the_document(openapi):
         "acknowledge_known_degradation",
         "acknowledged_degradation_fingerprint",
         "participant_model_overrides",  # Council Accepted Effective Participant Model Choice V1
+        "requested_model",  # Direct Accepted Effective Model Choice V1
     }
     # `kind`/admissão opcionais: omitidos = Conselho com o aceite de sempre
     assert set(schema["required"]) == {"question", "enabled_providers"}

@@ -854,6 +854,7 @@ def direct_run_config_public(config: DirectRunConfig) -> DirectRunConfigPublic:
         question=config.question,
         provider=config.provider,
         requested_model=config.requested_model,
+        requested_model_origin=config.requested_model_origin,
         max_output_tokens=config.max_output_tokens,
     )
 

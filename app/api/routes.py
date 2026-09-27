@@ -138,13 +138,15 @@ async def create_run(body: CreateRunRequest, request: Request) -> RunResponse:
     if body.kind == "direct":
         # Direct Answer Execution V1 -- opt-in explícito; nunca o pipeline do
         # Conselho. `CreateRunRequest` já garantiu exatamente um provider e
-        # nenhuma fonte; o service valida provider/pré-requisitos antes do
-        # aceite. 201 também pra `status="failed"` (erro do provider): a run
-        # foi criada e tem um desfecho terminal registrado.
+        # nenhuma fonte; o service valida provider/pré-requisitos (e a forma
+        # de um `requested_model` explícito) antes do aceite. 201 também pra
+        # `status="failed"` (erro do provider): a run foi criada e tem um
+        # desfecho terminal registrado.
         direct = await components.direct_service.run(
             question=body.question,
             provider=body.enabled_providers[0],
             max_output_tokens=components.settings.default_max_output_tokens_per_call,
+            requested_model=body.requested_model,
         )
         direct_record = await components.repository.get_run(direct.id)
         assert isinstance(direct_record, DirectRunRecord)

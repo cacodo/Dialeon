@@ -6,8 +6,8 @@ Dialeon é uma aplicação local para fazer perguntas a modelos de linguagem
 - **Conselho de modelos** (padrão): vários modelos respondem à mesma pergunta
   e você recebe uma resposta organizada: onde os modelos concordam, onde
   divergem, o que foi avaliado e o que continua incerto.
-- **Resposta direta**: um único modelo configurado responde sozinho, sem as
-  etapas do Conselho (ver [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
+- **Resposta direta**: um único modelo responde sozinho, sem as etapas do
+  Conselho (ver [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
 
 Nos dois casos cada pergunta fica registrada com a sua proveniência e
 auditoria. Você usa pelo navegador (ou pela CLI `dialeon`), com as suas
@@ -167,8 +167,10 @@ de dois jeitos:
   (juiz) e organiza a resposta.
 - **Resposta direta**: **um** modelo responde sozinho. É uma única chamada ao
   provider escolhido, usando o modelo padrão que este deployment tem
-  configurado para ele (congelado no momento da pergunta; o modelo que o
-  provider reportar fica registrado ao lado). Não passa por nenhuma etapa do
+  configurado para ele ou, opcionalmente, um modelo escolhido para esta
+  pergunta (ver [Modelo específico da resposta direta](#modelo-específico-da-resposta-direta-avançado);
+  congelado no momento da pergunta; o modelo que o provider reportar fica
+  registrado ao lado). Não passa por nenhuma etapa do
   Conselho -- nada de afirmações, juiz, fonte ou editor --, então a resposta é
   a desse modelo: não é consenso nem verificação. Fonte não é aceita neste
   modo. O provider precisa estar com a configuração local presente (`met`;
@@ -186,6 +188,40 @@ Na interface, escolha em “Como responder”. Pela CLI:
 provider; sai com código 5 se a chamada terminar sem resposta registrada).
 Pela API: `POST /runs` com `"kind": "direct"` e exatamente um item em
 `enabled_providers`; sem `kind`, a run é do Conselho, como sempre.
+
+### Modelo específico da resposta direta (avançado)
+
+Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
+v1.5.0 não tem), uma resposta direta pode pedir um modelo específico ao
+provider escolhido. Sem escolha, ela usa o modelo padrão configurado nesta
+instalação, como sempre. Continua sendo uma resposta direta: uma única
+chamada, sem nenhuma etapa do Conselho.
+
+- A escolha é um identificador do fornecedor, enviado exatamente como
+  digitado, com a mesma regra de forma da escolha dos participantes do
+  Conselho (não vazio, sem espaços, sem caracteres de controle ou invisíveis,
+  até 256 caracteres). Não há catálogo de modelos: o Dialeon não confere se o
+  modelo existe, está disponível ou aceita a chamada. Se o fornecedor recusar,
+  a resposta direta fica registrada sem resposta (falha do provider), sem
+  troca por outro modelo nem pelo padrão.
+- No aceite, o Dialeon congela o modelo pedido e a origem dele em
+  `config.requested_model` e `config.requested_model_origin`
+  (`configured_default` ou `run_override`; escrever o próprio padrão conta
+  como escolha). Toda tentativa da chamada usa esse modelo, e mudar o padrão
+  depois não altera runs já aceitas. O modelo que o fornecedor reportou
+  continua registrado ao lado do pedido. Runs diretas anteriores mostram
+  `configured_default`: até aqui, a resposta direta sempre usava o padrão
+  configurado. Com escolha explícita, o padrão configurado da época não é
+  registrado.
+- Um modelo sem preço conhecido tem custo desconhecido, nunca zero.
+
+Na interface: com “Resposta direta”, “Modelo” → “Modelo específico
+(avançado)”; em branco é o padrão. “Perguntar de novo” só traz o modelo quando
+ele foi escolhido explicitamente, e só para o mesmo provider. Pela CLI:
+`dialeon run "..." --direct --providers openai --model openai=gpt-x` (no
+máximo um `--model`, com o provider de `--providers`). Pela API:
+`"requested_model": "gpt-x"` em `POST /runs` com `"kind": "direct"`; o
+Conselho recusa esse campo (lá é `participant_model_overrides`).
 
 ### Configuração local das etapas do Conselho
 
@@ -269,7 +305,9 @@ Na interface: “Modelos” → “Modelo de cada participante (avançado)”; e
 e “Perguntar de novo” só traz escolhas explícitas. Pela CLI: `dialeon run
 "..." --model openai=gpt-x` (repetível; também em `dialeon readiness`). Pela
 API: `participant_model_overrides` (`{"openai": "gpt-x"}`) em `POST /runs` e
-em `POST /runs/readiness`; a resposta direta recusa esse campo.
+em `POST /runs/readiness`; a resposta direta recusa esse campo (o modelo dela
+vai em `requested_model`, ver
+[Modelo específico da resposta direta](#modelo-específico-da-resposta-direta-avançado)).
 
 ## O que já está implementado
 
@@ -343,8 +381,9 @@ em `POST /runs/readiness`; a resposta direta recusa esse campo.
     `CompletionRequest` provider-neutro finalizado — nunca o payload
     exato enviado ao provider, nunca prova de aceite remoto.
 - Resposta direta (opcional, a partir da v1.3.0): uma única chamada a um
-  provider escolhido, com o modelo configurado no deployment, sem nenhuma
-  etapa do Conselho; resultado ou falha registrados com a mesma
+  provider escolhido, com o modelo configurado no deployment (ou, na versão
+  em desenvolvimento desta árvore, um modelo escolhido para a pergunta), sem
+  nenhuma etapa do Conselho; resultado ou falha registrados com a mesma
   proveniência de modelo, uso, custo e request (ver
   [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
 - Configuração local das etapas do Conselho (a partir da v1.4.0): prévia sem

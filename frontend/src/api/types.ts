@@ -666,11 +666,17 @@ export type CouncilRunResponse =
 // Conselho não têm `kind` (forma inalterada).
 // ---------------------------------------------------------------------------
 
+// Direct Accepted Effective Model Choice V1 -- de onde veio o modelo pedido.
+export type DirectModelOrigin = 'configured_default' | 'run_override'
+
 export interface DirectRunConfigPublic {
   question: string
   provider: string
-  // Modelo padrão configurado no deployment NO ACEITE -- nunca reinterpretado.
+  // O modelo pedido, congelado NO ACEITE -- nunca reinterpretado.
   requested_model: string
+  // 'configured_default': o padrão configurado no deployment no aceite (toda
+  // run anterior a este registro também); 'run_override': escolhido nesta run.
+  requested_model_origin: DirectModelOrigin
   max_output_tokens: number
 }
 
@@ -874,6 +880,10 @@ export interface CreateRunRequest {
   // Conselho: provider participante -> modelo escolhido para esta pergunta.
   // Participante sem entrada usa o modelo padrão configurado.
   participant_model_overrides?: Record<string, string>
+  // Direct Accepted Effective Model Choice V1 -- só pra resposta direta: o
+  // modelo escolhido para o provider desta pergunta. Omitido = o modelo
+  // padrão configurado.
+  requested_model?: string
 }
 
 // Etapa 16 -- audit-only. Só tipagem pra consistência; nenhum componente

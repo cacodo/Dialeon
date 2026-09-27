@@ -42,6 +42,7 @@ const config = {
   question: 'Qual a capital do Brasil?',
   provider: 'openai',
   requested_model: 'gpt-conf',
+  requested_model_origin: 'configured_default' as const,
   max_output_tokens: 4096,
 }
 
@@ -383,5 +384,103 @@ describe('Histórico -- tipo de run', () => {
       const item = screen.getByText(question).closest('li') as HTMLElement
       expect(within(item).queryByText('Resposta direta')).toBeNull()
     }
+  })
+})
+
+// Direct Accepted Effective Model Choice V1 -- envio, apresentação da origem
+// congelada e reuso.
+describe('Resposta direta -- modelo escolhido', () => {
+  const override = {
+    ...completed,
+    config: { ...config, requested_model: 'gpt-explicit', requested_model_origin: 'run_override' as const },
+    response: { ...response, requested_model: 'gpt-explicit', model: 'gpt-explicit-2026' } as ModelResponsePublic,
+  }
+
+  it('Home envia requested_model só quando há escolha explícita', async () => {
+    vi.mocked(apiClient.createRun).mockResolvedValue(override)
+    vi.mocked(apiClient.getRun).mockResolvedValue(override)
+    renderApp('/')
+
+    await screen.findByRole('button', { name: 'Modelos: Claude, GPT' })
+    await userEvent.click(screen.getByRole('radio', { name: 'Resposta direta' }))
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'Qual a capital do Brasil?')
+    await userEvent.click(screen.getByRole('button', { name: /^Modelo:/ }))
+    await userEvent.click(screen.getByRole('radio', { name: 'GPT' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Modelo específico (avançado)' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Modelo para GPT' }), 'gpt-explicit')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+
+    expect(apiClient.createRun).toHaveBeenCalledWith({
+      question: 'Qual a capital do Brasil?',
+      enabled_providers: ['openai'],
+      source_text: null,
+      kind: 'direct',
+      requested_model: 'gpt-explicit',
+    })
+  })
+
+  it('modelo inválido: o aviso diz qual campo, sem ecoar o valor', async () => {
+    vi.mocked(apiClient.createRun).mockRejectedValue(
+      new ApiError(422, 'invalid_request', 'Request inválido.', {
+        errors: [{ loc: ['body', 'requested_model'], msg: 'x', type: 'value_error' }],
+      }),
+    )
+    renderApp('/')
+
+    await screen.findByRole('button', { name: 'Modelos: Claude, GPT' })
+    await userEvent.click(screen.getByRole('radio', { name: 'Resposta direta' }))
+    await userEvent.type(screen.getByLabelText(/faça uma pergunta/i), 'q')
+    await userEvent.click(screen.getByRole('button', { name: /^Modelo:/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Modelo específico (avançado)' }))
+    await userEvent.type(screen.getByRole('textbox', { name: /Modelo para/ }), 'gpt x')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/O modelo escolhido não é válido/)
+  })
+
+  it('detalhes: a origem vem do registro -- escolhido nesta pergunta, sem inventar o padrão da época', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(override)
+    renderApp('/runs/direct-1')
+
+    const details = await screen.findByRole('region', { name: 'Como esta resposta foi produzida' })
+    await userEvent.click(within(details).getByText('Ver detalhes da chamada'))
+
+    expect(details).toHaveTextContent('gpt-explicit (escolhido nesta pergunta)')
+    expect(details).toHaveTextContent('gpt-explicit-2026')
+    expect(details).not.toHaveTextContent(/padrão configurado/)
+  })
+
+  it('"Perguntar de novo" de uma escolha explícita leva o modelo, preso ao provider', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(override)
+    const states: unknown[] = []
+    renderApp('/runs/direct-1', (state) => states.push(state))
+
+    await userEvent.click(await screen.findByRole('link', { name: 'Perguntar de novo' }))
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/$/))
+    expect(states.at(-1)).toEqual({
+      reuseInput: {
+        question: 'Qual a capital do Brasil?',
+        sourceText: null,
+        enabledProviders: ['openai'],
+        kind: 'direct',
+        directRequestedModel: 'gpt-explicit',
+      },
+    })
+    expect(await screen.findByRole('textbox', { name: 'Modelo para GPT' })).toHaveValue('gpt-explicit')
+  })
+
+  it('"Perguntar de novo" de uma run com o padrão configurado não vira escolha explícita', async () => {
+    vi.mocked(apiClient.getRun).mockResolvedValue(completed)
+    renderApp('/runs/direct-1')
+
+    const link = await screen.findByRole('link', { name: 'Perguntar de novo' })
+    expect(document.getElementById(link.getAttribute('aria-describedby')!)).toHaveTextContent(
+      /usando o modelo configurado agora/,
+    )
+    await userEvent.click(link)
+    expect(await screen.findByRole('radio', { name: 'Resposta direta' })).toBeChecked()
+    expect(screen.queryByRole('textbox', { name: /Modelo para/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Modelo específico/ })).not.toBeInTheDocument()
   })
 })

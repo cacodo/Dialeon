@@ -29,6 +29,7 @@ from pydantic import ValidationError
 
 from app.application.errors import (
     CouncilPrerequisitesMissingError,
+    InvalidDirectModelError,
     InvalidExecutionLimitsError,
     InvalidParticipantModelOverrideError,
     InvalidQuestionError,
@@ -325,17 +326,37 @@ async def cmd_run_direct(
 
     `strict_readiness` (Council Local Execution Readiness & Admission V1):
     `--strict-readiness` é só do Conselho -- a resposta direta já recusa um
-    provider sem a configuração local necessária. Recusado como `--source`."""
+    provider sem a configuração local necessária. Recusado como `--source`.
+
+    `model_overrides` (Direct Accepted Effective Model Choice V1): a MESMA
+    sintaxe `--model PROVIDER=MODELO` do Conselho, aqui no máximo UMA vez e
+    nomeando o provider escolhido em `--providers` -- o prefixo impede que um
+    modelo de um fornecedor vá, por engano, a outro. Vira `requested_model`
+    (a forma é validada pela mesma regra da API); sem `--model`, o modelo é
+    o padrão configurado do provider."""
+    requested_model: str | None = None
     if model_overrides is not None:
-        # Council Accepted Effective Participant Model Choice V1 -- `--model`
-        # é dos participantes do Conselho; a resposta direta não muda.
-        return _emit_invalid(
-            as_json,
-            "participant_model_overrides",
-            "--model não é aceito com --direct: a resposta direta usa o modelo padrão "
-            "configurado do provider.",
-            "direct_participant_model_not_supported",
-        )
+        try:
+            parsed = _parse_model_overrides(model_overrides)
+        except ValueError as exc:
+            return _emit_invalid(as_json, "requested_model", str(exc), "model_option_syntax")
+        assert parsed is not None
+        if len(parsed) != 1:
+            return _emit_invalid(
+                as_json,
+                "requested_model",
+                "--direct aceita no máximo um --model, para o provider escolhido em --providers.",
+                "direct_model_option_count",
+            )
+        [(model_provider, requested_model)] = parsed.items()
+        if providers is not None and len(providers) == 1 and model_provider != providers[0]:
+            return _emit_invalid(
+                as_json,
+                "requested_model",
+                f"--model precisa nomear o provider escolhido em --providers "
+                f"({providers[0]!r}), não {model_provider!r}.",
+                "direct_model_provider_mismatch",
+            )
     if strict_readiness:
         message = "Request inválido."
         reason = (
@@ -384,6 +405,7 @@ async def cmd_run_direct(
             enabled_providers=providers if providers is not None else [],
             source_text=None,
             kind="direct",
+            requested_model=requested_model,
         )
     except ValidationError as exc:
         message = "Request inválido."
@@ -405,6 +427,7 @@ async def cmd_run_direct(
             question=body.question,
             provider=body.enabled_providers[0],
             max_output_tokens=components.settings.default_max_output_tokens_per_call,
+            requested_model=body.requested_model,
         )
     except InvalidQuestionError as exc:
         if as_json:
@@ -412,6 +435,8 @@ async def cmd_run_direct(
         else:
             output.print_error(exc.reason)
         return EXIT_INVALID_INPUT
+    except InvalidDirectModelError as exc:
+        return _emit_invalid(as_json, "requested_model", exc.reason, "invalid_direct_model")
     except UnknownProviderError as exc:
         message = "Um ou mais providers solicitados não existem."
         if as_json:

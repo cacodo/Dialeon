@@ -397,6 +397,9 @@ def test_no_public_or_configuration_knob_exposes_the_reasoning_policy():
         # MODELO de participante (identificador), não knob de transporte nem
         # de raciocínio.
         "participant_model_overrides",
+        # Direct Accepted Effective Model Choice V1 -- escolha de MODELO da
+        # resposta direta (identificador), não knob de raciocínio.
+        "requested_model",
     }
 
     for rel in ("app/api", "app/cli", "app/presentation", "frontend/src/api/types.ts"):

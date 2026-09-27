@@ -15,11 +15,14 @@ sendo UMA completion lógica), `ModelResponse` (modelo solicitado x
 reportado, `model_identity_source`, uso, custo estimado, `PricingProvenance`,
 tentativas, incerteza de tentativa anterior, erro) e `RequestProvenance`.
 
+Modelo (Direct Accepted Effective Model Choice V1): sem escolha, o modelo é
+o padrão configurado do provider no deployment; com escolha explícita, é o
+identificador pedido pra esta run. Nos dois casos, resolvido e congelado no
+aceite, com a origem registrada (`requested_model_origin`).
+
 Fora de escopo nesta versão: fonte/grounding (rejeitada antes do aceite),
-escolha de modelo (o modelo é o padrão configurado do provider no
-deployment, congelado no aceite), orçamento agregado da execução (não tem
-significado coerente para uma chamada única -- só o teto de output por
-chamada se aplica).
+orçamento agregado da execução (não tem significado coerente para uma
+chamada única -- só o teto de output por chamada se aplica).
 """
 
 from __future__ import annotations
@@ -41,18 +44,39 @@ DIRECT_ANSWER_CONTRACT_VERSION = "direct_answer_v1"
 
 DirectRunStatus = Literal["completed", "failed"]
 
+# De onde veio o modelo solicitado de uma run direta (mesmo vocabulário das
+# escolhas dos participantes do Conselho, sem depender delas):
+# - "configured_default": o padrão configurado do provider escolhido, lido
+#   do provider construído pelo deployment no aceite (nenhuma escolha na run);
+# - "run_override": escolhido explicitamente pra esta run -- mesmo que o
+#   texto seja igual ao padrão configurado.
+DirectModelOrigin = Literal["configured_default", "run_override"]
+
 
 class DirectRunConfig(BaseModel):
     """Autoridade aceita de uma run direta -- congelada no aceite, nunca
-    recalculada depois. `requested_model` vem do provider construído pelo
-    deployment (`LLMProvider.default_model`), nunca do cliente: uma mudança
-    posterior de configuração não reescreve o que uma run aceita pediu."""
+    recalculada depois: uma mudança posterior de configuração não reescreve
+    o que uma run aceita pediu.
+
+    `requested_model` é o modelo EFETIVAMENTE pedido ao provider e
+    `requested_model_origin` diz de onde ele veio (ver `DirectModelOrigin`).
+    A origem é obrigatória: todo aceite novo a declara. Linhas gravadas
+    antes deste campo existir são lidas pelo repositório como
+    `configured_default` -- o contrato sob o qual foram escritas (a run
+    direta não aceitava modelo do cliente), nunca a configuração atual.
+
+    Com escolha explícita, o padrão configurado do provider naquele momento
+    NÃO é registrado (não é material pra esta run)."""
 
     model_config = _CONFIG
 
     question: str
     provider: str = Field(min_length=1)
+    # Leitura leniente (só o mínimo): a regra estrita de forma vale pra
+    # entrada nova (`validate_model_override_identifier`), nunca reinterpreta
+    # o que já foi aceito.
     requested_model: str = Field(min_length=1)
+    requested_model_origin: DirectModelOrigin
     max_output_tokens: int = Field(gt=0)
 
 

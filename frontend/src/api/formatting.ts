@@ -293,6 +293,11 @@ export function formatInvalidRequest(details: Record<string, unknown> | null): s
       'Um modelo escolhido não é válido: use o identificador do fornecedor, sem espaços, e só para modelos selecionados.',
     )
   }
+  if (fields.has('requested_model')) {
+    messages.push(
+      'O modelo escolhido não é válido: use o identificador do fornecedor, sem espaços nem caracteres invisíveis.',
+    )
+  }
   if (fields.has('enabled_providers')) {
     messages.push('Escolha ao menos um participante, sem repetições.')
   }

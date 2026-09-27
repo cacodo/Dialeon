@@ -164,3 +164,18 @@ class InvalidParticipantModelOverrideError(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(reason)
+
+
+class InvalidDirectModelError(Exception):
+    """Direct Accepted Effective Model Choice V1 -- o modelo pedido
+    explicitamente numa run direta tem identificador mal formado (mesma regra
+    de forma da escolha dos participantes do Conselho,
+    `validate_model_override_identifier`). Levantada ANTES do aceite durável
+    -- nenhum registro é criado, nenhuma chamada é tentada. Só forma: nunca
+    "o modelo não existe no fornecedor" (isso não é verificável localmente).
+    `reason` nunca ecoa cru um caractere invisível (a regra o nomeia como
+    U+XXXX)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)

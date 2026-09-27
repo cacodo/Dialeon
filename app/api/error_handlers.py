@@ -21,6 +21,7 @@ from app.presentation.schemas import ErrorBody, ErrorResponse
 from app.application.errors import (
     CouncilDegradationChangedError,
     CouncilPrerequisitesMissingError,
+    InvalidDirectModelError,
     InvalidExecutionLimitsError,
     InvalidParticipantModelOverrideError,
     InvalidQuestionError,
@@ -165,6 +166,33 @@ def register_exception_handlers(app: FastAPI) -> None:
                                 "loc": ["participant_model_overrides"],
                                 "msg": exc.reason,
                                 "type": "invalid_participant_model_override",
+                            }
+                        ]
+                    },
+                )
+            ),
+        )
+
+    @app.exception_handler(InvalidDirectModelError)
+    async def _handle_invalid_direct_model(
+        request: Request, exc: InvalidDirectModelError
+    ) -> JSONResponse:
+        # Direct Accepted Effective Model Choice V1 -- mesmo formato da
+        # validação de request (`invalid_request`, com o campo em `loc`),
+        # detectada na boundary autoritativa do service direto antes de
+        # qualquer registro/chamada.
+        return _error_json(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            ErrorResponse(
+                error=ErrorBody(
+                    code="invalid_request",
+                    message="Request inválido.",
+                    details={
+                        "errors": [
+                            {
+                                "loc": ["requested_model"],
+                                "msg": exc.reason,
+                                "type": "invalid_direct_model",
                             }
                         ]
                     },

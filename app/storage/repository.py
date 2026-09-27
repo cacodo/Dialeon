@@ -159,6 +159,26 @@ def _council_admission_from_json(data: dict | None) -> CouncilAdmission | None:
     return CouncilAdmission.model_validate(data) if data is not None else None
 
 
+def _direct_run_config_from_json(data: dict) -> DirectRunConfig:
+    """Reconstrói `DirectRunConfig` a partir do JSON persistido (aceite e
+    desfecho terminal usam SÓ este caminho) -- nunca muta o dict recebido.
+
+    Direct Accepted Effective Model Choice V1 -- `requested_model_origin`
+    passou a ser gravado em todo aceite novo. Uma linha SEM a chave foi
+    escrita pelo único gravador anterior (`DirectExecutionService`, da v1.3.0
+    até este campo existir), que sempre usava `LLMProvider.default_model` e
+    não aceitava modelo do cliente -- o contrato publicado da run direta
+    definia `requested_model` como o padrão configurado no aceite. A origem
+    dessa linha é portanto `configured_default`, lida do contrato sob o qual
+    ela foi escrita, nunca da configuração atual. Só a AUSÊNCIA da chave tem
+    esse significado: `null` ou um valor desconhecido é estado persistido
+    malformado e falha a validação (nunca vira `configured_default`). Nada é
+    regravado."""
+    if "requested_model_origin" in data:
+        return DirectRunConfig.model_validate(data)
+    return DirectRunConfig.model_validate({**data, "requested_model_origin": "configured_default"})
+
+
 def _run_config_from_json(data: dict) -> RunConfig:
     """Reconstrói `RunConfig` a partir do JSON persistido -- nunca muta o
     dict recebido (sempre trabalha sobre uma cópia), porque este blob
@@ -374,7 +394,8 @@ class CouncilRepository:
         """Direct Answer Execution V1 -- mesmo aceite durável de
         `save_accepted` (ANTES de qualquer chamada ao provider), na mesma
         tabela, marcado `run_kind="direct"` e com o `DirectRunConfig`
-        congelado (inclui o modelo solicitado) em `run_config_json`."""
+        congelado (inclui o modelo solicitado e a origem dele) em
+        `run_config_json`."""
         async with session_scope(self._session_factory) as session:
             session.add(
                 AcceptedRunRow(
@@ -1315,7 +1336,7 @@ def _reconstruct_direct(row: DirectRunRow) -> DirectRunRecord:
         id=row.id,
         started_at=dt_from_naive_utc(row.started_at),
         ended_at=dt_from_naive_utc(row.ended_at),
-        config=DirectRunConfig.model_validate(row.run_config_json),
+        config=_direct_run_config_from_json(row.run_config_json),
         response=ModelResponse.model_validate(row.response_json),
         provider_execution_policy=ProviderExecutionPolicy.model_validate(
             row.provider_execution_policy_json
@@ -1336,7 +1357,7 @@ def _reconstruct_accepted(row: AcceptedRunRow) -> AcceptedRunRecord | DirectAcce
             status=row.status,  # type: ignore[arg-type]  # "running" | "failed"
             id=row.id,
             started_at=dt_from_naive_utc(row.started_at),
-            config=DirectRunConfig.model_validate(row.run_config_json),
+            config=_direct_run_config_from_json(row.run_config_json),
             failed_at=dt_from_naive_utc(row.failed_at) if row.failed_at is not None else None,
             failure_classification=row.failure_classification,
             failure_message=row.failure_message,

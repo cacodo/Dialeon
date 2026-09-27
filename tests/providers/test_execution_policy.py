@@ -470,6 +470,9 @@ def test_create_run_request_contract_is_unchanged_and_exposes_no_transport_knobs
         # MODELO de participante (identificador), não knob de transporte nem
         # de raciocínio.
         "participant_model_overrides",
+        # Direct Accepted Effective Model Choice V1 -- escolha de MODELO da
+        # resposta direta (identificador), não knob de transporte.
+        "requested_model",
     }
 
     # cliente NÃO consegue enviar knob de transporte (extra="forbid")

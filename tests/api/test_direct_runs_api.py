@@ -88,6 +88,7 @@ def test_direct_run_creates_detail_audit_and_list_entries_with_an_explicit_kind(
         "question": "Qual a capital do Brasil?",
         "provider": "openai",
         "requested_model": "gpt-conf",
+        "requested_model_origin": "configured_default",
         "max_output_tokens": Settings(_env_file=None).default_max_output_tokens_per_call,
     }
     assert body["response"]["requested_model"] == "gpt-conf"
