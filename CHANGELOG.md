@@ -1,3 +1,101 @@
+# Dialeon 1.5.0
+
+Versão menor compatível com a linha 1.x. Uma pergunta do Conselho pode pedir
+um modelo específico para cada participante. Sem escolha, cada participante
+usa o modelo padrão configurado na instalação, como antes; a resposta direta
+não mudou.
+
+## Modelo de cada participante
+
+- Escolha opcional, por participante selecionado, de um identificador de
+  modelo do fornecedor (por exemplo `gpt-x` para `openai`), enviado
+  exatamente como informado. O Dialeon confere só a forma: não vazio, sem
+  espaços, sem caracteres de controle ou invisíveis, até 256 caracteres, e só
+  para participantes selecionados. Não há catálogo de modelos: o Dialeon não
+  confere se o modelo existe, está disponível ou aceita a chamada; se o
+  fornecedor recusar, a resposta daquele participante fica registrada como
+  falha, sem troca por outro modelo.
+- Vale para a resposta inicial e a crítica do participante. Extração de
+  afirmações, análise da fonte, juiz, editor e revisão continuam com o modelo
+  padrão do provider deles, mesmo quando é o mesmo provider.
+- No aceite, o modelo pedido a **cada** participante e a origem dele
+  (`configured_default` ou `run_override`) ficam registrados na run; mudar o
+  padrão depois não altera runs já aceitas. O modelo reportado pelo
+  fornecedor continua registrado em cada resposta, ao lado do pedido. O mesmo
+  identificador em dois providers são dois pedidos diferentes.
+- Um modelo sem preço conhecido tem custo desconhecido, nunca zero (e, como
+  antes, não entra na conta do `DEFAULT_MAX_COST_USD`).
+- A configuração local das etapas (prévia e admissão) usa os mesmos modelos:
+  cada participante aparece com o modelo que será pedido e a origem dele. Uma
+  degradação reconhecida com um modelo não vale para outro.
+
+## Interface web
+
+- “Modelos” → “Modelo de cada participante (avançado)”: um campo por
+  participante selecionado; em branco é o modelo padrão configurado. A
+  escolha entra na avaliação de configuração local e no reconhecimento de
+  degradação; “Perguntar de novo” traz só as escolhas explícitas, e só para
+  modelos ainda selecionáveis.
+- A auditoria técnica mostra os modelos pedidos aos participantes.
+- Em “Como esta resposta foi produzida”, quando o texto natural ou redigido
+  já é a resposta mostrada, a resposta principal estruturada começa recolhida
+  (título e “Copiar resposta principal” visíveis; aberta, mostra o conteúdo
+  inteiro), deixando as notas da execução ao alcance. Quando a resposta
+  estruturada ou a avaliação completa é a própria resposta, nada muda.
+
+## API
+
+- `POST /runs` e `POST /runs/readiness` ganharam o campo opcional
+  `participant_model_overrides` (`{"provider": "modelo"}`), só do Conselho; a
+  resposta direta o recusa. Escolha inválida: `422 invalid_request`, antes de
+  criar qualquer registro ou fazer qualquer chamada.
+- `config` das runs do Conselho ganhou `participant_models` (provider, modelo
+  pedido, origem); runs anteriores mostram `null` (não registrado), nunca um
+  valor reconstruído do padrão atual.
+- A avaliação de configuração local passou a `council_local_readiness_v2`:
+  cada participante traz `planned_model` e `planned_model_origin`.
+- A proveniência dos requests dos participantes passou a
+  `initial_response_v2`/`critique_v2` (com o modelo explícito no request); os
+  registros `v1` mantêm o significado original.
+
+## CLI
+
+- `dialeon run "..." --model PROVIDER=MODELO`, repetível, e o mesmo em
+  `dialeon readiness`. Não combina com `--direct`. A saída humana de `run`,
+  `get` e `audit` mostra os modelos pedidos aos participantes.
+
+## Instalação e dependências
+
+- Sem mudanças de dependências nem de versão mínima do Python (3.11).
+- Os metadados do pacote passaram a trazer o README como descrição longa
+  (`text/markdown`).
+- Artefatos da release: `llm_council-1.5.0-py3-none-any.whl` e
+  `llm_council-1.5.0.tar.gz`, com a interface web já compilada. Não há
+  publicação no PyPI.
+
+## Persistência e atualização
+
+- Nenhuma mudança de banco: os modelos dos participantes ficam na
+  configuração aceita da run, já persistida. Bancos criados pela v1.4 e
+  anteriores continuam abertos e legíveis; avaliações e reconhecimentos
+  gravados pela v1.4 mantêm o significado e a identidade de degradação
+  originais.
+
+## Compatibilidade
+
+- Tudo é aditivo e opt-in: sem `participant_model_overrides`, o aceite e a
+  execução são os de sempre, com o modelo padrão de cada provider.
+- Clientes que tratam `contract_version` da avaliação de forma exaustiva
+  precisam reconhecer `council_local_readiness_v2`. Clientes devem ignorar
+  chaves desconhecidas.
+
+## Limitações conhecidas
+
+As limitações da 1.4.0 continuam valendo. A escolha de modelo não é
+verificada no fornecedor: um identificador errado só aparece como falha da
+chamada daquele participante. Os papéis internos não têm escolha de modelo
+por pergunta.
+
 # Dialeon 1.4.0
 
 Versão menor compatível com a linha 1.x. Antes de uma pergunta do Conselho, o

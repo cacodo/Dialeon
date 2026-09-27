@@ -24,7 +24,7 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Versão do pacote nesta árvore: **1.4.0**. O número de versão no código
+Versão do pacote nesta árvore: **1.5.0**. O número de versão no código
 não indica, por si só, que uma tag ou release já foi publicada. A política
 da linha 1.x está em
 [Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
@@ -66,7 +66,7 @@ diretório (ver [Configuração](#configuração)).
 mkdir dialeon && cd dialeon
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install https://github.com/cacodo/Dialeon/releases/download/v1.4.0/llm_council-1.4.0-py3-none-any.whl
+pip install https://github.com/cacodo/Dialeon/releases/download/v1.5.0/llm_council-1.5.0-py3-none-any.whl
 ```
 
 A página da release mostra o SHA-256 de cada arquivo, se você quiser conferir
@@ -241,17 +241,15 @@ registrado), nunca reconstruído da configuração atual.
 
 ### Modelo de cada participante (avançado)
 
-Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
-v1.4.0 não tem), uma pergunta do Conselho pode pedir um modelo específico para
-um participante. Sem escolha, cada participante usa o modelo padrão
+A partir da v1.5.0 (a v1.4.0 não tem), uma pergunta do Conselho pode pedir um
+modelo específico para um participante. Sem escolha, cada participante usa o modelo padrão
 configurado nesta instalação (`OPENAI_DEFAULT_MODEL` etc.), como sempre.
 
 - A escolha é um identificador do fornecedor, enviado exatamente como
   digitado. O Dialeon só confere a forma (não vazio, sem espaços nem
   caracteres de controle ou invisíveis, até 256 caracteres) e que o provider
-  é um participante selecionado: não tem
-  catálogo de modelos e não confere se o modelo existe, está disponível ou
-  aceita a chamada. Um modelo recusado pelo fornecedor aparece como falha
+  é um participante selecionado: não tem catálogo de modelos e não confere se
+  o modelo existe, está disponível ou aceita a chamada. Um modelo recusado pelo fornecedor aparece como falha
   registrada daquela resposta, sem troca por outro modelo.
 - Vale só para o participante: resposta inicial e crítica. Extração de
   afirmações, análise da fonte, juiz, editor e revisão continuam com o modelo
@@ -353,6 +351,10 @@ em `POST /runs/readiness`; a resposta direta recusa esse campo.
   efeito, admissão estrita opcional e registro, no aceite, da configuração
   local de cada etapa (ver
   [Configuração local das etapas do Conselho](#configuração-local-das-etapas-do-conselho)).
+- Modelo de cada participante (a partir da v1.5.0): escolha opcional do
+  identificador de modelo por participante do Conselho, congelada no aceite
+  junto com os padrões usados (ver
+  [Modelo de cada participante](#modelo-de-cada-participante-avançado)).
 - CLI (`dialeon`), API HTTP (FastAPI) e frontend (React) para disparar
   execuções e inspecionar resultados.
 
@@ -432,7 +434,7 @@ ganharam `council_admission`; o código `council_prerequisites_missing` só
 aparece com `"readiness_admission": "strict"`, e `council_readiness_changed`
 só com um reconhecimento de degradação.
 
-Na versão em desenvolvimento desta árvore (ver
+A partir da v1.5.0 (ver
 [Modelo de cada participante](#modelo-de-cada-participante-avançado)):
 `participant_model_overrides` é um campo opcional de `POST /runs` e de
 `POST /runs/readiness` (só do Conselho); `config` ganhou `participant_models`
