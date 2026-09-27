@@ -591,6 +591,15 @@ npm run build         # build de produção — servido pela API em /app quando 
 npm test               # suíte de testes (vitest)
 ```
 
+Se `app/frontend_dist/` existir (sobra de uma sincronização anterior, ver
+[Empacotamento de release](#empacotamento-de-release)), é ele que a API serve
+em `/app`, não `frontend/dist/`. Depois de um `npm run build`, rode
+`python scripts/sync_frontend_dist.py` (ou apague `app/frontend_dist/`) e
+reinicie a API; `python scripts/sync_frontend_dist.py --check` só confere e
+falha se o bundle servido não for idêntico ao build atual. A suíte do backend
+também falha nesse caso quando os dois diretórios existem
+(`tests/api/test_served_frontend_bundle_identity.py`).
+
 ## Empacotamento de release
 
 Dialeon é distribuído atualmente como **um único produto**: o artefato
@@ -611,7 +620,8 @@ Build order mínimo de um release (nesta ordem, sempre):
 cd frontend && npm install && npm run build && cd ..
 
 # 2. copia frontend/dist/ pra dentro do pacote Python (app/frontend_dist/,
-#    nunca versionado em Git -- só existe durante o build de release)
+#    nunca versionado em Git -- só existe durante o build de release) e
+#    confere que a cópia é idêntica ao build (falha se não for)
 python scripts/sync_frontend_dist.py
 
 # 3. constrói wheel + sdist normalmente (setuptools via pyproject.toml)
