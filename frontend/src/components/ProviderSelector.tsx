@@ -49,6 +49,12 @@ interface ModelSummaryButtonProps {
   disabled?: boolean
   panelId: string
   single?: boolean
+  // Direct Accepted Effective Model Choice V1 -- o modelo específico ATIVO
+  // da resposta direta (escolha explícita não vazia do provider escolhido),
+  // ou nada. Só apresentação: quem decide é o estado do composer. Fica no
+  // resumo (visível e no nome acessível) mesmo com o painel fechado, pra que
+  // nunca seja enviado sem estar à vista.
+  specificModel?: string | null
 }
 
 export function ModelSummaryButton({
@@ -59,7 +65,9 @@ export function ModelSummaryButton({
   disabled,
   panelId,
   single = false,
+  specificModel = null,
 }: ModelSummaryButtonProps) {
+  const summary = modelSummaryText(options, selected, single)
   return (
     <button
       type="button"
@@ -69,7 +77,9 @@ export function ModelSummaryButton({
       onClick={onToggle}
       disabled={disabled}
     >
-      <span className="composer__models-text">{modelSummaryText(options, selected, single)}</span>
+      <span className="composer__models-text">
+        {specificModel !== null ? `${summary} · modelo específico: ${specificModel}` : summary}
+      </span>
       <span className="composer__control-chevron" aria-hidden="true">
         ▾
       </span>

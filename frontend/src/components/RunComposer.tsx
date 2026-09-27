@@ -730,6 +730,7 @@ export function RunComposer({
               disabled={submitting}
               panelId={MODELS_PANEL_ID}
               single={isDirect}
+              specificModel={isDirect ? activeDirectModel : null}
             />
           )}
 

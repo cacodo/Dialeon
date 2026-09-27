@@ -204,4 +204,106 @@ describe('RunComposer -- modelo específico da resposta direta (avançado)', () 
     await userEvent.click(submitButton())
     expect(onSubmit.mock.calls[0]).toEqual(['Pergunta anterior', ['anthropic'], null, 'direct'])
   })
+
+  // Revisão independente (LOW) -- uma escolha ativa não pode ficar escondida:
+  // com os painéis fechados, o resumo (visível e acessível) diz qual modelo
+  // específico vai ser pedido.
+  describe('resumo recolhido com modelo específico ativo', () => {
+    const summary = () => screen.getByRole('button', { name: /^Modelos?:/ })
+
+    it('sem escolha, o resumo não fala em modelo específico', async () => {
+      setup()
+      await chooseDirect()
+
+      expect(summary()).toHaveAccessibleName('Modelo: GPT')
+      expect(summary()).not.toHaveTextContent(/específico/)
+    })
+
+    it('recolher não apaga a escolha: o resumo a mostra, o envio a leva e reabrir a traz', async () => {
+      const { onSubmit } = setup()
+      await chooseDirect()
+      await ask()
+      await openModel()
+      await openDirectModel()
+      await userEvent.type(directModelInput('GPT'), 'gpt-explicit')
+      expect(summary()).toHaveAccessibleName('Modelo: GPT · modelo específico: gpt-explicit')
+
+      await openDirectModel() // recolhe o avançado
+      await userEvent.click(summary()) // recolhe o painel de modelo
+      expect(screen.queryByRole('textbox', { name: /Modelo para/ })).not.toBeInTheDocument()
+      expect(summary()).toHaveAttribute('aria-expanded', 'false')
+      expect(summary()).toHaveTextContent('Modelo: GPT · modelo específico: gpt-explicit')
+      expect(summary()).toHaveAccessibleName('Modelo: GPT · modelo específico: gpt-explicit')
+
+      await userEvent.click(submitButton())
+      expect(onSubmit.mock.calls.at(-1)).toEqual([
+        'Qual a capital?',
+        ['openai'],
+        null,
+        'direct',
+        undefined,
+        undefined,
+        'gpt-explicit',
+      ])
+
+      await userEvent.click(summary())
+      await openDirectModel()
+      expect(directModelInput('GPT')).toHaveValue('gpt-explicit')
+    })
+
+    it('apagar a escolha tira o indicador e o modelo do envio', async () => {
+      const { onSubmit } = setup()
+      await chooseDirect()
+      await ask()
+      await openModel()
+      await openDirectModel()
+      await userEvent.type(directModelInput('GPT'), 'gpt-explicit')
+      await userEvent.clear(directModelInput('GPT'))
+      await userEvent.type(directModelInput('GPT'), '  ')
+      await userEvent.click(summary())
+
+      expect(summary()).toHaveAccessibleName('Modelo: GPT')
+      await userEvent.click(submitButton())
+      expect(onSubmit.mock.calls.at(-1)).toEqual(['Qual a capital?', ['openai'], null, 'direct'])
+    })
+
+    it('o indicador é só do provider escolhido agora, e só da resposta direta', async () => {
+      setup()
+      await chooseDirect()
+      await openModel()
+      await openDirectModel()
+      await userEvent.type(directModelInput('GPT'), 'gpt-explicit')
+
+      await userEvent.click(screen.getByRole('radio', { name: 'Claude' }))
+      expect(summary()).toHaveAccessibleName('Modelo: Claude')
+
+      await userEvent.click(screen.getByRole('radio', { name: 'GPT' }))
+      expect(summary()).toHaveAccessibleName('Modelo: GPT · modelo específico: gpt-explicit')
+
+      await chooseCouncil()
+      expect(summary()).not.toHaveTextContent(/específico|gpt-explicit/)
+      expect(summary()).toHaveAccessibleName(/^Modelos:/)
+    })
+
+    it('reuso: a escolha restaurada fica à vista, e continua no resumo depois de recolher', async () => {
+      const { onSubmit } = setup(
+        { openai: 'met', anthropic: 'met' },
+        {
+          question: 'Pergunta anterior',
+          sourceText: null,
+          enabledProviders: ['openai'],
+          kind: 'direct',
+          directRequestedModel: 'gpt-explicit',
+        },
+      )
+      expect(directModelInput('GPT')).toHaveValue('gpt-explicit')
+
+      await openDirectModel()
+      await userEvent.click(summary())
+      expect(screen.queryByRole('textbox', { name: /Modelo para/ })).not.toBeInTheDocument()
+      expect(summary()).toHaveAccessibleName('Modelo: GPT · modelo específico: gpt-explicit')
+      await userEvent.click(submitButton())
+      expect(onSubmit.mock.calls[0]?.[6]).toBe('gpt-explicit')
+    })
+  })
 })
