@@ -17,6 +17,11 @@ from sqlalchemy import text
 from app.api.app import create_app
 from app.config import Settings
 from app.editor.result import EditorResult, FinalAnswer
+from app.debate.result import CritiqueResult, DebateResult
+from app.judge.result import JudgeResult
+from app.models.domain import ClaimAssessment, ClaimSupport, JudgeVerdict
+from app.models.provider_models import ModelIdentitySource
+from app.orchestrator.result import InitialResponsesResult, RoundResult
 from app.editor.natural_answer import (
     NATURAL_ANSWER_CONTRACT_VERSION,
     NaturalAnswer,
@@ -32,7 +37,9 @@ from app.version import get_product_version
 from tests.api.helpers import make_components_factory
 from tests.direct.fakes import ScriptedApiProvider, ok
 from tests.storage.fixtures import (
+    claim,
     full_council_run_result,
+    model_response,
     now,
     quorum_failure_exception,
     run_config,
@@ -706,3 +713,121 @@ def test_direct_omission_wording_matches_that_the_answer_is_the_provider_respons
     assert "respostas completas" not in flat
     assert "respostas individuais" not in flat
     assert "texto completo da fonte" not in flat  # a resposta direta nem aceita fonte
+
+
+def _single_participant_council_result():
+    """Conselho COERENTE com UM participante selecionado (openai) e UMA
+    resposta de participante -- construído só com construtores validados
+    (sem `model_copy(update=...)` em estado material). Uma run assim é válida
+    (tests/direct/test_direct_execution.py::test_one_provider_council_runs_stay_council);
+    a reconciliação é recalculada pela implementação de produção dentro de
+    `full_council_run_result`."""
+    response = model_response("openai")
+    critique = model_response("openai", round_number=2, response_text="resposta de crítica")
+    support = ClaimSupport(
+        model_response_id=response.id,
+        provider="openai",
+        model=response.model,
+        model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
+    )
+    only_claim = claim(response.id, [support], text="Brasília é a capital do Brasil.")
+    debate = DebateResult(
+        initial_result=InitialResponsesResult(
+            responses=[response],
+            successful_count=1,
+            total_providers=1,
+            insufficient_data_for_consensus=False,
+            total_input_tokens=100,
+            total_output_tokens=20,
+            total_cost_usd=0.001,
+            has_unknown_accounting_components=False,
+            budget_exceeded=False,
+        ),
+        critique_round=CritiqueResult(
+            round_result=RoundResult(
+                round_number=2,
+                responses=[critique],
+                successful_count=1,
+                total_participants=1,
+                total_input_tokens=100,
+                total_output_tokens=20,
+                total_cost_usd=0.001,
+                has_unknown_accounting_components=False,
+            )
+        ),
+        claims=[only_claim],
+        claim_processing_attempts=[],
+        claim_processor_provider="anthropic",
+        debate_skipped_reason=None,
+        cumulative_budget_exceeded=False,
+    )
+    base = full_council_run_result()
+    judge_attempt = base.judge_result.attempts[0]
+    verdict = JudgeVerdict(
+        evaluated_through_round=2,
+        judge_model="claude-sonnet-5",
+        judge_model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
+        claim_assessments=[
+            ClaimAssessment(claim_id=only_claim.id, verdict="supported", explanation="Sustentada pela resposta.")
+        ],
+        best_arguments_by={"openai/gpt-5.5": "Argumento direto."},
+        debate_limitations=["Só um participante."],
+        confidence=0.8,
+        reasoning="Um único participante respondeu.",
+    )
+    judge = JudgeResult(
+        verdict=verdict,
+        attempts=[judge_attempt],
+        verdict_unavailable_reason=None,
+        judge_provider="anthropic",
+        cumulative_budget_exceeded=False,
+    )
+    editor = EditorResult(
+        final_answer=FinalAnswer(
+            answer_text="Brasília é a capital do Brasil.",
+            limitations=["Só um participante."],
+            status="llm_composed",
+            editor_model="claude-sonnet-5",
+            editor_model_identity_source=ModelIdentitySource.PROVIDER_REPORTED,
+            based_on_verdict_id=verdict.id,
+            judge_confidence=0.8,
+        ),
+        attempts=list(base.editor_result.attempts),
+        fallback_reason=None,
+        editor_provider="anthropic",
+        cumulative_budget_exceeded=False,
+    )
+    return full_council_run_result(
+        run_config=run_config(enabled_providers=["openai"]),
+        debate_result=debate,
+        judge_result=judge,
+        editor_result=editor,
+    )
+
+
+def test_a_single_participant_council_export_does_not_claim_plurality():
+    """Uma run do Conselho com UM participante é válida (e o quórum padrão
+    permite concluir com uma única resposta utilizável): a exportação nunca
+    afirma que a resposta veio de vários modelos."""
+    result = _single_participant_council_result()
+    # o estado persistido é mesmo de um participante só -- nenhum segundo
+    # provider escondido nas respostas, nos apoios nem nas rodadas
+    assert result.run_config.enabled_providers == ("openai",)
+    assert [r.provider for r in result.debate_result.initial_result.responses] == ["openai"]
+    assert {s.provider for c in result.debate_result.claims for s in c.supporting_model_response_ids} == {"openai"}
+    assert [r.provider for r in result.debate_result.critique_round.round_result.responses] == ["openai"]
+
+    with _client() as client:
+        run_id = _save(client, result)
+        detail = client.get(f"/runs/{run_id}").json()
+        resp = _export(client, run_id)
+
+    assert detail["status"] == "completed"
+    assert detail["config"]["enabled_providers"] == ["openai"]
+    assert resp.status_code == 200
+    body = resp.text
+    flat = " ".join(body.split())
+    participants = body.split("Participantes\n-------------\n", 1)[1].split("\n\n", 1)[0]
+    assert [line.strip() for line in participants.split("\n") if line.startswith("    - ")] == ["- openai"]
+    assert "vários modelos" not in flat
+    assert "respostas dos modelos participantes" in flat

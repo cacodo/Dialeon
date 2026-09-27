@@ -106,7 +106,7 @@ _REALIZATION_NOTE = (
     "verdade."
 )
 _COUNCIL_NOTE = (
-    "Resposta do Conselho de modelos, montada a partir das respostas de vários modelos. "
+    "Resposta do Conselho de modelos, montada a partir das respostas dos modelos participantes. "
     "Concordância entre modelos e a avaliação do juiz, quando houver, dizem respeito a este "
     "debate; não são verificação externa nem garantia de verdade."
 )
