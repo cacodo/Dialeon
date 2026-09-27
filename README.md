@@ -24,7 +24,7 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Versão do pacote nesta árvore: **1.6.0**. O número de versão no código
+Versão do pacote nesta árvore: **1.7.0**. O número de versão no código
 não indica, por si só, que uma tag ou release já foi publicada. A política
 da linha 1.x está em
 [Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
@@ -66,7 +66,7 @@ diretório (ver [Configuração](#configuração)).
 mkdir dialeon && cd dialeon
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install https://github.com/cacodo/Dialeon/releases/download/v1.6.0/llm_council-1.6.0-py3-none-any.whl
+pip install https://github.com/cacodo/Dialeon/releases/download/v1.7.0/llm_council-1.7.0-py3-none-any.whl
 ```
 
 A página da release mostra o SHA-256 de cada arquivo, se você quiser conferir
@@ -312,23 +312,23 @@ vai em `requested_model`, ver
 
 ### Exportar a resposta
 
-Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
-v1.6.0 não tem), a página de uma pergunta **concluída** (Conselho ou resposta
-direta) tem “Exportar resposta (.txt)”: um arquivo de texto para ler fora do
-Dialeon, com a pergunta, a resposta (no Conselho, a mesma forma que a
-interface escolhe hoje para apresentar, com as limitações registradas) e como
-ela foi produzida -- tipo de execução, modelos pedidos e a origem deles quando
-registrada, modelos reportados pelos providers, juiz e editor quando a
-execução os registra, e etapas não realizadas. A resposta vai inteira, sem
-reescrita (na resposta direta, ela é a própria resposta do provider; no
-Conselho, pode conter trechos da fonte). Não entram como partes separadas: o
-texto completo da fonte (só que ela foi fornecida e o status da análise), as
-respostas individuais e as tentativas dos modelos, erros dos providers, uso
-nem custo. O arquivo é gerado na hora a partir do registro da execução, sem
-chamar nenhum modelo e sem gravar nada. É um documento para leitura, não um
-formato de dados: não serve para importar nem reproduzir a execução e o layout
-pode mudar. Pela API: `GET /runs/{id}/export` (texto, anexo `.txt`); uma run
-sem resposta concluída devolve `409 run_not_exportable`.
+A partir da v1.7.0 (a v1.6.0 não tem), a página de uma pergunta **concluída**
+(Conselho ou resposta direta) tem “Exportar resposta (.txt)”: um arquivo de
+texto para ler fora do Dialeon, com a pergunta, a resposta (no Conselho, a
+mesma forma que a interface escolhe hoje para apresentar, com as limitações
+registradas) e como ela foi produzida -- tipo de execução, modelos pedidos e a
+origem deles quando registrada, modelos reportados pelos providers, juiz e
+editor quando a execução os registra, e etapas não realizadas. A resposta vai
+inteira, sem reescrita (na resposta direta, ela é a própria resposta do
+provider; no Conselho, pode conter trechos da fonte). Não entram como partes
+separadas: o texto completo da fonte (só que ela foi fornecida e o status da
+análise), as respostas individuais e as tentativas dos modelos, erros dos
+providers, uso nem custo. O arquivo é gerado na hora a partir do registro da
+execução, sem chamar nenhum modelo e sem gravar nada. É um documento para
+leitura, não um formato de dados: não serve para importar nem reproduzir a
+execução e o layout pode mudar. Pela API: `GET /runs/{id}/export` (texto,
+anexo `.txt`); uma run sem resposta concluída devolve `409
+run_not_exportable`.
 
 ## O que já está implementado
 
@@ -415,6 +415,10 @@ sem resposta concluída devolve `409 run_not_exportable`.
   identificador de modelo por participante do Conselho, congelada no aceite
   junto com os padrões usados (ver
   [Modelo de cada participante](#modelo-de-cada-participante-avançado)).
+- Exportar a resposta (a partir da v1.7.0): arquivo de texto legível, gerado
+  sob demanda a partir do registro de uma pergunta concluída, com a resposta e
+  a proveniência mínima para interpretá-la (ver
+  [Exportar a resposta](#exportar-a-resposta)).
 - CLI (`dialeon`), API HTTP (FastAPI) e frontend (React) para disparar
   execuções e inspecionar resultados.
 
@@ -512,6 +516,14 @@ o Conselho o recusa); o `config` das runs diretas ganhou
 `requested_model_origin` (`configured_default` ou `run_override`; runs
 diretas anteriores mostram `configured_default`). O contrato do request direto
 continua `direct_answer_v1`.
+
+A partir da v1.7.0 (ver [Exportar a resposta](#exportar-a-resposta)):
+`GET /runs/{id}/export` é novo e só de leitura; devolve um documento de texto
+(`text/plain; charset=utf-8`, anexo `.txt`) cujo conteúdo e layout **não**
+fazem parte da API estável (não é formato de dados, não serve para importar).
+O código de erro `run_not_exportable` (`409`) é novo e só aparece nessa rota,
+para uma run que existe mas não tem resposta concluída; os demais endpoints e
+respostas não mudaram.
 
 **Não fazem parte da API estável:** o texto exato de mensagens da CLI e de
 erros; o schema SQLite bruto e as classes ORM; os módulos internos `app.*`,

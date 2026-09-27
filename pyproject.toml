@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-council"
-version = "1.6.0"
+version = "1.7.0"
 description = "Resposta direta de um modelo ou debate multi-LLM com juiz (Conselho), com proveniência e auditoria de cada execução."
 # Long description do pacote (metadado `Description`, com
 # `Description-Content-Type: text/markdown` inferido pela extensão): sem isso,

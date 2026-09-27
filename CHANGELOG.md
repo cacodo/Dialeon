@@ -1,3 +1,101 @@
+# Dialeon 1.7.0
+
+Versão menor compatível com a linha 1.x. Uma pergunta concluída -- do
+Conselho ou resposta direta -- pode ser exportada como um arquivo de texto
+legível, com a resposta e a proveniência mínima para interpretá-la fora do
+Dialeon. A execução de perguntas não mudou.
+
+## Exportar a resposta
+
+- Na página de uma pergunta **concluída**, “Exportar resposta (.txt)” baixa um
+  arquivo de texto (UTF-8) com a pergunta, a resposta e como ela foi
+  produzida. Perguntas em andamento, que falharam ou com quórum insuficiente
+  não têm exportação; continuam no detalhe e na auditoria.
+- O arquivo é gerado na hora a partir do registro da execução: nada é gravado,
+  nenhum modelo é chamado e não há entidade nova de “exportação”.
+- É um documento para leitura: não é formato de dados estável, não serve para
+  importar nem reproduzir a execução, não é a auditoria completa e o layout
+  pode mudar.
+- Resposta direta: a resposta registrada do provider, dita como resposta de
+  um único modelo, sem as etapas do Conselho (não é consenso, avaliação do
+  juiz nem verificação); o provider, o modelo pedido e a origem dele
+  (`configured_default` ou `run_override`) e o modelo reportado pelo
+  provider, separado do pedido. Um corte pelo limite de tamanho de saída
+  informado pelo provider é avisado.
+- Conselho: a mesma forma da resposta que a interface escolhe hoje para
+  apresentar (identificada como escolhida pelas regras atuais, não
+  necessariamente a mostrada quando a execução terminou), com as limitações
+  registradas; os participantes, com o modelo pedido e a origem quando
+  registrada e o modelo reportado; juiz e editor só quando a execução os
+  registra (um provider apenas configurado para o papel não é creditado); e as
+  etapas não realizadas ou degradadas registradas. A nota do Conselho fala nas
+  respostas dos modelos participantes, sem afirmar que foram vários: um
+  Conselho pode ter um só participante, ou concluir com uma só resposta
+  utilizável. Concordância entre modelos e a avaliação do juiz são
+  apresentadas como relativas ao debate, não como verificação externa.
+- O que não foi registrado continua “não registrado” (por exemplo, a origem
+  dos modelos pedidos em runs do Conselho anteriores à 1.5.0), nunca
+  reconstruído da configuração atual.
+- A resposta vai inteira e sem reescrita. Não entram como partes separadas: o
+  texto completo da fonte, trechos da análise da fonte, as respostas
+  individuais e as tentativas dos modelos, erros informados pelos providers,
+  uso e custo. A resposta pode conter trechos da fonte; a exportação diz isso.
+  Quando houve fonte, ela diz que a fonte foi fornecida pelo usuário, o status
+  da análise da fonte e que essa análise compara com um texto não verificado
+  -- não é verificação externa.
+- Texto de usuário e de modelo entra indentado e com caracteres de controle
+  ou invisíveis escritos de forma visível: não forja títulos do documento nem
+  age sobre o terminal que o exibir.
+
+## Interface web
+
+- “Exportar resposta (.txt)” aparece só em perguntas concluídas, junto de
+  “Perguntar de novo” e “Nova pergunta”, sem mudar o resto da página.
+- A escolha da forma apresentada da resposta do Conselho passou a ter uma
+  regra única conferida contra a mesma tabela de casos no servidor e na
+  interface; a escolha em si não mudou.
+
+## API
+
+- `GET /runs/{id}/export`: novo, só de leitura. Devolve o documento como
+  `text/plain; charset=utf-8`, anexo `.txt`; o conteúdo não faz parte da API
+  estável.
+- Novo código de erro `run_not_exportable` (`409`, com `details.status`),
+  só nessa rota: a run existe, mas não tem resposta concluída. Run inexistente
+  continua `404 run_not_found`.
+
+## CLI
+
+- Sem comando novo. A saída humana de `run`/`get` passou a usar a mesma regra
+  de escolha da forma apresentada da exportação; o resultado é o mesmo.
+
+## Instalação e dependências
+
+- Sem mudanças de dependências nem de versão mínima do Python (3.11).
+- Artefatos da release: `llm_council-1.7.0-py3-none-any.whl` e
+  `llm_council-1.7.0.tar.gz`, com a interface web já compilada. A página da
+  release mostra o tamanho e o SHA-256 de cada arquivo. Não há publicação no
+  PyPI.
+
+## Persistência e atualização
+
+- Nenhuma mudança de banco nem do que é gravado: a exportação só lê. Bancos
+  criados pela v1.6 e anteriores continuam abertos e legíveis, e a 1.7.0 não
+  grava nada que a 1.6.0 não leia.
+
+## Compatibilidade
+
+- Tudo é aditivo: uma rota nova e um código de erro novo, só dessa rota. Os
+  demais endpoints e respostas não mudaram. Clientes que tratam o código de
+  erro de forma exaustiva precisam reconhecer `run_not_exportable` se usarem
+  a rota nova.
+
+## Limitações conhecidas
+
+As limitações da 1.6.0 continuam valendo. A exportação não inclui a fonte nem
+material técnico de auditoria (não há opção para isso) e não existe pela CLI.
+O texto é em português, como a interface.
+
 # Dialeon 1.6.0
 
 Versão menor compatível com a linha 1.x. Uma resposta direta pode pedir um
