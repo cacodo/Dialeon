@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-council"
-version = "1.5.0"
-description = "Resposta direta de um modelo configurado ou debate multi-LLM com juiz (Conselho), com proveniência e auditoria de cada execução."
+version = "1.6.0"
+description = "Resposta direta de um modelo ou debate multi-LLM com juiz (Conselho), com proveniência e auditoria de cada execução."
 # Long description do pacote (metadado `Description`, com
 # `Description-Content-Type: text/markdown` inferido pela extensão): sem isso,
 # `twine check --strict` falha por long_description ausente.

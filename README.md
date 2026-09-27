@@ -24,7 +24,7 @@ resultado. Depois do Judge, uma etapa determinística reconcilia os
 dois canais, e a resposta final estruturada é montada com base nesse
 resultado. Cada execução é persistida para inspeção posterior.
 
-Versão do pacote nesta árvore: **1.5.0**. O número de versão no código
+Versão do pacote nesta árvore: **1.6.0**. O número de versão no código
 não indica, por si só, que uma tag ou release já foi publicada. A política
 da linha 1.x está em
 [Compatibilidade e estabilidade](#compatibilidade-e-estabilidade-linha-1x).
@@ -66,7 +66,7 @@ diretório (ver [Configuração](#configuração)).
 mkdir dialeon && cd dialeon
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install https://github.com/cacodo/Dialeon/releases/download/v1.5.0/llm_council-1.5.0-py3-none-any.whl
+pip install https://github.com/cacodo/Dialeon/releases/download/v1.6.0/llm_council-1.6.0-py3-none-any.whl
 ```
 
 A página da release mostra o SHA-256 de cada arquivo, se você quiser conferir
@@ -191,9 +191,8 @@ Pela API: `POST /runs` com `"kind": "direct"` e exatamente um item em
 
 ### Modelo específico da resposta direta (avançado)
 
-Na versão em desenvolvimento desta árvore (ainda não publicada em release; a
-v1.5.0 não tem), uma resposta direta pode pedir um modelo específico ao
-provider escolhido. Sem escolha, ela usa o modelo padrão configurado nesta
+A partir da v1.6.0 (a v1.5.0 não tem), uma resposta direta pode pedir um
+modelo específico ao provider escolhido. Sem escolha, ela usa o modelo padrão configurado nesta
 instalação, como sempre. Continua sendo uma resposta direta: uma única
 chamada, sem nenhuma etapa do Conselho.
 
@@ -210,9 +209,11 @@ chamada, sem nenhuma etapa do Conselho.
   como escolha). Toda tentativa da chamada usa esse modelo, e mudar o padrão
   depois não altera runs já aceitas. O modelo que o fornecedor reportou
   continua registrado ao lado do pedido. Runs diretas anteriores mostram
-  `configured_default`: até aqui, a resposta direta sempre usava o padrão
+  `configured_default`: até a v1.5.0, a resposta direta sempre usava o padrão
   configurado. Com escolha explícita, o padrão configurado da época não é
-  registrado.
+  registrado. O campo novo é gravado em toda run direta: a v1.5.0 e
+  anteriores não abrem runs diretas gravadas pela v1.6.0 (voltar de versão
+  com o mesmo banco não é suportado para elas).
 - Um modelo sem preço conhecido tem custo desconhecido, nunca zero.
 
 Na interface: com “Resposta direta”, “Modelo” → “Modelo específico
@@ -381,9 +382,9 @@ vai em `requested_model`, ver
     `CompletionRequest` provider-neutro finalizado — nunca o payload
     exato enviado ao provider, nunca prova de aceite remoto.
 - Resposta direta (opcional, a partir da v1.3.0): uma única chamada a um
-  provider escolhido, com o modelo configurado no deployment (ou, na versão
-  em desenvolvimento desta árvore, um modelo escolhido para a pergunta), sem
-  nenhuma etapa do Conselho; resultado ou falha registrados com a mesma
+  provider escolhido, com o modelo configurado no deployment (ou, a partir
+  da v1.6.0, um modelo escolhido para a pergunta), sem nenhuma etapa do
+  Conselho; resultado ou falha registrados com a mesma
   proveniência de modelo, uso, custo e request (ver
   [Resposta direta ou Conselho](#resposta-direta-ou-conselho)).
 - Configuração local das etapas do Conselho (a partir da v1.4.0): prévia sem
@@ -483,6 +484,14 @@ participantes (avaliações `v1` gravadas antes continuam legíveis e com a
 mesma identidade de degradação). Os requests dos participantes passaram a
 levar o modelo explícito (`initial_response_v2`/`critique_v2` na
 proveniência); os registros `v1` mantêm o significado original.
+
+A partir da v1.6.0 (ver
+[Modelo específico da resposta direta](#modelo-específico-da-resposta-direta-avançado)):
+`requested_model` é um campo opcional de `POST /runs` (só da resposta direta;
+o Conselho o recusa); o `config` das runs diretas ganhou
+`requested_model_origin` (`configured_default` ou `run_override`; runs
+diretas anteriores mostram `configured_default`). O contrato do request direto
+continua `direct_answer_v1`.
 
 **Não fazem parte da API estável:** o texto exato de mensagens da CLI e de
 erros; o schema SQLite bruto e as classes ORM; os módulos internos `app.*`,

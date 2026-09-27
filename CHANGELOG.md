@@ -1,3 +1,99 @@
+# Dialeon 1.6.0
+
+Versão menor compatível com a linha 1.x. Uma resposta direta pode pedir um
+modelo específico ao provider escolhido. Sem escolha, ela usa o modelo padrão
+configurado na instalação, como antes; o Conselho não mudou.
+
+## Modelo específico da resposta direta
+
+- Escolha opcional de um identificador de modelo do fornecedor (por exemplo
+  `gpt-x` para `openai`) para o provider da resposta direta, enviado
+  exatamente como informado. O Dialeon confere só a forma, com a mesma regra
+  da escolha dos participantes do Conselho: não vazio, sem espaços, sem
+  caracteres de controle ou invisíveis, até 256 caracteres. Não há catálogo
+  de modelos: o Dialeon não confere se o modelo existe, está disponível para a
+  conta ou aceita a chamada. Se o fornecedor recusar, a resposta direta fica
+  registrada sem resposta (falha do provider), sem troca por outro modelo nem
+  pelo padrão.
+- Continua sendo uma resposta direta: uma única chamada, sem nenhuma etapa do
+  Conselho.
+- No aceite, o modelo pedido e a origem dele (`configured_default` ou
+  `run_override`) ficam registrados na run; escrever o próprio padrão conta
+  como escolha. Toda tentativa da chamada usa esse modelo, e mudar o padrão
+  depois não altera runs já aceitas. O modelo reportado pelo fornecedor
+  continua registrado ao lado do pedido; os dois podem ser diferentes (por
+  exemplo, um nome de modelo e a versão datada que o fornecedor informa).
+- Com escolha explícita, o padrão configurado da época não é registrado.
+- Um modelo sem preço conhecido tem custo desconhecido, nunca zero.
+
+## Interface web
+
+- Com “Resposta direta”, “Modelo” → “Modelo específico (avançado)”: um campo
+  para o provider escolhido; em branco é o modelo padrão configurado. A
+  escolha vale só para aquele provider e não passa para o Conselho.
+- Com os painéis fechados, o resumo do modelo mostra a escolha ativa
+  (“Modelo: GPT · modelo específico: gpt-x”), também para leitores de tela.
+- “Como esta resposta foi produzida” diz se o modelo pedido foi escolhido
+  nesta pergunta ou era o padrão configurado quando ela foi aceita.
+- “Perguntar de novo” traz o modelo só quando ele foi escolhido
+  explicitamente, e só para o mesmo provider; uma run que usou o padrão
+  continua usando o padrão atual.
+
+## API
+
+- `POST /runs` ganhou o campo opcional `requested_model`, só da resposta
+  direta (`"kind": "direct"`); o Conselho o recusa, e a resposta direta
+  continua recusando `participant_model_overrides`. Modelo inválido:
+  `422 invalid_request`, antes de criar qualquer registro ou fazer qualquer
+  chamada.
+- O `config` das runs diretas ganhou `requested_model_origin`; runs diretas
+  anteriores mostram `configured_default` (até a 1.5.0, a resposta direta não
+  aceitava modelo e sempre usava o padrão configurado).
+- O contrato do request direto continua `direct_answer_v1`: o request já
+  levava o modelo explícito.
+
+## CLI
+
+- `dialeon run "..." --direct --providers openai --model openai=gpt-x`: no
+  máximo um `--model`, nomeando o provider de `--providers`. A saída humana de
+  `run`, `get` e `audit` diz a origem do modelo pedido.
+
+## Build do frontend
+
+- `scripts/sync_frontend_dist.py` confere, depois de copiar, que o frontend
+  empacotado (`app/frontend_dist/`) é idêntico ao build (`frontend/dist/`), e
+  ganhou `--check`, que só confere. Num checkout, um `app/frontend_dist/`
+  antigo tem precedência em `/app` sobre um build novo; a suíte de testes
+  agora falha nesse caso quando os dois existem.
+
+## Instalação e dependências
+
+- Sem mudanças de dependências nem de versão mínima do Python (3.11).
+- Artefatos da release: `llm_council-1.6.0-py3-none-any.whl` e
+  `llm_council-1.6.0.tar.gz`, com a interface web já compilada. Não há
+  publicação no PyPI.
+
+## Persistência e atualização
+
+- Nenhuma mudança de banco: o modelo e a origem ficam na configuração aceita
+  da run, já persistida. Bancos criados pela v1.5 e anteriores continuam
+  abertos e legíveis.
+- Toda run direta gravada pela 1.6.0 traz o campo novo, que a 1.5.0 e
+  anteriores não reconhecem: voltar de versão com o mesmo banco não abre
+  essas runs.
+
+## Compatibilidade
+
+- Tudo é aditivo e opt-in: sem `requested_model`, o aceite e a execução da
+  resposta direta são os de sempre. Clientes devem ignorar chaves
+  desconhecidas.
+
+## Limitações conhecidas
+
+As limitações da 1.5.0 continuam valendo. A escolha de modelo não é
+verificada no fornecedor: um identificador errado só aparece como falha da
+chamada.
+
 # Dialeon 1.5.0
 
 Versão menor compatível com a linha 1.x. Uma pergunta do Conselho pode pedir
