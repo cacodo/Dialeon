@@ -689,6 +689,40 @@ describe('RunDetail', () => {
       expect(screen.getByRole('heading', { level: 2, name: 'Resposta' })).toBeInTheDocument()
     })
 
+    it('com resposta natural: ao abrir a inspeção, as notas da execução aparecem sem abrir a estruturada', async () => {
+      vi.mocked(apiClient.getRun).mockResolvedValue({
+        ...completedRun,
+        final_answer: {
+          ...completedRun.final_answer,
+          primary_answer: primary,
+          natural_answer: {
+            renderer_contract_version: 'natural_answer_v2',
+            based_on_verdict_id: 'v-1',
+            rendered_text: 'Texto natural da resposta.',
+          },
+          natural_answer_presentation_eligible: true,
+        },
+      })
+      vi.mocked(apiClient.getRunAudit).mockResolvedValue(completedAudit)
+      renderDetail('run-1')
+
+      // a resposta natural é a resposta mostrada, imediatamente
+      expect(await screen.findByText('Texto natural da resposta.')).toBeVisible()
+      // a auditoria segue carregada só sob demanda
+      expect(apiClient.getRunAudit).not.toHaveBeenCalled()
+
+      await userEvent.click(screen.getByRole('button', { name: /como esta resposta foi produzida/i }))
+
+      // a estruturada está presente e nomeada, mas recolhida
+      expect(await screen.findByRole('heading', { level: 3, name: 'Resposta principal (estruturada)' })).toBeVisible()
+      const structured = screen.getByText('Ver resposta principal estruturada').closest('details') as HTMLDetailsElement
+      expect(structured.open).toBe(false)
+      // as notas da execução ficam acessíveis sem abrir a estruturada
+      expect(await screen.findByRole('heading', { level: 3, name: 'Notas da execução' })).toBeVisible()
+      expect(structured.open).toBe(false)
+      expect(apiClient.getRunAudit).toHaveBeenCalledTimes(1)
+    })
+
     it('sem resposta principal (registro histórico) mostra a avaliação completa de sempre', async () => {
       vi.mocked(apiClient.getRun).mockResolvedValue(completedRun)
       renderDetail('run-1')

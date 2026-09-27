@@ -9,6 +9,10 @@
 //   foi produzida"): como a resposta foi montada, a resposta principal
 //   estruturada (quando a apresentação escolhida foi outra) e a avaliação
 //   completa das afirmações, com a explicação de cada uma (profundidade 2).
+//   As duas representações SECUNDÁRIAS (a estruturada, quando o texto
+//   natural/redigido já é a resposta mostrada, e a avaliação completa) ficam
+//   com título e "copiar" visíveis e o corpo num <details> fechado: continuam
+//   inteiras a um clique, sem empurrar para baixo as notas da execução.
 //
 // Conteúdo vindo de modelo é sempre texto inerte (sem Markdown/HTML). Nenhuma
 // cor/selo codifica veredito -- o rótulo textual é o portador do sentido.
@@ -355,7 +359,14 @@ export function AnswerAssessmentDetails({ finalAnswer }: FinalAnswerViewProps) {
             <h3 id="structured-answer-heading">Resposta principal (estruturada)</h3>
             <CopyAnswerButton text={presentation.primary.rendered_text} label="Copiar resposta principal" />
           </div>
-          <PrimaryAnswerBody primary={presentation.primary} level={4} />
+          {/* Secundária aqui: a resposta mostrada acima já é o texto natural/
+              redigido a partir DELA. Fechada por padrão (mesmo padrão nativo da
+              avaliação completa); aberta, é a mesma resposta estruturada inteira,
+              com as mesmas limitações -- nada é resumido nem omitido. */}
+          <details className="final-answer__complete">
+            <summary>Ver resposta principal estruturada</summary>
+            <PrimaryAnswerBody primary={presentation.primary} level={4} />
+          </details>
         </section>
       )}
 

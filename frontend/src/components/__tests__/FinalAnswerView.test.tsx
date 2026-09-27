@@ -986,21 +986,27 @@ describe('FinalAnswerView -- resposta natural', () => {
   })
 
   it('preserva acesso à resposta principal estruturada e à avaliação completa na profundidade 1', async () => {
-    const { container } = render(<AnswerAssessmentDetails finalAnswer={withNatural()} />)
+    render(<AnswerAssessmentDetails finalAnswer={withNatural()} />)
 
+    // secundária: título e "copiar" visíveis, corpo recolhido num <details> nativo
     expect(screen.getByRole('heading', { level: 3, name: 'Resposta principal (estruturada)' })).toBeVisible()
-    // resposta principal estruturada, com seus próprios headings/rótulos
+    expect(screen.getByRole('button', { name: 'Copiar resposta principal' })).toBeVisible()
+    const structured = screen.getByText('Ver resposta principal estruturada').closest('details') as HTMLDetailsElement
+    expect(structured.open).toBe(false)
+    expect(screen.getByRole('heading', { level: 4, name: 'Conclusão central:', hidden: true })).not.toBeVisible()
+
+    // aberta: a resposta principal estruturada inteira, com seus próprios headings/rótulos
+    await userEvent.click(screen.getByText('Ver resposta principal estruturada'))
+    expect(structured.open).toBe(true)
     expect(screen.getByRole('heading', { level: 4, name: 'Conclusão central:' })).toBeVisible()
     expect(screen.getByText('(sustentada pelo debate)')).toBeVisible()
 
-    // dentro dela, a mesma affordance de sempre continua presente e recolhida
+    // a avaliação completa continua presente, recolhida e alcançável
     expect(screen.getByText(/Ver avaliação completa \(3 afirmações avaliadas\)/)).toBeVisible()
-    const inner = container.querySelector('details.final-answer__complete') as HTMLDetailsElement
-    expect(inner.open).toBe(false)
-
+    const complete = screen.getByText(/Ver avaliação completa/).closest('details') as HTMLDetailsElement
+    expect(complete.open).toBe(false)
     await userEvent.click(screen.getByText(/Ver avaliação completa/))
-    expect(inner.open).toBe(true)
-    // avaliação completa continua alcançável dentro da resposta principal
+    expect(complete.open).toBe(true)
     expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
   })
 
@@ -1150,14 +1156,17 @@ describe('FinalAnswerView -- realização linguística', () => {
   })
 
   it('preserva acesso à resposta principal estruturada e à avaliação completa na profundidade 1', async () => {
-    const { container } = render(<AnswerAssessmentDetails finalAnswer={withRealization()} />)
+    render(<AnswerAssessmentDetails finalAnswer={withRealization()} />)
 
     expect(screen.getByRole('heading', { level: 3, name: 'Resposta principal (estruturada)' })).toBeVisible()
+    const structured = screen.getByText('Ver resposta principal estruturada').closest('details') as HTMLDetailsElement
+    expect(structured.open).toBe(false)
+    await userEvent.click(screen.getByText('Ver resposta principal estruturada'))
     expect(screen.getByRole('heading', { level: 4, name: 'Conclusão central:' })).toBeVisible()
-    const inner = container.querySelector('details.final-answer__complete') as HTMLDetailsElement
-    expect(inner.open).toBe(false)
+    const complete = screen.getByText(/Ver avaliação completa/).closest('details') as HTMLDetailsElement
+    expect(complete.open).toBe(false)
     await userEvent.click(screen.getByText(/Ver avaliação completa/))
-    expect(inner.open).toBe(true)
+    expect(complete.open).toBe(true)
     expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
   })
 
@@ -1261,5 +1270,130 @@ describe('FinalAnswerView / AnswerAssessmentDetails -- profundidade', () => {
     expect(container.querySelector('details.final-answer__complete')).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Resposta principal (estruturada)' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /copiar/i })).not.toBeInTheDocument()
+  })
+})
+
+// Resultado > Inspeção: quando o texto natural/redigido JÁ é a resposta
+// mostrada, a resposta principal estruturada é secundária -- fica recolhida
+// na inspeção (título e "copiar" visíveis), inteira a um clique. Quando ela
+// (ou a avaliação completa) é a própria resposta, nada muda.
+describe('AnswerAssessmentDetails -- resposta principal estruturada secundária recolhida', () => {
+  const completeBlocks = sectionsBlocks(
+    [item('Claim da avaliação completa.', 'sustentada pelo debate')],
+    [item('Claim não estabelecida.', 'sem informação suficiente para decidir')],
+  )
+  const base = {
+    answer_text: 'AVALIAÇÃO COMPLETA CANÔNICA',
+    answer_blocks: completeBlocks,
+    limitations: ['Sem dados empíricos.'],
+    primary_answer: makePrimary(),
+  }
+  const natural = () =>
+    makeFinalAnswer({ ...base, natural_answer: makeNatural(), natural_answer_presentation_eligible: true })
+  const realization = () =>
+    makeFinalAnswer({
+      ...base,
+      linguistic_realization: makeRealization(),
+      linguistic_realization_presentation_eligible: true,
+    })
+  const summaryText = 'Ver resposta principal estruturada'
+
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  afterEach(() => {
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+  })
+
+  it.each([
+    ['resposta natural', natural],
+    ['realização linguística', realization],
+  ])('com %s como resposta: ela e as limitações seguem visíveis; a estruturada começa fechada', (_, make) => {
+    const answer = make()
+    render(
+      <>
+        <FinalAnswerView finalAnswer={answer} />
+        <AnswerAssessmentDetails finalAnswer={answer} />
+      </>,
+    )
+
+    // a resposta mostrada continua imediatamente visível, com as limitações
+    expect(screen.getByRole('button', { name: 'Copiar resposta' })).toBeVisible()
+    expect(screen.getAllByText(/Sem dados empíricos\./).some((node) => node.checkVisibility?.() ?? true)).toBe(true)
+    // a estruturada: presente, nomeada, fechada (sem sugerir que é menos válida)
+    expect(screen.getByRole('heading', { level: 3, name: 'Resposta principal (estruturada)' })).toBeVisible()
+    const disclosure = screen.getByText(summaryText).closest('details') as HTMLDetailsElement
+    expect(disclosure.open).toBe(false)
+    expect(within(disclosure).getByRole('heading', { level: 4, name: 'Conclusão central:', hidden: true })).not.toBeVisible()
+  })
+
+  it('aberta mostra a resposta estruturada inteira; fechar e reabrir não altera o conteúdo', async () => {
+    render(<AnswerAssessmentDetails finalAnswer={natural()} />)
+    const disclosure = screen.getByText(summaryText).closest('details') as HTMLDetailsElement
+    const before = disclosure.innerHTML
+
+    await userEvent.click(screen.getByText(summaryText))
+    expect(disclosure.open).toBe(true)
+    expect(within(disclosure).getByRole('heading', { level: 4, name: 'Conclusão central:' })).toBeVisible()
+    expect(within(disclosure).getByText('(sustentada pelo debate)')).toBeVisible()
+    const opened = disclosure.innerHTML
+
+    await userEvent.click(screen.getByText(summaryText))
+    expect(disclosure.open).toBe(false)
+    await userEvent.click(screen.getByText(summaryText))
+    expect(disclosure.innerHTML).toBe(opened)
+    expect(before).toBe(opened) // o corpo sempre esteve inteiro no DOM; só a exibição muda
+  })
+
+  it('é um disclosure nativo (<details>/<summary>) alcançável pelo teclado', async () => {
+    render(<AnswerAssessmentDetails finalAnswer={realization()} />)
+    const summary = screen.getByText(summaryText)
+    const disclosure = summary.closest('details') as HTMLDetailsElement
+
+    // semântica nativa: o navegador expõe o estado expandido/recolhido e
+    // alterna com Enter/Espaço no <summary> (o jsdom não emula essa ativação)
+    expect(summary.tagName).toBe('SUMMARY')
+    expect(summary.parentElement).toBe(disclosure)
+    // alcançável na ordem de tabulação: "copiar" vem antes do corpo recolhido
+    await userEvent.tab()
+    expect(screen.getByRole('button', { name: 'Copiar resposta principal' })).toHaveFocus()
+    await userEvent.tab()
+    expect(summary).toHaveFocus()
+  })
+
+  it('"Copiar resposta principal" copia a estruturada mesmo com o corpo fechado', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    render(<AnswerAssessmentDetails finalAnswer={natural()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copiar resposta principal' }))
+    expect(writeText).toHaveBeenLastCalledWith(makePrimary().rendered_text)
+  })
+
+  it('quando a estruturada é a própria resposta, segue visível imediatamente (sem recolher)', () => {
+    const answer = makeFinalAnswer(base)
+    render(
+      <>
+        <FinalAnswerView finalAnswer={answer} />
+        <AnswerAssessmentDetails finalAnswer={answer} />
+      </>,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Conclusão central:' })).toBeVisible()
+    expect(screen.queryByText(summaryText)).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Resposta principal (estruturada)' })).not.toBeInTheDocument()
+  })
+
+  it('quando a avaliação completa é a própria resposta, segue visível e nada é recolhido', () => {
+    const answer = makeFinalAnswer({ answer_text: 'AVALIAÇÃO COMPLETA CANÔNICA', answer_blocks: completeBlocks })
+    render(
+      <>
+        <FinalAnswerView finalAnswer={answer} />
+        <AnswerAssessmentDetails finalAnswer={answer} />
+      </>,
+    )
+
+    expect(screen.getByText('Claim da avaliação completa.')).toBeVisible()
+    expect(screen.queryByText(summaryText)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Ver avaliação completa/)).not.toBeInTheDocument()
   })
 })
